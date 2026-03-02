@@ -1,2 +1,22 @@
 [tools]
 dotnet = "latest"
+
+[tasks.run]
+description = "Run a job defined in a YAML configuration file"
+run = "dotnet run --project src/Orca.Cli/ -- run \"$@\""
+
+[tasks.cleanup]
+description = "Tear down everything created by a run command"
+run = "dotnet run --project src/Orca.Cli/ -- cleanup \"$@\""
+
+[tasks.info]
+description = "Display the current state of a job"
+run = "dotnet run --project src/Orca.Cli/ -- info \"$@\""
+
+[tasks.auth-pat]
+description = "Authenticate with a Personal Access Token"
+run = "dotnet run --project src/Orca.Cli/ -- auth pat \"$@\""
+
+[tasks.auth-app]
+description = "Authenticate with a GitHub App"
+run = "dotnet run --project src/Orca.Cli/ -- auth app \"$@\""
