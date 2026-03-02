@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>orca</AssemblyName>
+    <RootNamespace>Orca.Cli</RootNamespace>
+    <Nullable>enable</Nullable>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Args.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Orca.Core\Orca.Core.fsproj" />
+    <ProjectReference Include="..\Orca.GitHub\Orca.GitHub.fsproj" />
+    <ProjectReference Include="..\Orca.Auth\Orca.Auth.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Argu" Version="6.2.4" />
+  </ItemGroup>
+
+</Project>

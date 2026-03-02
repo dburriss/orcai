@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Orca.Core</RootNamespace>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Domain.fs" />
+    <Compile Include="GhClient.fs" />
+    <Compile Include="AuthContext.fs" />
+    <Compile Include="YamlConfig.fs" />
+    <Compile Include="LockFile.fs" />
+    <Compile Include="RunCommand.fs" />
+    <Compile Include="CleanupCommand.fs" />
+    <Compile Include="InfoCommand.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
+  </ItemGroup>
+
+</Project>
