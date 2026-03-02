@@ -52,6 +52,33 @@ let loadConfig () : Result<AppAuthConfig, string> =
             | _ ->
                 Error "App auth config is incomplete. Re-run 'orca auth app ...'.")
 
+/// Resolve the App auth configuration, overlaying environment variables on top of
+/// any stored file config. The following env vars are checked (each silently
+/// overrides the corresponding stored value when set):
+///
+///   ORCA_APP_ID               — GitHub App ID
+///   ORCA_APP_INSTALLATION_ID  — Installation ID for the target organisation
+///   ORCA_APP_KEY_PATH         — Path to the PEM private key file
+///
+/// Note: ORCA_APP_PRIVATE_KEY (raw PEM content) is handled separately in
+/// AppAuthContext.GetToken and takes precedence over ORCA_APP_KEY_PATH.
+let resolveConfig () : Result<AppAuthConfig, string> =
+    let env name =
+        Environment.GetEnvironmentVariable(name) |> Option.ofObj |> Option.bind (fun s -> if s.Length > 0 then Some s else None)
+    // Start from stored config, or a blank record if no file exists yet.
+    let base_ =
+        match loadConfig () with
+        | Ok cfg  -> cfg
+        | Error _ -> { AppId = ""; PrivateKeyPath = ""; InstallationId = "" }
+    let appId      = env "ORCA_APP_ID"              |> Option.defaultValue base_.AppId
+    let installId  = env "ORCA_APP_INSTALLATION_ID" |> Option.defaultValue base_.InstallationId
+    let keyPath    = env "ORCA_APP_KEY_PATH"         |> Option.defaultValue base_.PrivateKeyPath
+    match appId, installId, keyPath with
+    | "", _, _ -> Error "App ID is missing. Set ORCA_APP_ID or run 'orca auth app ...'."
+    | _, "", _ -> Error "Installation ID is missing. Set ORCA_APP_INSTALLATION_ID or run 'orca auth app ...'."
+    | _, _, "" -> Error "Private key is missing. Set ORCA_APP_KEY_PATH / ORCA_APP_PRIVATE_KEY or run 'orca auth app ...'."
+    | _        -> Ok { AppId = appId; PrivateKeyPath = keyPath; InstallationId = installId }
+
 /// Generate a signed RS256 JWT for the given App ID and PEM-encoded private key.
 let generateJwt (appId: string) (privateKeyPem: string) : Result<string, string> =
     try
@@ -121,11 +148,22 @@ let exchangeForInstallationToken (jwt: string) (installationId: string) : Async<
     }
 
 /// IAuthContext implementation backed by a GitHub App.
+/// Checks ORCA_APP_PRIVATE_KEY for raw PEM content first; falls back to reading
+/// config.PrivateKeyPath from disk. All other fields also respect env var overrides
+/// (see resolveConfig).
 type AppAuthContext(config: AppAuthConfig) =
     interface IAuthContext with
         member _.GetToken() = async {
-            let pemContent = File.ReadAllText(config.PrivateKeyPath)
-            match generateJwt config.AppId pemContent with
-            | Error e   -> return Error e
-            | Ok jwt    -> return! exchangeForInstallationToken jwt config.InstallationId
+            let pemResult =
+                match Environment.GetEnvironmentVariable("ORCA_APP_PRIVATE_KEY") |> Option.ofObj with
+                | Some pem when pem.Length > 0 -> Ok pem
+                | _ ->
+                    try Ok (File.ReadAllText(config.PrivateKeyPath))
+                    with ex -> Error $"Failed to read private key file '{config.PrivateKeyPath}': {ex.Message}"
+            match pemResult with
+            | Error e -> return Error e
+            | Ok pem  ->
+                match generateJwt config.AppId pem with
+                | Error e -> return Error e
+                | Ok jwt  -> return! exchangeForInstallationToken jwt config.InstallationId
         }
