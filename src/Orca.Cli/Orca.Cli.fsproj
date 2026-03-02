@@ -7,6 +7,32 @@
     <RootNamespace>Orca.Cli</RootNamespace>
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
+
+    <!-- Binary identity -->
+    <Version>0.1.0</Version>
+    <Authors>Devon Burriss</Authors>
+    <Description>A CLI tool for managing GitHub Projects and Copilot-assigned issues in bulk. Define your project in a YAML file and let orca create issues, assign them to Copilot, and clean up when done.</Description>
+    <Title>orca</Title>
+    <Copyright>Copyright © 2025 Devon Burriss</Copyright>
+
+    <!-- Links -->
+    <PackageProjectUrl>https://github.com/dburriss/orca</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/dburriss/orca</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+
+    <!-- Licensing -->
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+
+    <!-- Discoverability -->
+    <PackageTags>github copilot cli project-management automation</PackageTags>
+    <PackageReleaseNotes>Initial release</PackageReleaseNotes>
+
+    <!-- SourceLink / reproducible builds -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+
+    <!-- Enable NuGet lock files for reproducible restores -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
   <ItemGroup>

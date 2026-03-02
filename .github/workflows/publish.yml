@@ -10,19 +10,45 @@ permissions:
   contents: write   # needed to create GitHub Releases and upload assets
 
 jobs:
+  # Extract changelog body for the release notes once, share via output
+  changelog:
+    runs-on: ubuntu-latest
+    outputs:
+      body: ${{ steps.extract.outputs.body }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract changelog section for tag
+        id: extract
+        run: |
+          TAG="${GITHUB_REF_NAME:-}"
+          VERSION="${TAG#v}"
+          # Extract lines between ## [VERSION] and the next ## heading
+          BODY=$(awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          # Write multiline output safely
+          {
+            echo 'body<<EOF'
+            echo "$BODY"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
   publish:
+    needs: changelog
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             rid: linux-x64
             artifact: orca
+            suffix: ""
           - os: windows-latest
             rid: win-x64
             artifact: orca.exe
+            suffix: ".exe"
           - os: macos-latest
             rid: osx-x64
             artifact: orca
+            suffix: ""
 
     runs-on: ${{ matrix.os }}
 
@@ -33,10 +59,8 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-          cache: false
-
-      - name: Clear NuGet caches
-        run: dotnet nuget locals all --clear
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
 
       - name: Restore (locked-mode)
         run: dotnet restore --locked-mode
@@ -69,6 +93,7 @@ jobs:
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
+          body: ${{ needs.changelog.outputs.body }}
           files: |
             ./publish/${{ matrix.rid }}/orca-${{ matrix.rid }}*
         env:
