@@ -18,6 +18,7 @@ open Orca.Core.Domain
 ///   1. Stored PAT config  (ORCA_PAT env var or ~/.config/orca/auth.json type=pat)
 ///   2. Stored App config  (env vars or ~/.config/orca/auth.json type=app)
 ///   3. GH_TOKEN environment variable
+///   4. gh CLI ambient auth  (gh auth token)
 let private resolveAuthContext () : Result<Orca.Core.AuthContext.IAuthContext, string> =
     // 1. Try PAT
     match loadToken () with
@@ -33,7 +34,25 @@ let private resolveAuthContext () : Result<Orca.Core.AuthContext.IAuthContext, s
                 Ok ({ new Orca.Core.AuthContext.IAuthContext with
                           member _.GetToken() = async { return Ok t } })
             | _ ->
-                Error "No GitHub credentials found. Run 'orca auth pat --token <tok>' or set GH_TOKEN."
+                // 4. Fallback: gh CLI ambient auth (gh auth token)
+                try
+                    let psi = ProcessStartInfo("gh", "auth token")
+                    psi.RedirectStandardOutput <- true
+                    psi.RedirectStandardError  <- true
+                    psi.UseShellExecute        <- false
+                    match Process.Start(psi) |> Option.ofObj with
+                    | None -> Error "No GitHub credentials found. Run 'orca auth pat --token <tok>' or set GH_TOKEN."
+                    | Some proc ->
+                        let token = proc.StandardOutput.ReadToEnd().Trim()
+                        proc.WaitForExit()
+                        if proc.ExitCode = 0 && token.Length > 0 then
+                            printfn "Using gh CLI authentication."
+                            Ok ({ new Orca.Core.AuthContext.IAuthContext with
+                                      member _.GetToken() = async { return Ok token } })
+                        else
+                            Error "No GitHub credentials found. Run 'orca auth pat --token <tok>' or set GH_TOKEN."
+                with _ ->
+                    Error "No GitHub credentials found. Run 'orca auth pat --token <tok>' or set GH_TOKEN."
 
 /// Format an InfoResult for console output.
 let private printInfoResult (result: InfoResult) =
