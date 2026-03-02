@@ -184,7 +184,13 @@ type GhCliClient(ghToken: string) =
                         return Error $"Unexpected response from 'gh project create': {json}"
             }
 
-        member _.DeleteProject project              = failwith "not implemented"
+        member _.DeleteProject project =
+            async {
+                let (OrgName orgStr) = project.Org
+                match! runGh ghToken $"project delete {project.Number} --owner {orgStr}" with
+                | Error e -> return Error e
+                | Ok _    -> return Ok ()
+            }
 
         member this.CreateIssue repo title body =
             async {
@@ -209,7 +215,14 @@ type GhCliClient(ghToken: string) =
                     System.IO.File.Delete(tmpFile)
             }
 
-        member _.CloseIssue repo issue              = failwith "not implemented"
+        member _.CloseIssue repo issue =
+            async {
+                let (RepoName repoStr)   = repo
+                let (IssueNumber issueN) = issue
+                match! runGh ghToken $"issue delete {issueN} --repo {repoStr} --yes" with
+                | Error e -> return Error e
+                | Ok _    -> return Ok ()
+            }
 
         member _.AddIssueToProject project issue =
             async {
@@ -229,4 +242,11 @@ type GhCliClient(ghToken: string) =
                 | Ok _    -> return Ok ()
             }
 
-        member _.ClosePr repo pr                    = failwith "not implemented"
+        member _.ClosePr repo pr =
+            async {
+                let (RepoName repoStr) = repo
+                let (PrNumber prN)     = pr
+                match! runGh ghToken $"pr close {prN} --repo {repoStr}" with
+                | Error e -> return Error e
+                | Ok _    -> return Ok ()
+            }

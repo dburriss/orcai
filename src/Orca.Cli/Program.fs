@@ -178,9 +178,36 @@ let main argv =
                         printfn "Lock file written."
                         0
         | Cleanup args ->
-            let _yamlFile = args.GetResult(CleanupArgs.Yaml_File)
-            let _dryRun   = args.Contains(CleanupArgs.Dryrun)
-            failwith "not implemented: cleanup command"
+            let yamlFile = args.GetResult(CleanupArgs.Yaml_File)
+            let dryRun   = args.Contains(CleanupArgs.Dryrun)
+            match resolveAuthContext () with
+            | Error e ->
+                eprintfn "Auth error: %s" e
+                1
+            | Ok authCtx ->
+                let token =
+                    authCtx.GetToken()
+                    |> Async.RunSynchronously
+                match token with
+                | Error e ->
+                    eprintfn "Auth error: %s" e
+                    1
+                | Ok ghToken ->
+                    let client = Orca.GitHub.GhClient.GhCliClient(ghToken)
+                    let deps : Orca.Core.CleanupCommand.CleanupDeps =
+                                   { GhClient    = client :> Orca.Core.GhClient.IGhClient
+                                     AuthContext = authCtx }
+                    let input : Orca.Core.CleanupCommand.CleanupInput = { YamlPath = yamlFile; DryRun = dryRun }
+                    match Orca.Core.CleanupCommand.execute deps input with
+                    | Error e ->
+                        eprintfn "Error: %s" e
+                        1
+                    | Ok () ->
+                        if dryRun then
+                            printfn "Dry run complete. No changes were made."
+                        else
+                            printfn "Cleanup complete."
+                        0
         | Info args ->
             let yamlFile = args.GetResult(InfoArgs.Yaml_File)
             let noLock   = args.Contains(InfoArgs.No_Lock)
