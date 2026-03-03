@@ -1,4 +1,4 @@
-name: Publish (.NET 10)
+name: Publish GitHub Release (.NET 10)
 
 on:
   push:
