@@ -71,7 +71,7 @@ jobs:
 
       - name: Publish self-contained binary
         run: >
-          dotnet publish src/Orca.Cli/Orca.Cli.fsproj
+          dotnet publish src/Orca.Tool/Orca.Tool.fsproj
           --configuration Release
           --runtime ${{ matrix.rid }}
           --self-contained true

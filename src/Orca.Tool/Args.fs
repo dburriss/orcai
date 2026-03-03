@@ -1,4 +1,4 @@
-module Orca.Cli.Args
+module Orca.Tool.Args
 
 open Argu
 
