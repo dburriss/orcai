@@ -10,6 +10,6 @@ open Xunit
 // ---------------------------------------------------------------------------
 
 [<Fact(Skip = "Integration test — requires GH_TOKEN environment variable")>]
-let ``GhCliClient can invoke gh --version`` () =
+let ``GhCliClient can invoke gh --version`` () : unit =
     // TODO: assert gh binary is found and returns exit code 0
     failwith "not implemented"
