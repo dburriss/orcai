@@ -22,7 +22,8 @@ open Orca.Core.Deps
 type RunInput =
     { YamlPath         : string
       Verbose          : bool
-      AutoCreateLabels : bool }
+      AutoCreateLabels : bool
+      SkipCopilot      : bool }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,6 +83,7 @@ let private processRepo
     (project          : ProjectInfo)
     (verbose          : bool)
     (autoCreateLabels : bool)
+    (skipCopilot      : bool)
     (repo             : RepoName)
     : Async<IssueRef option> =
     async {
@@ -116,9 +118,12 @@ let private processRepo
         if verbose then eprintfn "[%s] Adding issue to project" repoStr
         let! _ = client.AddIssueToProject project issue
 
-        // 3. Assign @copilot only if not already assigned
+        // 3. Assign @copilot only if not already assigned and not disabled
         let! finalIssue =
-            if hasCopilot issue then
+            if skipCopilot then
+                if verbose then eprintfn "[%s] Skipping @copilot assignment (--skip-copilot)" repoStr
+                async { return issue }
+            elif hasCopilot issue then
                 if verbose then eprintfn "[%s] Copilot already assigned, skipping" repoStr
                 async { return issue }
             else
@@ -174,9 +179,10 @@ let private runFull
     | Ok project ->
 
     // 2. Process all repos in parallel
+    let skipCopilot = input.SkipCopilot || config.SkipCopilot
     let issueResults =
         config.Repos
-        |> List.map (processRepo deps.GhClient config project input.Verbose input.AutoCreateLabels)
+        |> List.map (processRepo deps.GhClient config project input.Verbose input.AutoCreateLabels skipCopilot)
         |> Async.Parallel
         |> Async.RunSynchronously
 

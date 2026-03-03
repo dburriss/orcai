@@ -169,11 +169,13 @@ let main argv =
             let yamlFile         = args.GetResult(RunArgs.Yaml_File)
             let verbose          = args.Contains(RunArgs.Verbose)
             let autoCreateLabels = args.Contains(RunArgs.Auto_Create_Labels)
+            let skipCopilot      = args.Contains(RunArgs.Skip_Copilot)
             withClient (fun deps ->
                 let input : Orca.Core.RunCommand.RunInput =
                     { YamlPath         = yamlFile
                       Verbose          = verbose
-                      AutoCreateLabels = autoCreateLabels }
+                      AutoCreateLabels = autoCreateLabels
+                      SkipCopilot      = skipCopilot }
                 match Orca.Core.RunCommand.execute deps input with
                 | Error e ->
                     eprintfn "Error: %s" e

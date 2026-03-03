@@ -25,8 +25,9 @@ open Orca.Core.Domain
 
 [<CLIMutable>]
 type YamlJob =
-    { title: string
-      org:   string }
+    { title:     string
+      org:       string
+      skipCopilot: bool }
 
 [<CLIMutable>]
 type YamlIssue =
@@ -74,7 +75,8 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                  Repos        = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
                  IssueTitle   = root.job.title
                  IssueBody    = templateContent
-                 Labels       = labels }
+                 Labels       = labels
+                 SkipCopilot  = root.job.skipCopilot }
     with ex ->
         Error $"Failed to parse YAML: {ex.Message}"
 

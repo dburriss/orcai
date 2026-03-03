@@ -43,7 +43,8 @@ type JobConfig =
       Repos         : RepoName list
       IssueTitle    : string
       IssueBody     : string
-      Labels        : string list }
+      Labels        : string list
+      SkipCopilot   : bool }
 
 /// Snapshot of a completed job, persisted as a lock file.
 type LockFile =

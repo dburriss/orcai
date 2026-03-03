@@ -12,12 +12,14 @@ type RunArgs =
     | [<MainCommand; Mandatory>] Yaml_File of path: string
     | Verbose
     | Auto_Create_Labels
+    | Skip_Copilot
     interface IArgParserTemplate with
         member a.Usage =
             match a with
             | Yaml_File _        -> "Path to the YAML job configuration file."
             | Verbose            -> "Enable verbose output."
             | Auto_Create_Labels -> "Create any labels that don't exist in a repo before adding them to issues."
+            | Skip_Copilot       -> "Skip assigning @copilot to issues."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type CleanupArgs =

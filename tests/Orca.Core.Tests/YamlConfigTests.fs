@@ -216,7 +216,25 @@ let ``parse returns error when org is blank`` () =
     Assert.True(Result.isError (parse yaml "" ""))
 
 [<Fact>]
-let ``hashBytes returns 64-char lowercase hex for any input`` () =
+let ``parse sets SkipCopilot false when not present in YAML`` () =
+    match parse validYamlText "/any/path/issue.md" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  -> Assert.False(cfg.SkipCopilot)
+
+[<Fact>]
+let ``parse sets SkipCopilot true when job.skipCopilot is true`` () =
+    let yaml =
+        "job:\n" +
+        "  title: \"My Job\"\n" +
+        "  org: \"acme\"\n" +
+        "  skipCopilot: true\n" +
+        "repos:\n" +
+        "  - \"svc-a\"\n" +
+        "issue:\n" +
+        "  template: \"./issue.md\"\n"
+    match parse yaml "/any/path/issue.md" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  -> Assert.True(cfg.SkipCopilot)
     let bytes = Encoding.UTF8.GetBytes("hello world")
     let result = hashBytes bytes
     Assert.Equal(64, result.Length)
