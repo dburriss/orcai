@@ -204,18 +204,21 @@ type GhCliClient(ghToken: string) =
                         else
                             let flags = labels |> List.map (fun l -> $"--label \"{l}\"") |> String.concat " "
                             $" {flags}"
-                    match! runGh ghToken $"issue create --repo {repoStr} --title \"{title}\" --body-file \"{tmpFile}\"{labelPart} --json number,url" with
+                    // gh issue create outputs the issue URL as plain text (no --json support)
+                    match! runGh ghToken $"issue create --repo {repoStr} --title \"{title}\" --body-file \"{tmpFile}\"{labelPart}" with
                     | Error e -> return Error e
-                    | Ok json ->
-                        let el = JsonDocument.Parse(json).RootElement
-                        match intProp el "number", strProp el "url" with
-                        | Some n, Some url ->
+                    | Ok url ->
+                        // URL format: https://github.com/owner/repo/issues/123
+                        let url = url.Trim()
+                        let lastSegment = url.Split('/') |> Array.last
+                        match System.Int32.TryParse(lastSegment) with
+                        | true, n ->
                             return Ok { Repo      = repo
                                         Number    = IssueNumber n
                                         Url       = url
                                         Assignees = [] }
                         | _ ->
-                            return Error $"Unexpected response from 'gh issue create': {json}"
+                            return Error $"Could not parse issue number from 'gh issue create' output: {url}"
                 finally
                     System.IO.File.Delete(tmpFile)
             }

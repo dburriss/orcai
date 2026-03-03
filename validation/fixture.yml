@@ -1,0 +1,10 @@
+job:
+  title: "Orca Validation Test"
+  org: "dburriss"
+
+repos:
+  - "orca-tests"
+
+issue:
+  template: "./fixture.md"
+  labels: []
