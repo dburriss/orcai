@@ -66,7 +66,7 @@ CI (GitHub App)
 ```
 cli/
   src/
-    Orca.Cli/           -- Entry point, Argu argument definitions, command dispatch
+    Orca.Tool/          -- Entry point, Argu argument definitions, command dispatch
     Orca.Core/          -- Domain types, command logic, lock file, YAML parsing
     Orca.GitHub/        -- gh CLI wrapper using simple-exec
     Orca.Auth/          -- PAT storage, GitHub App JWT generation, token exchange
@@ -112,7 +112,7 @@ orca auth   pat --token <token>
 orca auth   app --app-id <id> --key <path>
 ```
 
-Each top-level subcommand maps to a module in `Orca.Core` with a pure function that takes typed input and returns a result type. The `Orca.Cli` entry point handles argument parsing, wires in the `gh` subprocess wrapper and auth context, and prints output.
+Each top-level subcommand maps to a module in `Orca.Core` with a pure function that takes typed input and returns a result type. The `Orca.Tool` entry point handles argument parsing, wires in the `gh` subprocess wrapper and auth context, and prints output.
 
 ---
 

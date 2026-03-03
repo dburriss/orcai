@@ -4,7 +4,9 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>orca</AssemblyName>
-    <RootNamespace>Orca.Cli</RootNamespace>
+    <RootNamespace>Orca.Tool</RootNamespace>
+    <PackageId>Orca.Tool</PackageId>
+    <PackAsTool>true</PackAsTool>
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
 

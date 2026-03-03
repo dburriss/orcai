@@ -1,10 +1,10 @@
-module Orca.Cli.Program
+module Orca.Tool.Program
 
 open System
 open Argu
 open SimpleExec
 open Spectre.Console
-open Orca.Cli.Args
+open Orca.Tool.Args
 open Orca.Auth.PatAuth
 open Orca.Auth.AppAuth
 open Orca.Auth.CreateAppCommand

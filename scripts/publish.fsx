@@ -5,13 +5,13 @@
 // =================================================================================
 // This script automates the release process for the Orca CLI binary.
 // It performs the following steps:
-// 1. Reads the current version from src/Orca.Cli/Orca.Cli.fsproj
+// 1. Reads the current version from src/Orca.Tool/Orca.Tool.fsproj
 // 2. Extracts the "Unreleased" section from CHANGELOG.md
 // 3. Prompts the user to select the next version (Major, Minor, or Patch)
 // 4. Updates CHANGELOG.md:
 //    - Moves "Unreleased" changes to a new versioned section
 //    - Creates a new empty "Unreleased" section
-// 5. Updates Orca.Cli.fsproj:
+// 5. Updates Orca.Tool.fsproj:
 //    - Increments the <Version> tag
 //    - Updates <PackageReleaseNotes> with the changes
 // 6. Stages, commits, and tags the release in Git
@@ -55,7 +55,7 @@ if isDryRun then
 
 // Paths
 let rootDir = __SOURCE_DIRECTORY__ |> Directory.GetParent
-let fsprojPath = Path.Combine(rootDir.FullName, "src/Orca.Cli/Orca.Cli.fsproj")
+let fsprojPath = Path.Combine(rootDir.FullName, "src/Orca.Tool/Orca.Tool.fsproj")
 let changelogPath = Path.Combine(rootDir.FullName, "CHANGELOG.md")
 
 printfn "Checking files..."
