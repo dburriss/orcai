@@ -23,7 +23,25 @@ type RunInput =
     { YamlPath         : string
       Verbose          : bool
       AutoCreateLabels : bool
-      SkipCopilot      : bool }
+      SkipCopilot      : bool
+      SkipLock         : bool }
+
+/// Whether an issue was freshly created or already existed in GitHub.
+type IssueOutcome = | Created | AlreadyExisted
+
+/// The result for a single repo processed during the run.
+type RepoResult =
+    { Issue   : IssueRef
+      Outcome : IssueOutcome }
+
+/// Whether the result came from the lock file (no network) or a full GitHub run.
+type RunSource = | FromLockFile | FullRun
+
+/// The result returned to the CLI for display.
+type RunResult =
+    { Lock    : LockFile
+      Results : RepoResult list
+      Source  : RunSource }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -76,7 +94,8 @@ let private ensureLabelsExist
     }
 
 /// Process a single repo: find/create issue, add to project, assign copilot.
-/// Returns Some IssueRef on success, None on any error (error is printed to stderr).
+/// Returns Some RepoResult on success (with outcome Created or AlreadyExisted),
+/// None on any error (error is printed to stderr).
 let private processRepo
     (client           : IGhClient)
     (config           : JobConfig)
@@ -85,7 +104,7 @@ let private processRepo
     (autoCreateLabels : bool)
     (skipCopilot      : bool)
     (repo             : RepoName)
-    : Async<IssueRef option> =
+    : Async<RepoResult option> =
     async {
         let (RepoName repoStr) = repo
 
@@ -95,24 +114,25 @@ let private processRepo
             | Error e -> eprintfn "[%s] Warning: could not ensure labels exist: %s" repoStr e
             | Ok ()   -> ()
 
-        // 1. Find or create issue
+        // 1. Find or create issue — track whether it was newly created
         let! issueResult =
             async {
                 let! issueOpt = client.FindIssue repo config.IssueTitle
                 match issueOpt with
                 | Some issue ->
                     if verbose then eprintfn "[%s] Issue already exists: %s" repoStr issue.Url
-                    return Ok issue
+                    return Ok (issue, AlreadyExisted)
                 | None ->
                     if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
-                    return! client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels
+                    let! result = client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels
+                    return result |> Result.map (fun issue -> (issue, Created))
             }
 
         match issueResult with
         | Error e ->
             eprintfn "[%s] Error finding/creating issue: %s" repoStr e
             return None
-        | Ok issue ->
+        | Ok (issue, outcome) ->
 
         // 2. Add to project (idempotent — errors are swallowed in GhClient)
         if verbose then eprintfn "[%s] Adding issue to project" repoStr
@@ -138,7 +158,7 @@ let private processRepo
                         return { issue with Assignees = issue.Assignees @ ["copilot"] }
                 }
 
-        return Some finalIssue
+        return Some { Issue = finalIssue; Outcome = outcome }
     }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +172,7 @@ let private runFull
     (input    : RunInput)
     (config   : JobConfig)
     (yamlHash : string)
-    : Result<LockFile, string> =
+    : Result<RunResult, string> =
 
     let tokenResult =
         deps.AuthContext.GetToken()
@@ -180,50 +200,61 @@ let private runFull
 
     // 2. Process all repos in parallel
     let skipCopilot = input.SkipCopilot || config.SkipCopilot
-    let issueResults =
+    let repoResults =
         config.Repos
         |> List.map (processRepo deps.GhClient config project input.Verbose input.AutoCreateLabels skipCopilot)
         |> Async.Parallel
         |> Async.RunSynchronously
 
-    let successes = issueResults |> Array.choose id |> Array.toList
-    let failures  = issueResults |> Array.filter Option.isNone |> Array.length
+    let successes = repoResults |> Array.choose id |> Array.toList
+    let failures  = repoResults |> Array.filter Option.isNone |> Array.length
 
     let lock : LockFile =
         { LockedAt     = DateTimeOffset.UtcNow
           YamlHash     = yamlHash
           Project      = project
           Repos        = config.Repos
-          Issues       = successes
+          Issues       = successes |> List.map (fun r -> r.Issue)
           PullRequests = [] }
 
     // Only write the lock file if every repo succeeded
     if failures = 0 then
         LockFile.write input.YamlPath lock
 
-    Ok lock
+    Ok { Lock = lock; Results = successes; Source = FullRun }
 
 /// Execute the run command.
-/// Returns a LockFile snapshot on success, or an error string.
+/// Returns a RunResult on success, or an error string.
 ///
-/// Fast path: if a lock file exists and its YAML hash matches, returns
-/// immediately with zero network calls — everything already ran successfully.
-/// If the hash differs (YAML changed), re-runs in full.
+/// Fast path: if a lock file exists, its YAML hash matches, and --skip-lock is
+/// not set, returns immediately with zero network calls — everything already ran
+/// successfully. All issues are reported as AlreadyExisted.
+///
+/// If --skip-lock is set, or the hash differs, or no lock file exists, performs
+/// a full run. processRepo tracks whether each issue was Created or AlreadyExisted.
 /// The lock file is only written when all repos succeed.
-let execute (deps: OrcaDeps) (input: RunInput) : Result<LockFile, string> =
+let execute (deps: OrcaDeps) (input: RunInput) : Result<RunResult, string> =
     match YamlConfig.parseFile input.YamlPath with
     | Error e -> Error e
     | Ok config ->
 
     let yamlHash = YamlConfig.computeHash input.YamlPath
 
-    // If a lock file exists and the YAML hash matches, every repo was already
-    // processed successfully — return immediately with zero network calls.
+    if input.SkipLock then
+        // Bypass lock entirely — always do a full run
+        if input.Verbose then
+            eprintfn "--skip-lock set, bypassing lock file."
+        runFull deps input config yamlHash
+    else
+
     match LockFile.tryRead input.YamlPath with
     | Some lock when lock.YamlHash = yamlHash ->
+        // Lock file is current — nothing to do, report all issues as already existing
         if input.Verbose then
             eprintfn "Lock file found and hash matches — nothing to do."
-        Ok lock
+        let results =
+            lock.Issues |> List.map (fun i -> { Issue = i; Outcome = AlreadyExisted })
+        Ok { Lock = lock; Results = results; Source = FromLockFile }
     | Some _ ->
         if input.Verbose then
             eprintfn "Lock file found but YAML hash has changed — re-running."

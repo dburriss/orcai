@@ -13,6 +13,7 @@ type RunArgs =
     | Verbose
     | Auto_Create_Labels
     | Skip_Copilot
+    | Skip_Lock
     interface IArgParserTemplate with
         member a.Usage =
             match a with
@@ -20,6 +21,7 @@ type RunArgs =
             | Verbose            -> "Enable verbose output."
             | Auto_Create_Labels -> "Create any labels that don't exist in a repo before adding them to issues."
             | Skip_Copilot       -> "Skip assigning @copilot to issues."
+            | Skip_Lock          -> "Bypass the lock file and always fetch live state from GitHub."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type CleanupArgs =

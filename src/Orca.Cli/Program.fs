@@ -171,20 +171,47 @@ let main argv =
             let verbose          = args.Contains(RunArgs.Verbose)
             let autoCreateLabels = args.Contains(RunArgs.Auto_Create_Labels)
             let skipCopilot      = args.Contains(RunArgs.Skip_Copilot)
+            let skipLock         = args.Contains(RunArgs.Skip_Lock)
             withClient (fun deps ->
                 let input : Orca.Core.RunCommand.RunInput =
                     { YamlPath         = yamlFile
                       Verbose          = verbose
                       AutoCreateLabels = autoCreateLabels
-                      SkipCopilot      = skipCopilot }
+                      SkipCopilot      = skipCopilot
+                      SkipLock         = skipLock }
                 match Orca.Core.RunCommand.execute deps input with
                 | Error e ->
                     eprintfn "Error: %s" e
                     1
-                | Ok lock ->
-                    printfn "Run complete. %d issue(s) processed across %d repo(s)."
-                        lock.Issues.Length lock.Repos.Length
-                    printfn "Lock file written."
+                | Ok result ->
+                    match result.Source with
+                    | Orca.Core.RunCommand.FromLockFile ->
+                        printfn "Nothing to do — lock file is up to date."
+                    | Orca.Core.RunCommand.FullRun ->
+                        let created  = result.Results |> List.filter (fun r -> r.Outcome = Orca.Core.RunCommand.Created)      |> List.length
+                        let existing = result.Results |> List.filter (fun r -> r.Outcome = Orca.Core.RunCommand.AlreadyExisted) |> List.length
+                        printfn "Run complete. %d issue(s) created, %d already existed across %d repo(s). Lock file written."
+                            created existing result.Lock.Repos.Length
+                    if verbose && not result.Results.IsEmpty then
+                        AnsiConsole.WriteLine()
+                        let table = Table()
+                        table.Border <- TableBorder.Rounded
+                        table.AddColumn(TableColumn("[bold]Repo[/]"))             |> ignore
+                        table.AddColumn(TableColumn("[bold]Issue[/]").Centered()) |> ignore
+                        table.AddColumn(TableColumn("[bold]Status[/]"))           |> ignore
+                        for r in result.Results do
+                            let (RepoName repo)    = r.Issue.Repo
+                            let (IssueNumber num)  = r.Issue.Number
+                            let repoUrl            = $"https://github.com/{repo}"
+                            let statusMarkup =
+                                match r.Outcome with
+                                | Orca.Core.RunCommand.Created       -> "[green]created[/]"
+                                | Orca.Core.RunCommand.AlreadyExisted -> "[grey]already existed[/]"
+                            table.AddRow(
+                                [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repo)}[/][/]") :> Rendering.IRenderable
+                                   Markup($"[yellow]#{num}[/]")
+                                   Markup(statusMarkup) |]) |> ignore
+                        AnsiConsole.Write(table)
                     0)
         | Cleanup args ->
             let yamlFile = args.GetResult(CleanupArgs.Yaml_File)
