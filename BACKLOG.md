@@ -13,7 +13,7 @@
 - [x] add a `generate` command to create a YAML config from a list of repos or orgs
 - [x] fix nullibility warnings on info command
 - [x] update `run` command to use the lock file and add a `--skip-lock` flag to bypass the lock file and fetch live state from GitHub. Report on actual changes vs. already existing state.
-- [ ] add `--json` flag to `info` to emit machine readable output
-- [ ] add `json` flag to `cleanup` to emit list of cleaned up resources. If `--dryrun` is also set, emit list of resources that would be cleaned up. Indicate with a boolean whether it is a dry run or not.
-- [ ] add a `--force` flag to `cleanup` to skip confirmation prompt
-- [ ] add `json` to `run` output to emit list of created resources
+- [x] add `--json` flag to `info` to emit machine readable output
+- [x] add `json` flag to `cleanup` to emit list of cleaned up resources. If `--dryrun` is also set, emit list of resources that would be cleaned up. Indicate with a boolean whether it is a dry run or not.
+- [x] add `json` to `run` output to emit list of created resources
+- [x] add a `--force` flag to `cleanup` to skip confirmation prompt

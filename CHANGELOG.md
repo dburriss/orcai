@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- `--json` flag on `orca info` — emits machine-readable JSON to stdout instead of the rich console output
+- `--json` flag on `orca run` — emits a JSON summary of created/already-existing issues instead of the human-readable output
+- `--json` flag on `orca cleanup` — emits a JSON list of cleaned-up (or would-be-cleaned-up) resources; includes a `dryRun` boolean so callers can tell whether changes were actually made
+- `--force` flag on `orca cleanup` — skips the interactive confirmation prompt; cleanup proceeds immediately without asking
+
 ## [0.1.1] - 2026-03-03
 
 ### Added

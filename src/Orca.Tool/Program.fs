@@ -1,6 +1,7 @@
 module Orca.Tool.Program
 
 open System
+open System.Text.Json
 open Argu
 open SimpleExec
 open Spectre.Console
@@ -141,6 +142,83 @@ let private printInfoResult (result: InfoResult) =
         AnsiConsole.Write(table)
 
 
+/// Shared JSON serializer options — camelCase, indented, no trailing nulls.
+let private jsonOptions =
+    JsonSerializerOptions(WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase)
+
+/// Emit JSON for `orca info --json`.
+let private printInfoJson (result: InfoResult) =
+    let lock = result.Lock
+    let source =
+        match result.Source with
+        | FromLockFile -> "lock file"
+        | FromGitHub   -> "github"
+    let issues =
+        lock.Issues |> List.map (fun issue ->
+            let (RepoName r)    = issue.Repo
+            let (IssueNumber n) = issue.Number
+            let prs =
+                lock.PullRequests
+                |> List.filter (fun pr -> pr.ClosesIssue = issue.Number && pr.Repo = issue.Repo)
+                |> List.map (fun pr -> let (PrNumber pn) = pr.Number in pn)
+            {| repo      = r
+               issueNumber = n
+               prNumbers  = prs
+               assignees  = issue.Assignees |})
+    let (OrgName orgStr) = lock.Project.Org
+    let doc =
+        {| project    = $"{orgStr} / {lock.Project.Title}"
+           url        = lock.Project.Url
+           source     = source
+           lockedAt   = lock.LockedAt.ToString("o")
+           yamlHash   = lock.YamlHash
+           repoCount  = List.length lock.Repos
+           issueCount = List.length lock.Issues
+           prCount    = List.length lock.PullRequests
+           issues     = issues |}
+    printfn "%s" (JsonSerializer.Serialize(doc, jsonOptions))
+
+/// Emit JSON for `orca run --json`.
+let private printRunJson (result: Orca.Core.RunCommand.RunResult) =
+    let created  = result.Results |> List.filter (fun r -> r.Outcome = Orca.Core.RunCommand.Created)       |> List.length
+    let existing = result.Results |> List.filter (fun r -> r.Outcome = Orca.Core.RunCommand.AlreadyExisted) |> List.length
+    let issues =
+        result.Results |> List.map (fun r ->
+            let (RepoName repo)   = r.Issue.Repo
+            let (IssueNumber num) = r.Issue.Number
+            let status =
+                match r.Outcome with
+                | Orca.Core.RunCommand.Created        -> "created"
+                | Orca.Core.RunCommand.AlreadyExisted -> "alreadyExisted"
+            {| repo        = repo
+               issueNumber = num
+               status      = status |})
+    let doc =
+        {| issuesCreated       = created
+           issuesAlreadyExisted = existing
+           repoCount           = result.Lock.Repos.Length
+           issues              = issues |}
+    printfn "%s" (JsonSerializer.Serialize(doc, jsonOptions))
+
+/// Emit JSON for `orca cleanup --json`.
+let private printCleanupJson (result: Orca.Core.CleanupCommand.CleanupResult) =
+    let resources =
+        result.Resources
+        |> List.choose (fun r ->
+            match r with
+            | Orca.Core.CleanupCommand.CleanedPr(repo, prN) ->
+                Some {| ``type`` = "pr"; repo = Some repo; number = prN; org = None; name = None |}
+            | Orca.Core.CleanupCommand.CleanedIssue(repo, issueN) ->
+                Some {| ``type`` = "issue"; repo = Some repo; number = issueN; org = None; name = None |}
+            | Orca.Core.CleanupCommand.CleanedProject(org, name, num) ->
+                Some {| ``type`` = "project"; repo = None; number = num; org = Some org; name = Some name |}
+            | Orca.Core.CleanupCommand.RemovedLockFile ->
+                None)
+    let doc =
+        {| dryRun    = result.DryRun
+           resources = resources |}
+    printfn "%s" (JsonSerializer.Serialize(doc, jsonOptions))
+
 /// Validate a token by running `gh auth status` with it injected as GH_TOKEN.
 /// Returns Ok with the status output, or Error with the error message.
 let private validateToken (token: string) : Result<string, string> =
@@ -172,6 +250,7 @@ let main argv =
             let autoCreateLabels = args.Contains(RunArgs.Auto_Create_Labels)
             let skipCopilot      = args.Contains(RunArgs.Skip_Copilot)
             let skipLock         = args.Contains(RunArgs.Skip_Lock)
+            let json             = args.Contains(RunArgs.Json)
             withClient (fun deps ->
                 let input : Orca.Core.RunCommand.RunInput =
                     { YamlPath         = yamlFile
@@ -184,54 +263,86 @@ let main argv =
                     eprintfn "Error: %s" e
                     1
                 | Ok result ->
-                    match result.Source with
-                    | Orca.Core.RunCommand.FromLockFile ->
-                        printfn "Nothing to do — lock file is up to date."
-                    | Orca.Core.RunCommand.FullRun ->
-                        let created  = result.Results |> List.filter (fun r -> r.Outcome = Orca.Core.RunCommand.Created)      |> List.length
-                        let existing = result.Results |> List.filter (fun r -> r.Outcome = Orca.Core.RunCommand.AlreadyExisted) |> List.length
-                        printfn "Run complete. %d issue(s) created, %d already existed across %d repo(s). Lock file written."
-                            created existing result.Lock.Repos.Length
-                    if verbose && not result.Results.IsEmpty then
-                        AnsiConsole.WriteLine()
-                        let table = Table()
-                        table.Border <- TableBorder.Rounded
-                        table.AddColumn(TableColumn("[bold]Repo[/]"))             |> ignore
-                        table.AddColumn(TableColumn("[bold]Issue[/]").Centered()) |> ignore
-                        table.AddColumn(TableColumn("[bold]Status[/]"))           |> ignore
-                        for r in result.Results do
-                            let (RepoName repo)    = r.Issue.Repo
-                            let (IssueNumber num)  = r.Issue.Number
-                            let repoUrl            = $"https://github.com/{repo}"
-                            let statusMarkup =
-                                match r.Outcome with
-                                | Orca.Core.RunCommand.Created       -> "[green]created[/]"
-                                | Orca.Core.RunCommand.AlreadyExisted -> "[grey]already existed[/]"
-                            table.AddRow(
-                                [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repo)}[/][/]") :> Rendering.IRenderable
-                                   Markup($"[yellow]#{num}[/]")
-                                   Markup(statusMarkup) |]) |> ignore
-                        AnsiConsole.Write(table)
+                    if json then
+                        printRunJson result
+                    else
+                        match result.Source with
+                        | Orca.Core.RunCommand.FromLockFile ->
+                            printfn "Nothing to do — lock file is up to date."
+                        | Orca.Core.RunCommand.FullRun ->
+                            let created  = result.Results |> List.filter (fun r -> r.Outcome = Orca.Core.RunCommand.Created)      |> List.length
+                            let existing = result.Results |> List.filter (fun r -> r.Outcome = Orca.Core.RunCommand.AlreadyExisted) |> List.length
+                            printfn "Run complete. %d issue(s) created, %d already existed across %d repo(s). Lock file written."
+                                created existing result.Lock.Repos.Length
+                        if verbose && not json && not result.Results.IsEmpty then
+                            AnsiConsole.WriteLine()
+                            let table = Table()
+                            table.Border <- TableBorder.Rounded
+                            table.AddColumn(TableColumn("[bold]Repo[/]"))             |> ignore
+                            table.AddColumn(TableColumn("[bold]Issue[/]").Centered()) |> ignore
+                            table.AddColumn(TableColumn("[bold]Status[/]"))           |> ignore
+                            for r in result.Results do
+                                let (RepoName repo)    = r.Issue.Repo
+                                let (IssueNumber num)  = r.Issue.Number
+                                let repoUrl            = $"https://github.com/{repo}"
+                                let statusMarkup =
+                                    match r.Outcome with
+                                    | Orca.Core.RunCommand.Created       -> "[green]created[/]"
+                                    | Orca.Core.RunCommand.AlreadyExisted -> "[grey]already existed[/]"
+                                table.AddRow(
+                                    [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repo)}[/][/]") :> Rendering.IRenderable
+                                       Markup($"[yellow]#{num}[/]")
+                                       Markup(statusMarkup) |]) |> ignore
+                            AnsiConsole.Write(table)
                     0)
         | Cleanup args ->
             let yamlFile = args.GetResult(CleanupArgs.Yaml_File)
             let dryRun   = args.Contains(CleanupArgs.Dryrun)
+            let force    = args.Contains(CleanupArgs.Force)
+            let json     = args.Contains(CleanupArgs.Json)
+            // Require confirmation unless --force or --dryrun is given (or stdin is redirected).
+            let confirmed =
+                dryRun || force ||
+                (try Console.IsInputRedirected with _ -> true) ||
+                AnsiConsole.Confirm("[yellow]This will permanently delete the project, issues, and PRs. Proceed?[/]", defaultValue = false)
+            if not confirmed then
+                printfn "Aborted."
+                0
+            else
             withClient (fun deps ->
                 let input : Orca.Core.CleanupCommand.CleanupInput = { YamlPath = yamlFile; DryRun = dryRun }
                 match Orca.Core.CleanupCommand.execute deps input with
                 | Error e ->
                     eprintfn "Error: %s" e
                     1
-                | Ok () ->
-                    if dryRun then
-                        printfn "Dry run complete. No changes were made."
+                | Ok result ->
+                    if json then
+                        printCleanupJson result
                     else
-                        printfn "Cleanup complete."
+                        // Print per-resource progress lines (mirrors old inline behaviour)
+                        for resource in result.Resources do
+                            match resource with
+                            | Orca.Core.CleanupCommand.CleanedPr(repo, prN) ->
+                                if dryRun then printfn "DRY RUN: Would close PR #%d in %s" prN repo
+                                else printfn "Closed PR #%d in %s" prN repo
+                            | Orca.Core.CleanupCommand.CleanedIssue(repo, issueN) ->
+                                if dryRun then printfn "DRY RUN: Would delete issue #%d in %s" issueN repo
+                                else printfn "Deleted issue #%d in %s" issueN repo
+                            | Orca.Core.CleanupCommand.CleanedProject(org, name, num) ->
+                                if dryRun then printfn "DRY RUN: Would delete project '%s' (#%d) from '%s'" name num org
+                                else printfn "Deleted project '%s' (#%d) from '%s'" name num org
+                            | Orca.Core.CleanupCommand.RemovedLockFile ->
+                                printfn "Removed lock file."
+                        if dryRun then
+                            printfn "Dry run complete. No changes were made."
+                        else
+                            printfn "Cleanup complete."
                     0)
         | Info args ->
             let yamlFile  = args.GetResult(InfoArgs.Yaml_File)
             let skipLock  = args.Contains(InfoArgs.Skip_Lock)
             let saveLock  = args.Contains(InfoArgs.Save_Lock)
+            let json      = args.Contains(InfoArgs.Json)
             withClient (fun deps ->
                 let input  = { YamlPath = yamlFile; SkipLock = skipLock; SaveLock = saveLock }
                 match Orca.Core.InfoCommand.execute deps input with
@@ -239,7 +350,8 @@ let main argv =
                     eprintfn "Error: %s" e
                     1
                 | Ok result ->
-                    printInfoResult result
+                    if json then printInfoJson result
+                    else printInfoResult result
                     0)
         | Auth args ->
             match args.GetSubCommand() with

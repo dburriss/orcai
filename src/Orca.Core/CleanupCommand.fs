@@ -28,17 +28,30 @@ type CleanupInput =
     { YamlPath : string
       DryRun   : bool }
 
+/// A resource that was (or would be) cleaned up.
+type CleanedResource =
+    | CleanedPr      of repo: string * prNumber: int
+    | CleanedIssue   of repo: string * issueNumber: int
+    | CleanedProject of org: string * name: string * number: int
+    | RemovedLockFile
+
+/// The result returned to the caller for display.
+type CleanupResult =
+    { DryRun    : bool
+      Resources : CleanedResource list }
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /// Process cleanup for a single issue: close its PRs then delete the issue.
-/// In dry-run mode, prints actions and returns Ok without making API calls.
+/// In dry-run mode, makes no API calls.
+/// Returns Ok with the list of resources acted on, or Error.
 let private cleanupIssue
     (client : IGhClient)
     (issue  : IssueRef)
     (dryRun : bool)
-    : Async<Result<unit, string>> =
+    : Async<Result<CleanedResource list, string>> =
     async {
         let (RepoName repoStr)   = issue.Repo
         let (IssueNumber issueN) = issue.Number
@@ -47,25 +60,22 @@ let private cleanupIssue
         let! prs = client.FindPrsForIssue issue.Repo issue.Number
 
         // 2. Close each PR
+        let mutable prResources : CleanedResource list = []
         for pr in prs do
             let (PrNumber prN) = pr.Number
-            if dryRun then
-                printfn "DRY RUN: Would close PR #%d in %s (closes issue #%d)" prN repoStr issueN
-            else
+            if not dryRun then
                 match! client.ClosePr issue.Repo pr.Number with
                 | Error e -> eprintfn "Warning: failed to close PR #%d in %s: %s" prN repoStr e
-                | Ok ()   -> printfn "Closed PR #%d in %s" prN repoStr
+                | Ok ()   -> ()
+            prResources <- prResources @ [CleanedPr(repoStr, prN)]
 
         // 3. Delete the issue
         if dryRun then
-            printfn "DRY RUN: Would delete issue #%d in %s" issueN repoStr
-            return Ok ()
+            return Ok (prResources @ [CleanedIssue(repoStr, issueN)])
         else
             match! client.CloseIssue issue.Repo issue.Number with
             | Error e -> return Error $"Failed to delete issue #{issueN} in {repoStr}: {e}"
-            | Ok ()   ->
-                printfn "Deleted issue #%d in %s" issueN repoStr
-                return Ok ()
+            | Ok ()   -> return Ok (prResources @ [CleanedIssue(repoStr, issueN)])
     }
 
 // ---------------------------------------------------------------------------
@@ -73,8 +83,8 @@ let private cleanupIssue
 // ---------------------------------------------------------------------------
 
 /// Execute the cleanup command.
-/// Returns unit on success, or an error string.
-let execute (deps: OrcaDeps) (input: CleanupInput) : Result<unit, string> =
+/// Returns a CleanupResult on success, or an error string.
+let execute (deps: OrcaDeps) (input: CleanupInput) : Result<CleanupResult, string> =
     // 1. Parse YAML to get org and project title (needed whether or not lock exists)
     match YamlConfig.parseFile input.YamlPath with
     | Error e -> Error e
@@ -112,39 +122,51 @@ let execute (deps: OrcaDeps) (input: CleanupInput) : Result<unit, string> =
     | Ok (project, issues) ->
 
     // 4. Cleanup each issue (PRs first, then issue)
-    let issueErrors =
+    let issueCleanupResults =
         issues
         |> List.map (fun issue ->
             cleanupIssue deps.GhClient issue input.DryRun
             |> Async.RunSynchronously)
-        |> List.choose (function Error e -> Some e | Ok () -> None)
+
+    let issueErrors =
+        issueCleanupResults
+        |> List.choose (function Error e -> Some e | Ok _ -> None)
 
     if issueErrors.Length > 0 then
         Error (issueErrors |> String.concat "; ")
     else
 
+    let issueResources =
+        issueCleanupResults
+        |> List.collect (function Ok rs -> rs | Error _ -> [])
+
     // 5. Delete the project
     let (OrgName orgStr) = project.Org
+    let projectResource  = CleanedProject(orgStr, project.Title, project.Number)
+
     let deleteResult =
         if input.DryRun then
-            printfn "DRY RUN: Would delete project '%s' (#%d) from '%s'" project.Title project.Number orgStr
-            Ok ()
+            Ok projectResource
         else
             match deps.GhClient.DeleteProject project |> Async.RunSynchronously with
             | Error e -> Error $"Failed to delete project: {e}"
-            | Ok ()   ->
-                printfn "Deleted project '%s' (#%d) from '%s'" project.Title project.Number orgStr
-                Ok ()
+            | Ok ()   -> Ok projectResource
 
     match deleteResult with
     | Error e -> Error e
-    | Ok () ->
+    | Ok projRes ->
 
     // 6. Delete the lock file on success (not in dry-run)
-    if not input.DryRun then
-        let lockPath = LockFile.lockFilePath input.YamlPath
-        if File.Exists(lockPath) then
-            File.Delete(lockPath)
-            printfn "Removed lock file."
+    let lockFileResource =
+        if not input.DryRun then
+            let lockPath = LockFile.lockFilePath input.YamlPath
+            if File.Exists(lockPath) then
+                File.Delete(lockPath)
+                [RemovedLockFile]
+            else
+                []
+        else
+            []
 
-    Ok ()
+    Ok { DryRun    = input.DryRun
+         Resources = issueResources @ [projRes] @ lockFileResource }

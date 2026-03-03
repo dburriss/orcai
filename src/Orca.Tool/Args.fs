@@ -14,6 +14,7 @@ type RunArgs =
     | Auto_Create_Labels
     | Skip_Copilot
     | Skip_Lock
+    | Json
     interface IArgParserTemplate with
         member a.Usage =
             match a with
@@ -22,28 +23,35 @@ type RunArgs =
             | Auto_Create_Labels -> "Create any labels that don't exist in a repo before adding them to issues."
             | Skip_Copilot       -> "Skip assigning @copilot to issues."
             | Skip_Lock          -> "Bypass the lock file and always fetch live state from GitHub."
+            | Json               -> "Emit machine-readable JSON output to stdout."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type CleanupArgs =
     | [<MainCommand; Mandatory>] Yaml_File of path: string
     | Dryrun
+    | Force
+    | Json
     interface IArgParserTemplate with
         member a.Usage =
             match a with
             | Yaml_File _ -> "Path to the YAML job configuration file."
             | Dryrun      -> "Preview what would be deleted without making any changes."
+            | Force       -> "Skip the confirmation prompt and proceed with cleanup immediately."
+            | Json        -> "Emit machine-readable JSON output to stdout. If --dryrun is also set, lists resources that would be cleaned up."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type InfoArgs =
     | [<MainCommand; Mandatory>] Yaml_File of path: string
     | Skip_Lock
     | Save_Lock
+    | Json
     interface IArgParserTemplate with
         member a.Usage =
             match a with
             | Yaml_File _ -> "Path to the YAML job configuration file."
             | Skip_Lock   -> "Bypass the lock file and always fetch live state."
             | Save_Lock   -> "Write a new lock file after fetching live state."
+            | Json        -> "Emit machine-readable JSON output to stdout."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type AuthPatArgs =
