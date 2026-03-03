@@ -20,8 +20,9 @@ open Orca.Core.Deps
 
 /// Input parameters derived from parsed CLI arguments.
 type RunInput =
-    { YamlPath : string
-      Verbose  : bool }
+    { YamlPath         : string
+      Verbose          : bool
+      AutoCreateLabels : bool }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,17 +33,65 @@ let private hasCopilot (issue: IssueRef) =
     issue.Assignees
     |> List.exists (fun a -> a.Equals("copilot", StringComparison.OrdinalIgnoreCase))
 
+/// Given the labels that already exist in a repo, return those from the requested
+/// list that are missing (case-insensitive comparison).
+let labelsToCreate (existing: string list) (requested: string list) : string list =
+    let existingSet =
+        existing
+        |> List.map (fun s -> s.ToLowerInvariant())
+        |> Set.ofList
+    requested
+    |> List.filter (fun l -> not (Set.contains (l.ToLowerInvariant()) existingSet))
+
+/// Ensure every requested label exists in the repo, creating any that are missing.
+/// Returns Ok () when all labels are present or successfully created.
+let private ensureLabelsExist
+    (client  : IGhClient)
+    (repo    : RepoName)
+    (labels  : string list)
+    (verbose : bool)
+    : Async<Result<unit, string>> =
+    async {
+        if List.isEmpty labels then
+            return Ok ()
+        else
+            let (RepoName repoStr) = repo
+            match! client.ListLabels repo with
+            | Error e -> return Error $"Could not list labels for {repoStr}: {e}"
+            | Ok existing ->
+                let missing = labelsToCreate existing labels
+                if List.isEmpty missing then
+                    return Ok ()
+                else
+                    let mutable lastError : string option = None
+                    for label in missing do
+                        if verbose then eprintfn "[%s] Creating label '%s'" repoStr label
+                        match! client.CreateLabel repo label with
+                        | Error e -> lastError <- Some $"Could not create label '{label}' in {repoStr}: {e}"
+                        | Ok ()   -> ()
+                    match lastError with
+                    | Some e -> return Error e
+                    | None   -> return Ok ()
+    }
+
 /// Process a single repo: find/create issue, add to project, assign copilot.
 /// Returns Some IssueRef on success, None on any error (error is printed to stderr).
 let private processRepo
-    (client  : IGhClient)
-    (config  : JobConfig)
-    (project : ProjectInfo)
-    (verbose : bool)
-    (repo    : RepoName)
+    (client           : IGhClient)
+    (config           : JobConfig)
+    (project          : ProjectInfo)
+    (verbose          : bool)
+    (autoCreateLabels : bool)
+    (repo             : RepoName)
     : Async<IssueRef option> =
     async {
         let (RepoName repoStr) = repo
+
+        // 0. Auto-create missing labels if requested
+        if autoCreateLabels && not (List.isEmpty config.Labels) then
+            match! ensureLabelsExist client repo config.Labels verbose with
+            | Error e -> eprintfn "[%s] Warning: could not ensure labels exist: %s" repoStr e
+            | Ok ()   -> ()
 
         // 1. Find or create issue
         let! issueResult =
@@ -127,7 +176,7 @@ let private runFull
     // 2. Process all repos in parallel
     let issueResults =
         config.Repos
-        |> List.map (processRepo deps.GhClient config project input.Verbose)
+        |> List.map (processRepo deps.GhClient config project input.Verbose input.AutoCreateLabels)
         |> Async.Parallel
         |> Async.RunSynchronously
 

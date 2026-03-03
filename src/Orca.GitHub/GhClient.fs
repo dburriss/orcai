@@ -170,6 +170,28 @@ type GhCliClient(ghToken: string) =
         member this.FindIssue   repo title          = this.FindIssueImpl repo title
         member this.FindPrsForIssue repo issue      = this.FindPrsForIssueImpl repo issue
 
+        member _.ListLabels repo =
+            async {
+                let (RepoName repoStr) = repo
+                match! runGh ghToken $"label list --repo {repoStr} --json name" with
+                | Error e -> return Error e
+                | Ok json ->
+                    let arr = JsonDocument.Parse(json).RootElement
+                    let names =
+                        arr.EnumerateArray()
+                        |> Seq.choose (fun el -> strProp el "name")
+                        |> List.ofSeq
+                    return Ok names
+            }
+
+        member _.CreateLabel repo name =
+            async {
+                let (RepoName repoStr) = repo
+                match! runGh ghToken $"label create \"{name}\" --repo {repoStr}" with
+                | Error e -> return Error e
+                | Ok _    -> return Ok ()
+            }
+
         member this.CreateProject org title =
             async {
                 let (OrgName orgStr) = org

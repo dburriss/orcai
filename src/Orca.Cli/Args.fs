@@ -11,11 +11,13 @@ open Argu
 type RunArgs =
     | [<MainCommand; Mandatory>] Yaml_File of path: string
     | Verbose
+    | Auto_Create_Labels
     interface IArgParserTemplate with
         member a.Usage =
             match a with
-            | Yaml_File _ -> "Path to the YAML job configuration file."
-            | Verbose     -> "Enable verbose output."
+            | Yaml_File _        -> "Path to the YAML job configuration file."
+            | Verbose            -> "Enable verbose output."
+            | Auto_Create_Labels -> "Create any labels that don't exist in a repo before adding them to issues."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type CleanupArgs =

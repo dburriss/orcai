@@ -166,10 +166,14 @@ let main argv =
         let results = parser.ParseCommandLine(inputs = argv, raiseOnUsage = true)
         match results.GetSubCommand() with
         | Run args ->
-            let yamlFile = args.GetResult(RunArgs.Yaml_File)
-            let verbose  = args.Contains(RunArgs.Verbose)
+            let yamlFile         = args.GetResult(RunArgs.Yaml_File)
+            let verbose          = args.Contains(RunArgs.Verbose)
+            let autoCreateLabels = args.Contains(RunArgs.Auto_Create_Labels)
             withClient (fun deps ->
-                let input : Orca.Core.RunCommand.RunInput = { YamlPath = yamlFile; Verbose = verbose }
+                let input : Orca.Core.RunCommand.RunInput =
+                    { YamlPath         = yamlFile
+                      Verbose          = verbose
+                      AutoCreateLabels = autoCreateLabels }
                 match Orca.Core.RunCommand.execute deps input with
                 | Error e ->
                     eprintfn "Error: %s" e

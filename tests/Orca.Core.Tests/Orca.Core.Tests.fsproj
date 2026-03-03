@@ -10,6 +10,7 @@
   <ItemGroup>
     <Compile Include="LockFileTests.fs" />
     <Compile Include="YamlConfigTests.fs" />
+    <Compile Include="RunCommandTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

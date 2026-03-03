@@ -17,6 +17,10 @@ type IGhClient =
     abstract CreateProject    : org:OrgName -> title:string -> Async<Result<ProjectInfo, string>>
     abstract DeleteProject    : project:ProjectInfo         -> Async<Result<unit, string>>
 
+    // Labels
+    abstract ListLabels  : repo:RepoName -> Async<Result<string list, string>>
+    abstract CreateLabel : repo:RepoName -> name:string -> Async<Result<unit, string>>
+
     // Issues
     abstract FindIssue        : repo:RepoName -> title:string -> Async<IssueRef option>
     abstract CreateIssue      : repo:RepoName -> title:string -> body:string -> labels:string list -> Async<Result<IssueRef, string>>
