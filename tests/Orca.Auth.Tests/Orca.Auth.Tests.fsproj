@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="TestHelpers.fs" />
     <Compile Include="PatAuthTests.fs" />
     <Compile Include="AppAuthTests.fs" />
   </ItemGroup>

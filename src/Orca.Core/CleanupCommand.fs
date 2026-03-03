@@ -1,10 +1,5 @@
 module Orca.Core.CleanupCommand
 
-open System.IO
-open Orca.Core.Domain
-open Orca.Core.GhClient
-open Orca.Core.AuthContext
-
 // ---------------------------------------------------------------------------
 // Implements the `orca cleanup` command.
 //
@@ -23,10 +18,10 @@ open Orca.Core.AuthContext
 //   API and issues are read from the YAML config repos.
 // ---------------------------------------------------------------------------
 
-/// Dependencies injected by the CLI entry point.
-type CleanupDeps =
-    { GhClient   : IGhClient
-      AuthContext: IAuthContext }
+open System.IO
+open Orca.Core.Domain
+open Orca.Core.GhClient
+open Orca.Core.Deps
 
 /// Input parameters derived from parsed CLI arguments.
 type CleanupInput =
@@ -79,7 +74,7 @@ let private cleanupIssue
 
 /// Execute the cleanup command.
 /// Returns unit on success, or an error string.
-let execute (deps: CleanupDeps) (input: CleanupInput) : Result<unit, string> =
+let execute (deps: OrcaDeps) (input: CleanupInput) : Result<unit, string> =
     // 1. Parse YAML to get org and project title (needed whether or not lock exists)
     match YamlConfig.parseFile input.YamlPath with
     | Error e -> Error e

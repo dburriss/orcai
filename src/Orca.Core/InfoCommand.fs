@@ -1,10 +1,5 @@
 module Orca.Core.InfoCommand
 
-open System
-open Orca.Core.Domain
-open Orca.Core.GhClient
-open Orca.Core.AuthContext
-
 // ---------------------------------------------------------------------------
 // Implements the `orca info` command.
 //
@@ -14,10 +9,10 @@ open Orca.Core.AuthContext
 //   - With --save-lock, writes a new lock file after fetching live state.
 // ---------------------------------------------------------------------------
 
-/// Dependencies injected by the CLI entry point.
-type InfoDeps =
-    { GhClient   : IGhClient
-      AuthContext: IAuthContext }
+open System
+open Orca.Core.Domain
+open Orca.Core.GhClient
+open Orca.Core.Deps
 
 /// Input parameters derived from parsed CLI arguments.
 type InfoInput =
@@ -85,7 +80,7 @@ let private fetchFromGitHub
 
 /// Execute the info command.
 /// Returns an InfoResult on success, or an error string.
-let execute (deps: InfoDeps) (input: InfoInput) : Result<InfoResult, string> =
+let execute (deps: OrcaDeps) (input: InfoInput) : Result<InfoResult, string> =
     // Parse the YAML config first (needed both for lock-file path and for live fetch)
     match YamlConfig.parseFile input.YamlPath with
     | Error e -> Error e

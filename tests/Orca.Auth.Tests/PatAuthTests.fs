@@ -3,23 +3,7 @@ module Orca.Auth.Tests.PatAuthTests
 open System
 open Xunit
 open Orca.Auth.PatAuth
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Set an env var for the duration of `f`, then restore the original value.
-let private withEnv (name: string) (value: string option) (f: unit -> unit) =
-    let original = Environment.GetEnvironmentVariable(name) |> Option.ofObj
-    try
-        match value with
-        | Some v -> Environment.SetEnvironmentVariable(name, v)
-        | None   -> Environment.SetEnvironmentVariable(name, null)
-        f ()
-    finally
-        match original with
-        | Some v -> Environment.SetEnvironmentVariable(name, v)
-        | None   -> Environment.SetEnvironmentVariable(name, null)
+open Orca.Auth.Tests.TestHelpers
 
 // ---------------------------------------------------------------------------
 // loadToken — env var tests (no file I/O needed)

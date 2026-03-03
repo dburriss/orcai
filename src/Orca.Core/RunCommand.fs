@@ -1,10 +1,5 @@
 module Orca.Core.RunCommand
 
-open System
-open Orca.Core.Domain
-open Orca.Core.GhClient
-open Orca.Core.AuthContext
-
 // ---------------------------------------------------------------------------
 // Implements the `orca run` command.
 //
@@ -18,10 +13,10 @@ open Orca.Core.AuthContext
 // this module stays pure and testable.
 // ---------------------------------------------------------------------------
 
-/// Dependencies injected by the CLI entry point.
-type RunDeps =
-    { GhClient   : IGhClient
-      AuthContext: IAuthContext }
+open System
+open Orca.Core.Domain
+open Orca.Core.GhClient
+open Orca.Core.Deps
 
 /// Input parameters derived from parsed CLI arguments.
 type RunInput =
@@ -99,7 +94,7 @@ let private processRepo
 /// Perform the full run: find/create project, process all repos, write lock.
 /// Only writes the lock file if all repos succeeded.
 let private runFull
-    (deps     : RunDeps)
+    (deps     : OrcaDeps)
     (input    : RunInput)
     (config   : JobConfig)
     (yamlHash : string)
@@ -160,7 +155,7 @@ let private runFull
 /// immediately with zero network calls — everything already ran successfully.
 /// If the hash differs (YAML changed), re-runs in full.
 /// The lock file is only written when all repos succeed.
-let execute (deps: RunDeps) (input: RunInput) : Result<LockFile, string> =
+let execute (deps: OrcaDeps) (input: RunInput) : Result<LockFile, string> =
     match YamlConfig.parseFile input.YamlPath with
     | Error e -> Error e
     | Ok config ->
