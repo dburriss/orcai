@@ -230,3 +230,57 @@ let ``AppAuthContext GetToken falls back to readFile when env var absent`` () =
     let ctx = AppAuthContext(config, getEnv, readFile) :> Orca.Core.AuthContext.IAuthContext
     let _ = ctx.GetToken() |> Async.RunSynchronously
     Assert.True(readFileCalled, "Expected readFile to be called when env var is absent")
+
+// ---------------------------------------------------------------------------
+// storeConfigTo / loadConfigFrom — round-trip and error cases using a temp dir
+// ---------------------------------------------------------------------------
+
+let private withTempHome (f: string -> unit) =
+    let dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString())
+    try f dir
+    finally
+        if System.IO.Directory.Exists(dir) then
+            System.IO.Directory.Delete(dir, true)
+
+[<Fact>]
+let ``storeConfigTo then loadConfigFrom round-trips all fields`` () =
+    withTempHome (fun home ->
+        let config = { AppId = "app-999"; PrivateKeyPath = "/keys/my.pem"; InstallationId = "install-777" }
+        match storeConfigTo home config with
+        | Error e -> Assert.Fail($"storeConfigTo failed: {e}")
+        | Ok ()   ->
+            match loadConfigFrom home with
+            | Error e  -> Assert.Fail($"loadConfigFrom failed: {e}")
+            | Ok loaded ->
+                Assert.Equal("app-999",       loaded.AppId)
+                Assert.Equal("/keys/my.pem",  loaded.PrivateKeyPath)
+                Assert.Equal("install-777",   loaded.InstallationId))
+
+[<Fact>]
+let ``loadConfigFrom returns error when config file does not exist`` () =
+    withTempHome (fun home ->
+        match loadConfigFrom home with
+        | Ok _    -> Assert.Fail("Expected Error when no config file exists")
+        | Error e -> Assert.Contains("No auth config found", e))
+
+[<Fact>]
+let ``loadConfigFrom returns error when config type is pat`` () =
+    withTempHome (fun home ->
+        // Write a PAT config via the shared AuthConfig helper.
+        let patCfg : Orca.Auth.AuthConfig.AuthConfigFile =
+            { Type = "pat"; Token = Some "ghp_test"; AppId = None; KeyPath = None; InstallationId = None }
+        Orca.Auth.AuthConfig.writeConfigTo home patCfg |> ignore
+        match loadConfigFrom home with
+        | Ok _    -> Assert.Fail("Expected Error when config type is pat")
+        | Error e -> Assert.Contains("not an App config", e))
+
+[<Fact>]
+let ``loadConfigFrom returns error when app config fields are incomplete`` () =
+    withTempHome (fun home ->
+        // Write an app config with missing InstallationId.
+        let incompleteCfg : Orca.Auth.AuthConfig.AuthConfigFile =
+            { Type = "app"; Token = None; AppId = Some "app-123"; KeyPath = Some "/key.pem"; InstallationId = None }
+        Orca.Auth.AuthConfig.writeConfigTo home incompleteCfg |> ignore
+        match loadConfigFrom home with
+        | Ok _    -> Assert.Fail("Expected Error for incomplete app config")
+        | Error e -> Assert.Contains("incomplete", e))

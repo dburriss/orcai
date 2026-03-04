@@ -39,6 +39,15 @@ let storeConfig (config: AppAuthConfig) : Result<unit, string> =
           KeyPath        = Some config.PrivateKeyPath
           InstallationId = Some config.InstallationId }
 
+/// Store GitHub App auth configuration under a given home directory (useful for testing).
+let storeConfigTo (homeDir: string) (config: AppAuthConfig) : Result<unit, string> =
+    writeConfigTo homeDir
+        { Type           = "app"
+          Token          = None
+          AppId          = Some config.AppId
+          KeyPath        = Some config.PrivateKeyPath
+          InstallationId = Some config.InstallationId }
+
 /// Load the previously stored App auth configuration.
 let loadConfig () : Result<AppAuthConfig, string> =
     readConfig ()
@@ -51,6 +60,19 @@ let loadConfig () : Result<AppAuthConfig, string> =
                 Ok { AppId = appId; PrivateKeyPath = keyPath; InstallationId = installId }
             | _ ->
                 Error "App auth config is incomplete. Re-run 'orca auth app ...'.")
+
+/// Load the App auth configuration from a given home directory (useful for testing).
+let loadConfigFrom (homeDir: string) : Result<AppAuthConfig, string> =
+    readConfigFrom homeDir
+    |> Result.bind (fun cfg ->
+        if cfg.Type <> "app" then
+            Error "Auth config is not an App config. Run 'orca auth app ...' first."
+        else
+            match cfg.AppId, cfg.KeyPath, cfg.InstallationId with
+            | Some appId, Some keyPath, Some installId ->
+                Ok { AppId = appId; PrivateKeyPath = keyPath; InstallationId = installId }
+            | _ ->
+                Error "App auth config is incomplete. Re-run 'orca auth app ...'.") 
 
 /// Resolve the App auth configuration, overlaying a `getEnv` lookup on top of any stored
 /// file config. The following env var names are checked (each silently overrides the
