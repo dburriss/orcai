@@ -62,8 +62,7 @@ let buildManifest (appName: string) (redirectUrl: string) : string =
     "issues": "write",
     "pull_requests": "read",
     "metadata": "read",
-    "organization_projects": "write",
-    "projects": "write"
+    "repository_projects": "write"
   }},
   "default_events": [],
   "redirect_url": "{redirectUrl}"
@@ -260,6 +259,19 @@ let storeAppCredentials (appId: string) (keyPath: string) : Result<unit, string>
           AppId          = Some appId
           KeyPath        = Some keyPath
           InstallationId = None }
+
+// ---------------------------------------------------------------------------
+// Build the GitHub App permissions settings URL
+// ---------------------------------------------------------------------------
+
+/// Returns the URL where the user can edit the app's permissions to add
+/// the organisation-level "Projects" permission that cannot be set via the
+/// manifest flow.
+/// Pure.
+let buildPermissionsUrl (org: string option) (appSlug: string) : string =
+    match org with
+    | None      -> $"https://github.com/settings/apps/{appSlug}/permissions"
+    | Some org  -> $"https://github.com/organizations/{org}/settings/apps/{appSlug}/permissions"
 
 // ---------------------------------------------------------------------------
 // Open browser (cross-platform)

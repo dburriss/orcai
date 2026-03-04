@@ -37,8 +37,7 @@ let ``buildManifest includes required permissions`` () =
     Assert.Equal("write", perms.GetProperty("issues").GetString())
     Assert.Equal("read",  perms.GetProperty("pull_requests").GetString())
     Assert.Equal("read",  perms.GetProperty("metadata").GetString())
-    Assert.Equal("write", perms.GetProperty("organization_projects").GetString())
-    Assert.Equal("write", perms.GetProperty("projects").GetString())
+    Assert.Equal("write", perms.GetProperty("repository_projects").GetString())
 
 // ---------------------------------------------------------------------------
 // buildGitHubUrl — pure
