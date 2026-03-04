@@ -81,8 +81,8 @@ type AuthCreateAppArgs =
     interface IArgParserTemplate with
         member a.Usage =
             match a with
-            | App_Name _ -> "Name of the GitHub App to register (default: orca)."
-            | Org _      -> "Register the app under an organisation instead of your personal account."
+            | App_Name _ -> "Name of the GitHub App to register. Defaults to 'orca-<org>-gh-app' when --org is supplied. Required if --org is not supplied."
+            | Org _      -> "Register the app under an organisation instead of your personal account. Required if --app-name is not supplied."
             | Port _     -> "Local callback port for the OAuth redirect (default: 9876)."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]

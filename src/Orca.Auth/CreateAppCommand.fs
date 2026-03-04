@@ -64,6 +64,10 @@ let buildManifest (appName: string) (redirectUrl: string) : string =
     "metadata": "read",
     "repository_projects": "write"
   }},
+  "hook_attributes": {{
+    "url": "https://example.com",
+    "active": false
+  }},
   "default_events": [],
   "redirect_url": "{redirectUrl}"
 }}"""
@@ -296,7 +300,7 @@ let openBrowser (url: string) : unit =
 let execute (input: CreateAppInput) : Async<Result<CreatedApp, string>> =
     async {
         let port        = input.Port
-        let appName     = if String.IsNullOrWhiteSpace(input.AppName) then "orca-gh-app" else input.AppName
+        let appName     = input.AppName
         let callbackUrl = $"http://localhost:{port}/callback"
         let state       = Guid.NewGuid().ToString("N").[..7]   // short random state
 

@@ -400,10 +400,19 @@ let main argv =
                             eprintfn "App config saved but validation failed: %s" e
                             1
             | Create_App createArgs ->
-                let appName = createArgs.TryGetResult(AuthCreateAppArgs.App_Name) |> Option.defaultValue "orca-gh-app"
                 let org     = createArgs.TryGetResult(AuthCreateAppArgs.Org)
+                let appName =
+                    match createArgs.TryGetResult(AuthCreateAppArgs.App_Name), org with
+                    | Some name, _      -> Some name
+                    | None, Some orgVal -> Some $"orca-{orgVal}-gh-app"
+                    | None, None        -> None
                 let port    = createArgs.TryGetResult(AuthCreateAppArgs.Port) |> Option.defaultValue 9876
-                let input   = { AppName = appName; Org = org; Port = port }
+                match appName with
+                | None ->
+                    eprintfn "Error: either --org or --app-name must be supplied."
+                    1
+                | Some name ->
+                let input   = { AppName = name; Org = org; Port = port }
                 match Orca.Auth.CreateAppCommand.execute input |> Async.RunSynchronously with
                 | Error e ->
                     eprintfn "Error: %s" e
