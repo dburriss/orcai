@@ -44,6 +44,7 @@ type CreateAppInput =
 type CreatedApp =
     { Id            : string
       Name          : string
+      Slug          : string
       PemPath       : string
       WebhookSecret : string option }
 
@@ -378,6 +379,7 @@ let execute (input: CreateAppInput) : Async<Result<CreatedApp, string>> =
         return Ok
             { Id            = app.Id
               Name          = app.Name
+              Slug          = app.Slug
               PemPath       = pemPath
               WebhookSecret = app.WebhookSecret }
     }

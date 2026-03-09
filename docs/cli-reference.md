@@ -184,7 +184,7 @@ orca auth create-app [--app-name <name>] [--org <org>] [--port <port>]
 4. Exchanges the code for app credentials (App ID, PEM key, webhook secret) via `POST /app-manifests/{code}/conversions`.
 5. Saves the PEM to `~/.config/orca/app.pem`.
 6. Writes partial config to `~/.config/orca/auth.json` (without installation ID).
-7. In interactive mode, prompts for the installation ID and completes validation. In non-interactive mode, prints instructions for completing setup.
+7. In interactive mode, prints step-by-step instructions for finding the installation ID, then prompts for it and completes validation. In non-interactive mode, prints the same instructions along with the command to run after installing.
 
 The app is created with these permissions: Issues (write), Pull requests (read), Metadata (read), Organization projects (write), Projects (write). No webhooks are configured.
 

@@ -424,11 +424,29 @@ let main argv =
                     printfn "GitHub App '%s' created (ID: %s)." created.Name created.Id
                     printfn "Private key saved to: %s" created.PemPath
                     printfn ""
+                    // Helper to print how to find the installation ID.
+                    let printInstallInstructions () =
+                        let appSlug = Uri.EscapeDataString(created.Slug)
+                        let orgSeg  = org |> Option.map Uri.EscapeDataString |> Option.defaultValue "<org>"
+                        printfn "NEXT STEP: Install the app and find the installation ID"
+                        printfn "---------------------------------------------------------"
+                        printfn "  1. Open the app installation page in your browser:"
+                        printfn "       https://github.com/apps/%s" appSlug
+                        printfn "  2. Click 'Install' (or 'Configure' if already installed) next to your org."
+                        printfn "  3. Select the repositories Orca should access and confirm."
+                        printfn "  4. After installation GitHub redirects you to a URL like:"
+                        printfn "       https://github.com/organizations/%s/settings/installations/<ID>" orgSeg
+                        printfn "     The number at the end is the installation ID."
+                        printfn "  5. Alternatively, visit:"
+                        printfn "       https://github.com/organizations/%s/settings/installations" orgSeg
+                        printfn "     and click 'Configure' next to '%s' — the ID is in the URL." created.Name
+                        printfn ""
                     // Prompt for installation ID so we can complete the auth config.
                     let isInteractive =
                         try not Console.IsInputRedirected
                         with _ -> false
                     if isInteractive then
+                        printInstallInstructions ()
                         printf "Enter the installation ID (press Enter to skip): "
                         let line = Console.ReadLine() |> Option.ofObj |> Option.defaultValue ""
                         if not (String.IsNullOrWhiteSpace(line)) then
@@ -451,11 +469,11 @@ let main argv =
                                     | Ok _  -> printfn "App credentials saved and validated."
                                     | Error e -> eprintfn "Credentials saved but validation failed: %s" e
                         else
-                            printfn "Skipped. Run the following after installing the app:"
+                            printfn "Skipped. Once you have the installation ID, run:"
                             printfn "  orca auth app --app-id %s --key \"%s\" --installation-id <id>" created.Id created.PemPath
                     else
-                        printfn "Install the app at: https://github.com/apps/%s" (Uri.EscapeDataString(created.Name))
-                        printfn "Then run:"
+                        printInstallInstructions ()
+                        printfn "Then complete the config by running:"
                         printfn "  orca auth app --app-id %s --key \"%s\" --installation-id <id>" created.Id created.PemPath
                     0
             | Switch switchArgs ->

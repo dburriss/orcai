@@ -92,11 +92,11 @@ orca auth create-app [--app-name <name>] [--org <org>] [--port <port>]
 This command automates app *registration* but app *installation* requires a manual step:
 
 1. **Automatic** — opens your browser, submits the app manifest to GitHub, exchanges the OAuth code for credentials, saves the private key to `~/.config/orca/app.pem` and writes `auth.json`. A second browser tab opens to the app's permissions page so you can grant the org-level **Projects: Read and write** permission (not settable via manifest).
-2. **Manual** — you must install the app on your org or account by clicking through the GitHub UI. Once installed, GitHub provides an installation ID.
-3. **Automatic (interactive)** — if running in a terminal, you are prompted to enter the installation ID immediately, which completes the `auth.json` configuration. In non-interactive (CI) mode, the install URL and the manual command to run are printed instead:
+2. **Manual** — you must install the app on your org or account by clicking through the GitHub UI. The CLI prints step-by-step instructions showing exactly where to find the installation ID in the GitHub UI.
+3. **Automatic (interactive)** — if running in a terminal, you are shown the install instructions and then prompted to enter the installation ID immediately, which completes the `auth.json` configuration. In non-interactive (CI) mode, the same instructions plus the manual command to run are printed instead:
 
 ```bash
-  orca auth app --app-id <id> --installation-id <id>
+  orca auth app --app-id <id> --key <path> --installation-id <id>
 ```
 
 Credentials are stored in `~/.config/orca/auth.json` and validated immediately. Environment variables (`ORCA_PAT`, `ORCA_APP_ID`, etc.) override stored values at runtime without modifying the file.
