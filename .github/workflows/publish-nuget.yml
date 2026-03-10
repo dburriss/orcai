@@ -30,7 +30,7 @@ jobs:
         run: dotnet test --configuration Release --no-build --verbosity normal
 
       - name: Pack
-        run: dotnet pack src/FsAgent/FsAgent.fsproj --configuration Release --no-build --output ./artifacts
+        run: dotnet pack src/Orca.Tool/Orca.Tool.fsproj --configuration Release --no-build --output ./artifacts
 
       - name: Publish to nuget.org
         env:
