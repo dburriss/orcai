@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-03-10
+
+### Fixed
+
+- Fixed removing of old pem file on Windows
+
 ## [0.2.0] - 2026-03-10
 
 ### Added

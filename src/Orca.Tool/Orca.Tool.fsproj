@@ -1,5 +1,5 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
@@ -9,47 +9,38 @@
     <PackAsTool>true</PackAsTool>
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
-
     <!-- Binary identity -->
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Authors>Devon Burriss</Authors>
     <Description>A CLI tool for managing GitHub Projects and Copilot-assigned issues in bulk. Define your project in a YAML file and let orca create issues, assign them to Copilot, and clean up when done.</Description>
     <Title>orca</Title>
     <ToolCommandName>orca</ToolCommandName>
     <Copyright>Copyright © 2025 Devon Burriss</Copyright>
-
     <!-- Links -->
     <PackageProjectUrl>https://github.com/dburriss/orca</PackageProjectUrl>
     <RepositoryUrl>https://github.com/dburriss/orca</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-
     <!-- Licensing -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-
     <!-- Discoverability -->
     <PackageTags>github copilot cli project-management automation</PackageTags>
-    <PackageReleaseNotes>`--json` flag on `orca info` — emits machine-readable JSON to stdout instead of the rich console output; `--json` flag on `orca run` — emits a JSON summary of created/already-existing issues instead of the human-readable output; `--json` flag on `orca cleanup` — emits a JSON list of cleaned-up (or would-be-cleaned-up) resources; includes a `dryRun` boolean so callers can tell whether changes were actually made; `--force` flag on `orca cleanup` — skips the interactive confirmation prompt; cleanup proceeds immediately without asking; Improved printed instructions and error messages for `orca auth create-app` to guide users through the manual steps required to grant org permissions after app creation via the manifest flow; Fixed bug with `orca auth create-app` where the redirect URL only worked for organization-owned apps, not user-owned apps. The redirect URL is now determined dynamically based on the `owner.type` field in the manifest conversion response.; Orca.Cli renamed to Orca.Tool to avoid conflicts with other tools named "orca" and to make it clearer that this is a CLI tool. The command syntax remains `orca &lt;command&gt;` for ease of use.</PackageReleaseNotes>
-
+    <PackageReleaseNotes>Fixed removing of old pem file on Windows</PackageReleaseNotes>
     <!-- SourceLink / reproducible builds -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
-
   <ItemGroup>
     <Compile Include="Args.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\Orca.Core\Orca.Core.fsproj" />
     <ProjectReference Include="..\Orca.GitHub\Orca.GitHub.fsproj" />
     <ProjectReference Include="..\Orca.Auth\Orca.Auth.fsproj" />
   </ItemGroup>
-
   <ItemGroup>
     <PackageReference Include="Argu" Version="6.2.4" />
     <PackageReference Include="SimpleExec" Version="12.0.0" />
     <PackageReference Include="Spectre.Console" Version="0.49.1" />
   </ItemGroup>
-
 </Project>
