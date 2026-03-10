@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-10
+
 ### Added
 
 - `--json` flag on `orca info` — emits machine-readable JSON to stdout instead of the rich console output
