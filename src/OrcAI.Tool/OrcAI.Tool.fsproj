@@ -24,11 +24,15 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <!-- Discoverability -->
     <PackageTags>github copilot cli project-management automation</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageReleaseNotes>Renamed from Orca.Tool to OrcAI.Tool; CLI command renamed from orca to orcai</PackageReleaseNotes>
     <!-- SourceLink / reproducible builds -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
   <ItemGroup>
     <Compile Include="Args.fs" />
     <Compile Include="Program.fs" />
