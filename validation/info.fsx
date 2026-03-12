@@ -22,7 +22,7 @@ open Helpers
 
 section "orca info"
 
-let result = runCmd orcaBin (sprintf "info \"%s\"" fixtureYaml)
+let result = runCmd orcaBin (sprintf "info --json \"%s\"" fixtureYaml)
 printResult result
 
 assertExitCode       0                     "exit code is 0"                   result
