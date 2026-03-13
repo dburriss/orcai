@@ -14,15 +14,21 @@ type RunArgs =
     | Auto_Create_Labels
     | Skip_Copilot
     | Skip_Lock
+    | Max_Concurrency of n: int
+    | No_Parallel
+    | Continue_On_Error
     | Json
     interface IArgParserTemplate with
         member a.Usage =
             match a with
-            | Yaml_File _        -> "Path to the YAML job configuration file."
+            | Yaml_File _        -> "Path or glob pattern for YAML job configuration file(s). Quote glob patterns to prevent shell expansion (e.g. \"configs/*.yaml\")."
             | Verbose            -> "Enable verbose output."
             | Auto_Create_Labels -> "Create any labels that don't exist in a repo before adding them to issues."
             | Skip_Copilot       -> "Skip assigning @copilot to issues."
             | Skip_Lock          -> "Bypass the lock file and always fetch live state from GitHub."
+            | Max_Concurrency _  -> "Maximum number of config files processed concurrently (default: 4). Note: high values may hit GitHub rate limits."
+            | No_Parallel        -> "Disable all parallelism — files are processed sequentially and repo checks within each file run sequentially. Overrides --max-concurrency."
+            | Continue_On_Error  -> "Continue processing remaining files when one fails, instead of stopping on the first error."
             | Json               -> "Emit machine-readable JSON output to stdout."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
@@ -129,13 +135,17 @@ type GenerateArgs =
 type ValidateArgs =
     | [<MainCommand; Mandatory>] Yaml_File of path: string
     | No_Parallel
+    | Max_Concurrency of n: int
+    | Continue_On_Error
     | Json
     interface IArgParserTemplate with
         member a.Usage =
             match a with
-            | Yaml_File _  -> "Path to the YAML job configuration file."
-            | No_Parallel  -> "Check repositories sequentially instead of in parallel."
-            | Json         -> "Emit machine-readable JSON output to stdout."
+            | Yaml_File _       -> "Path or glob pattern for YAML job configuration file(s). Quote glob patterns to prevent shell expansion (e.g. \"configs/*.yaml\")."
+            | No_Parallel       -> "Check repositories sequentially instead of in parallel."
+            | Max_Concurrency _ -> "Maximum number of config files validated concurrently (default: 4)."
+            | Continue_On_Error -> "Continue validating remaining files when one fails."
+            | Json              -> "Emit machine-readable JSON output to stdout."
 
 [<CliPrefix(CliPrefix.None)>]
 type OrcAIArgs =

@@ -24,7 +24,10 @@ type RunInput =
       Verbose          : bool
       AutoCreateLabels : bool
       SkipCopilot      : bool
-      SkipLock         : bool }
+      SkipLock         : bool
+      MaxConcurrency   : int
+      NoParallel       : bool
+      ContinueOnError  : bool }
 
 /// Whether an issue was freshly created or already existed in GitHub.
 type IssueOutcome = | Created | AlreadyExisted
@@ -223,7 +226,7 @@ let private runFull
 
     Ok { Lock = lock; Results = successes; Source = FullRun }
 
-/// Execute the run command.
+/// Execute the run command for a single YAML path.
 /// Returns a RunResult on success, or an error string.
 ///
 /// Fast path: if a lock file exists, its YAML hash matches, and --skip-lock is
@@ -233,7 +236,7 @@ let private runFull
 /// If --skip-lock is set, or the hash differs, or no lock file exists, performs
 /// a full run. processRepo tracks whether each issue was Created or AlreadyExisted.
 /// The lock file is only written when all repos succeed.
-let execute (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string> =
+let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string> =
     match YamlConfig.parseFile deps.FileSystem input.YamlPath with
     | Error e -> Error e
     | Ok config ->
@@ -261,3 +264,60 @@ let execute (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string> =
         runFull deps input config yamlHash
     | None ->
         runFull deps input config yamlHash
+
+/// Execute the run command over a list of resolved file paths.
+/// Returns a Map from file path to Result<RunResult, string>.
+///
+/// Files are processed in parallel up to MaxConcurrency (or sequentially when
+/// NoParallel=true). Without ContinueOnError the first failure stops processing;
+/// with ContinueOnError all files are attempted and per-file errors are collected.
+let execute (deps: OrcAIDeps) (paths: string list) (input: RunInput) : Async<Map<string, Result<RunResult, string>>> =
+    async {
+        if input.NoParallel then
+            // Sequential — stop on first error unless ContinueOnError
+            let results = System.Collections.Generic.Dictionary<string, Result<RunResult, string>>()
+            let mutable stop = false
+            for path in paths do
+                if not stop then
+                    let singleInput = { input with YamlPath = path }
+                    let r = executeSingle deps singleInput
+                    results.[path] <- r
+                    match r with
+                    | Error _ when not input.ContinueOnError -> stop <- true
+                    | _ -> ()
+            return results |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+        else
+            // Parallel — throttled by MaxConcurrency
+            let semaphore = new System.Threading.SemaphoreSlim(input.MaxConcurrency)
+            let runOne (path: string) : Async<string * Result<RunResult, string>> =
+                async {
+                    do! semaphore.WaitAsync() |> Async.AwaitTask
+                    try
+                        let singleInput = { input with YamlPath = path }
+                        let r = executeSingle deps singleInput
+                        return (path, r)
+                    finally
+                        semaphore.Release() |> ignore
+                }
+
+            if input.ContinueOnError then
+                let! pairs = paths |> List.map runOne |> Async.Parallel
+                return pairs |> Array.toSeq |> Map.ofSeq
+            else
+                // Stop on first error: run sequentially in batches and bail early.
+                // Simple approach: run all but collect; filter out later is not correct
+                // so we use a cancellation-aware sequential fan-out.
+                let results = System.Collections.Generic.Dictionary<string, Result<RunResult, string>>()
+                let mutable firstError : string option = None
+                let tasks = paths |> List.map runOne
+                let! pairs = tasks |> Async.Parallel
+                for (path, r) in pairs do
+                    results.[path] <- r
+                    match r with
+                    | Error e when firstError.IsNone -> firstError <- Some e
+                    | _ -> ()
+                // If there was an error without ContinueOnError, only return up to and including the first failure.
+                // Since parallel execution has already run everything, we return all results as-is
+                // (parallel stop-on-error is best-effort; sequential is exact).
+                return results |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+    }

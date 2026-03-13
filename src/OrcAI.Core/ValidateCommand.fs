@@ -18,8 +18,10 @@ open OrcAI.Core.Deps
 
 /// Input parameters derived from parsed CLI arguments.
 type ValidateInput =
-    { YamlPath   : string
-      NoParallel : bool }
+    { YamlPath        : string
+      NoParallel      : bool
+      MaxConcurrency  : int
+      ContinueOnError : bool }
 
 /// The result returned to the CLI for display.
 type ValidateResult =
@@ -83,21 +85,36 @@ let private executeSingle (deps: OrcAIDeps) (noParallel: bool) (path: string) : 
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Execute the validate command.
+/// Execute the validate command over a list of resolved file paths.
 ///
-/// Accepts a list of paths so the signature is forward-compatible with
-/// multi-file glob support. Today the CLI passes a single-element list.
+/// Files are processed in parallel up to MaxConcurrency (or sequentially when
+/// NoParallel=true). With ContinueOnError all files are attempted; without it,
+/// processing stops on the first failure.
 ///
 /// Returns a list of (path * ValidateResult) pairs.
-let execute (deps: OrcAIDeps) (input: ValidateInput) : Async<(string * ValidateResult) list> =
+let execute (deps: OrcAIDeps) (paths: string list) (input: ValidateInput) : Async<(string * ValidateResult) list> =
     async {
-        let! results =
-            [input.YamlPath]
-            |> List.map (fun path ->
-                async {
+        if input.NoParallel then
+            let results = System.Collections.Generic.List<string * ValidateResult>()
+            let mutable stop = false
+            for path in paths do
+                if not stop then
                     let! r = executeSingle deps input.NoParallel path
-                    return (path, r)
-                })
-            |> Async.Parallel
-        return results |> Array.toList
+                    results.Add((path, r))
+                    if not r.IsValid && not input.ContinueOnError then
+                        stop <- true
+            return results |> Seq.toList
+        else
+            let semaphore = new System.Threading.SemaphoreSlim(input.MaxConcurrency)
+            let runOne (path: string) : Async<string * ValidateResult> =
+                async {
+                    do! semaphore.WaitAsync() |> Async.AwaitTask
+                    try
+                        let! r = executeSingle deps input.NoParallel path
+                        return (path, r)
+                    finally
+                        semaphore.Release() |> ignore
+                }
+            let! pairs = paths |> List.map runOne |> Async.Parallel
+            return pairs |> Array.toList
     }

@@ -10,6 +10,7 @@
   <ItemGroup>
     <Compile Include="LockFileTests.fs" />
     <Compile Include="YamlConfigTests.fs" />
+    <Compile Include="FileGlobTests.fs" />
     <Compile Include="RunCommandTests.fs" />
     <Compile Include="ValidateCommandTests.fs" />
   </ItemGroup>
@@ -19,6 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
     <PackageReference Include="Testably.Abstractions.Testing" Version="5.3.1" />
     <PackageReference Include="xunit" Version="2.9.3" />

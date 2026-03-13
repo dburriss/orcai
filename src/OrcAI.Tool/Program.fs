@@ -182,27 +182,32 @@ let private printInfoJson (result: InfoResult) =
            issues     = issues |}
     printfn "%s" (JsonSerializer.Serialize(doc, jsonOptions))
 
-/// Emit JSON for `orcai run --json`.
-let private printRunJson (result: OrcAI.Core.RunCommand.RunResult) =
-    let created  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Created)       |> List.length
-    let existing = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.AlreadyExisted) |> List.length
-    let issues =
-        result.Results |> List.map (fun r ->
-            let (RepoName repo)   = r.Issue.Repo
-            let (IssueNumber num) = r.Issue.Number
-            let status =
-                match r.Outcome with
-                | OrcAI.Core.RunCommand.Created        -> "created"
-                | OrcAI.Core.RunCommand.AlreadyExisted -> "alreadyExisted"
-            {| repo        = repo
-               issueNumber = num
-               status      = status |})
-    let doc =
-        {| issuesCreated       = created
-           issuesAlreadyExisted = existing
-           repoCount           = result.Lock.Repos.Length
-           issues              = issues |}
-    printfn "%s" (JsonSerializer.Serialize(doc, jsonOptions))
+/// Emit JSON for `orcai run --json` — always a filename-keyed dictionary.
+let private printRunJsonMulti (results: Map<string, Result<OrcAI.Core.RunCommand.RunResult, string>>) =
+    let entries =
+        results
+        |> Map.toSeq
+        |> Seq.map (fun (path, r) ->
+            let value =
+                match r with
+                | Error e ->
+                    box {| error = e |}
+                | Ok result ->
+                    let created  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Created)       |> List.length
+                    let existing = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.AlreadyExisted) |> List.length
+                    let issues =
+                        result.Results |> List.map (fun r ->
+                            let (RepoName repo)   = r.Issue.Repo
+                            let (IssueNumber num) = r.Issue.Number
+                            let status =
+                                match r.Outcome with
+                                | OrcAI.Core.RunCommand.Created        -> "created"
+                                | OrcAI.Core.RunCommand.AlreadyExisted -> "alreadyExisted"
+                            {| repo = repo; issueNumber = num; status = status |})
+                    box {| created = created; alreadyExisted = existing; repos = issues |}
+            path, value)
+        |> dict
+    printfn "%s" (JsonSerializer.Serialize(entries, jsonOptions))
 
 /// Emit JSON for `orcai cleanup --json`.
 let private printCleanupJson (result: OrcAI.Core.CleanupCommand.CleanupResult) =
@@ -249,56 +254,73 @@ let main argv =
         let results = parser.ParseCommandLine(inputs = argv, raiseOnUsage = true)
         match results.GetSubCommand() with
         | Run args ->
-            let yamlFile         = args.GetResult(RunArgs.Yaml_File)
-            let verbose          = args.Contains(RunArgs.Verbose)
-            let autoCreateLabels = args.Contains(RunArgs.Auto_Create_Labels)
-            let skipCopilot      = args.Contains(RunArgs.Skip_Copilot)
-            let skipLock         = args.Contains(RunArgs.Skip_Lock)
-            let json             = args.Contains(RunArgs.Json)
+            let pattern         = args.GetResult(RunArgs.Yaml_File)
+            let verbose         = args.Contains(RunArgs.Verbose)
+            let autoCreateLabels= args.Contains(RunArgs.Auto_Create_Labels)
+            let skipCopilot     = args.Contains(RunArgs.Skip_Copilot)
+            let skipLock        = args.Contains(RunArgs.Skip_Lock)
+            let maxConcurrency  = args.TryGetResult(RunArgs.Max_Concurrency) |> Option.defaultValue 4
+            let noParallel      = args.Contains(RunArgs.No_Parallel)
+            let continueOnError = args.Contains(RunArgs.Continue_On_Error)
+            let json            = args.Contains(RunArgs.Json)
+            let cwd             = System.Environment.CurrentDirectory
+            match OrcAI.Core.FileGlob.expand cwd pattern with
+            | Error e ->
+                eprintfn "Error: %s" e
+                1
+            | Ok paths ->
             withClient (fun deps ->
                 let input : OrcAI.Core.RunCommand.RunInput =
-                    { YamlPath         = yamlFile
+                    { YamlPath         = ""   // overridden per-file in execute
                       Verbose          = verbose
                       AutoCreateLabels = autoCreateLabels
                       SkipCopilot      = skipCopilot
-                      SkipLock         = skipLock }
-                match OrcAI.Core.RunCommand.execute deps input with
-                | Error e ->
-                    eprintfn "Error: %s" e
-                    1
-                | Ok result ->
-                    if json then
-                        printRunJson result
-                    else
-                        match result.Source with
-                        | OrcAI.Core.RunCommand.FromLockFile ->
-                            printfn "Nothing to do — lock file is up to date."
-                        | OrcAI.Core.RunCommand.FullRun ->
-                            let created  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Created)      |> List.length
-                            let existing = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.AlreadyExisted) |> List.length
-                            printfn "Run complete. %d issue(s) created, %d already existed across %d repo(s). Lock file written."
-                                created existing result.Lock.Repos.Length
-                        if verbose && not json && not result.Results.IsEmpty then
-                            AnsiConsole.WriteLine()
-                            let table = Table()
-                            table.Border <- TableBorder.Rounded
-                            table.AddColumn(TableColumn("[bold]Repo[/]"))             |> ignore
-                            table.AddColumn(TableColumn("[bold]Issue[/]").Centered()) |> ignore
-                            table.AddColumn(TableColumn("[bold]Status[/]"))           |> ignore
-                            for r in result.Results do
-                                let (RepoName repo)    = r.Issue.Repo
-                                let (IssueNumber num)  = r.Issue.Number
-                                let repoUrl            = $"https://github.com/{repo}"
-                                let statusMarkup =
-                                    match r.Outcome with
-                                    | OrcAI.Core.RunCommand.Created       -> "[green]created[/]"
-                                    | OrcAI.Core.RunCommand.AlreadyExisted -> "[grey]already existed[/]"
-                                table.AddRow(
-                                    [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repo)}[/][/]") :> Rendering.IRenderable
-                                       Markup($"[yellow]#{num}[/]")
-                                       Markup(statusMarkup) |]) |> ignore
-                            AnsiConsole.Write(table)
-                    0)
+                      SkipLock         = skipLock
+                      MaxConcurrency   = maxConcurrency
+                      NoParallel       = noParallel
+                      ContinueOnError  = continueOnError }
+                let results =
+                    OrcAI.Core.RunCommand.execute deps paths input
+                    |> Async.RunSynchronously
+                if json then
+                    printRunJsonMulti results
+                else
+                    for KeyValue(path, r) in results do
+                        printfn "--- %s ---" path
+                        match r with
+                        | Error e ->
+                            eprintfn "  Error: %s" e
+                        | Ok result ->
+                            match result.Source with
+                            | OrcAI.Core.RunCommand.FromLockFile ->
+                                printfn "  Nothing to do — lock file is up to date."
+                            | OrcAI.Core.RunCommand.FullRun ->
+                                let created  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Created)      |> List.length
+                                let existing = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.AlreadyExisted) |> List.length
+                                printfn "  Run complete. %d issue(s) created, %d already existed across %d repo(s). Lock file written."
+                                    created existing result.Lock.Repos.Length
+                            if verbose && not result.Results.IsEmpty then
+                                AnsiConsole.WriteLine()
+                                let table = Table()
+                                table.Border <- TableBorder.Rounded
+                                table.AddColumn(TableColumn("[bold]Repo[/]"))             |> ignore
+                                table.AddColumn(TableColumn("[bold]Issue[/]").Centered()) |> ignore
+                                table.AddColumn(TableColumn("[bold]Status[/]"))           |> ignore
+                                for r in result.Results do
+                                    let (RepoName repo)    = r.Issue.Repo
+                                    let (IssueNumber num)  = r.Issue.Number
+                                    let repoUrl            = $"https://github.com/{repo}"
+                                    let statusMarkup =
+                                        match r.Outcome with
+                                        | OrcAI.Core.RunCommand.Created       -> "[green]created[/]"
+                                        | OrcAI.Core.RunCommand.AlreadyExisted -> "[grey]already existed[/]"
+                                    table.AddRow(
+                                        [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repo)}[/][/]") :> Rendering.IRenderable
+                                           Markup($"[yellow]#{num}[/]")
+                                           Markup(statusMarkup) |]) |> ignore
+                                AnsiConsole.Write(table)
+                let anyError = results |> Map.exists (fun _ r -> match r with Error _ -> true | Ok _ -> false)
+                if anyError then 1 else 0)
         | Cleanup args ->
             let yamlFile = args.GetResult(CleanupArgs.Yaml_File)
             let dryRun   = args.Contains(CleanupArgs.Dryrun)
@@ -582,38 +604,47 @@ let main argv =
                             printfn "  %s" mdPath
                             0)
         | Validate args ->
-            let yamlFile   = args.GetResult(ValidateArgs.Yaml_File)
-            let noParallel = args.Contains(ValidateArgs.No_Parallel)
-            let json       = args.Contains(ValidateArgs.Json)
+            let pattern         = args.GetResult(ValidateArgs.Yaml_File)
+            let noParallel      = args.Contains(ValidateArgs.No_Parallel)
+            let maxConcurrency  = args.TryGetResult(ValidateArgs.Max_Concurrency) |> Option.defaultValue 4
+            let continueOnError = args.Contains(ValidateArgs.Continue_On_Error)
+            let json            = args.Contains(ValidateArgs.Json)
+            let cwd             = System.Environment.CurrentDirectory
+            match OrcAI.Core.FileGlob.expand cwd pattern with
+            | Error e ->
+                eprintfn "Error: %s" e
+                1
+            | Ok paths ->
             withClient (fun deps ->
                 let input : OrcAI.Core.ValidateCommand.ValidateInput =
-                    { YamlPath   = yamlFile
-                      NoParallel = noParallel }
+                    { YamlPath        = ""  // overridden per-file in execute
+                      NoParallel      = noParallel
+                      MaxConcurrency  = maxConcurrency
+                      ContinueOnError = continueOnError }
                 let results =
-                    OrcAI.Core.ValidateCommand.execute deps input
+                    OrcAI.Core.ValidateCommand.execute deps paths input
                     |> Async.RunSynchronously
                 if json then
                     let doc =
                         results
                         |> List.map (fun (path, r) ->
-                            {| path         = path
-                               valid        = r.IsValid
+                            path,
+                            {| valid        = r.IsValid
                                configErrors = r.ConfigErrors
                                repoErrors   =
                                    r.RepoErrors
                                    |> List.map (fun (RepoName rn, e) -> {| repo = rn; error = e |}) |})
-                    // For a single-file validate, unwrap to flat object to match spec.
-                    match doc with
-                    | [ single ] ->
-                        printfn "%s" (JsonSerializer.Serialize({| valid = single.valid; configErrors = single.configErrors; repoErrors = single.repoErrors |}, jsonOptions))
-                    | _ ->
-                        printfn "%s" (JsonSerializer.Serialize(doc, jsonOptions))
+                        |> dict
+                    printfn "%s" (JsonSerializer.Serialize(doc, jsonOptions))
                 else
-                    for (_path, r) in results do
+                    for (path, r) in results do
+                        printfn "--- %s ---" path
                         for e in r.ConfigErrors do
-                            AnsiConsole.MarkupLine($"[red]{Markup.Escape(e)}[/]")
+                            AnsiConsole.MarkupLine($"  [red]{Markup.Escape(e)}[/]")
                         for (RepoName rn, e) in r.RepoErrors do
-                            AnsiConsole.MarkupLine($"[red]{Markup.Escape(rn)}: {Markup.Escape(e)}[/]")
+                            AnsiConsole.MarkupLine($"  [red]{Markup.Escape(rn)}: {Markup.Escape(e)}[/]")
+                        if r.IsValid then
+                            AnsiConsole.MarkupLine("  [green]Valid[/]")
                 let allValid = results |> List.forall (fun (_, r) -> r.IsValid)
                 if allValid then
                     AnsiConsole.MarkupLine("[green]Validation passed.[/]")

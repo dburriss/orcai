@@ -85,6 +85,9 @@ let private makeDeps (fs: MockFileSystem) (client: IGhClient) : OrcAIDeps =
                          member _.GetToken() = async { return Ok "fake-token" } }
       FileSystem  = fs :> System.IO.Abstractions.IFileSystem }
 
+let private makeInput path noParallel =
+    { YamlPath = path; NoParallel = noParallel; MaxConcurrency = 4; ContinueOnError = false }
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -95,9 +98,9 @@ let ``validate returns IsValid=true when file exists, config parses, and all rep
     let path   = writeMockYaml fs validYaml "# body"
     let client = FakeGhClient(Map.empty) // all repos → Ok
     let deps   = makeDeps fs client
-    let input  = { YamlPath = path; NoParallel = false }
+    let input  = makeInput path false
 
-    let results = execute deps input |> Async.RunSynchronously
+    let results = execute deps [path] input |> Async.RunSynchronously
 
     let (_, result) = List.exactlyOne results
     Assert.True(result.IsValid)
@@ -109,9 +112,10 @@ let ``validate returns error immediately when file does not exist`` () =
     let fs     = MockFileSystem()
     let client = NeverCalledGhClient()
     let deps   = makeDeps fs client
-    let input  = { YamlPath = "/nonexistent/job.yml"; NoParallel = false }
+    let path   = "/nonexistent/job.yml"
+    let input  = makeInput path false
 
-    let results = execute deps input |> Async.RunSynchronously
+    let results = execute deps [path] input |> Async.RunSynchronously
 
     let (_, result) = List.exactlyOne results
     Assert.False(result.IsValid)
@@ -126,9 +130,9 @@ let ``validate returns config error when YAML is malformed`` () =
     fs.File.WriteAllText(yamlPath, "repos:\n  - r\n")  // missing 'job' section
     let client = NeverCalledGhClient()
     let deps   = makeDeps fs client
-    let input  = { YamlPath = yamlPath; NoParallel = false }
+    let input  = makeInput yamlPath false
 
-    let results = execute deps input |> Async.RunSynchronously
+    let results = execute deps [yamlPath] input |> Async.RunSynchronously
 
     let (_, result) = List.exactlyOne results
     Assert.False(result.IsValid)
@@ -151,9 +155,9 @@ let ``validate returns config error when template file is missing`` () =
     fs.File.WriteAllText(yamlPath, yaml)
     let client = NeverCalledGhClient()
     let deps   = makeDeps fs client
-    let input  = { YamlPath = yamlPath; NoParallel = false }
+    let input  = makeInput yamlPath false
 
-    let results = execute deps input |> Async.RunSynchronously
+    let results = execute deps [yamlPath] input |> Async.RunSynchronously
 
     let (_, result) = List.exactlyOne results
     Assert.False(result.IsValid)
@@ -168,9 +172,9 @@ let ``validate returns repo error for one inaccessible repo and reports others a
     let repoMap = Map.ofList [ "myorg/repo-a", Error "not found"; "myorg/repo-b", Ok () ]
     let client  = FakeGhClient(repoMap)
     let deps    = makeDeps fs client
-    let input   = { YamlPath = path; NoParallel = false }
+    let input   = makeInput path false
 
-    let results = execute deps input |> Async.RunSynchronously
+    let results = execute deps [path] input |> Async.RunSynchronously
 
     let (_, result) = List.exactlyOne results
     Assert.False(result.IsValid)
@@ -187,9 +191,9 @@ let ``validate collects errors for all inaccessible repos, not just the first`` 
     let repoMap = Map.ofList [ "myorg/repo-a", Error "404"; "myorg/repo-b", Error "403" ]
     let client  = FakeGhClient(repoMap)
     let deps    = makeDeps fs client
-    let input   = { YamlPath = path; NoParallel = false }
+    let input   = makeInput path false
 
-    let results = execute deps input |> Async.RunSynchronously
+    let results = execute deps [path] input |> Async.RunSynchronously
 
     let (_, result) = List.exactlyOne results
     Assert.False(result.IsValid)
@@ -205,12 +209,12 @@ let ``validate with NoParallel=true returns same results as parallel`` () =
     let deps    = makeDeps fs client
 
     let parallelResult =
-        execute deps { YamlPath = path; NoParallel = false }
+        execute deps [path] (makeInput path false)
         |> Async.RunSynchronously
         |> List.exactlyOne |> snd
 
     let seqResult =
-        execute deps { YamlPath = path; NoParallel = true }
+        execute deps [path] (makeInput path true)
         |> Async.RunSynchronously
         |> List.exactlyOne |> snd
 
