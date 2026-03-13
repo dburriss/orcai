@@ -13,6 +13,7 @@ Complete reference for all `orca` commands, flags, configuration, and output for
   - [auth app](#auth-app)
   - [auth create-app](#auth-create-app)
 - [run](#run)
+- [validate](#validate)
 - [info](#info)
 - [cleanup](#cleanup)
 - [YAML configuration](#yaml-configuration)
@@ -32,6 +33,7 @@ Complete reference for all `orca` commands, flags, configuration, and output for
 | `orca auth app` | Store GitHub App credentials |
 | `orca auth create-app` | Register a new GitHub App via browser |
 | `orca run` | Execute a bulk upgrade job |
+| `orca validate` | Validate a YAML job config and verify all repos are accessible |
 | `orca info` | Display the current state of a job |
 | `orca cleanup` | Tear down everything created by `run` |
 
@@ -202,40 +204,148 @@ orca auth create-app --port 8080
 
 ## run
 
-Execute a bulk upgrade job against every repository listed in the YAML config.
+Execute a bulk upgrade job against every repository listed in the YAML config. Accepts a single file path or a glob pattern to run multiple configs at once.
 
 ```
-orca run <yaml_file> [--verbose] [--auto-create-labels] [--skip-copilot]
+orca run <yaml_file_or_glob> [--verbose] [--auto-create-labels] [--skip-copilot]
+         [--skip-lock] [--max-concurrency <n>] [--no-parallel] [--continue-on-error]
+         [--json]
 ```
 
 ### Arguments and flags
 
-| Argument / Flag | Type | Required | Description |
-|-----------------|------|----------|-------------|
-| `<yaml_file>` | positional | Yes | Path to the YAML job configuration file |
-| `--verbose` | flag | No | Emit detailed per-repo progress messages to stderr |
-| `--auto-create-labels` | flag | No | Create any labels that don't exist in a repo before applying them to the issue |
-| `--skip-copilot` | flag | No | Skip assigning `@copilot` to issues. Also honoured if `job.skipCopilot: true` is set in the YAML. |
+| Argument / Flag | Type | Required | Default | Description |
+|-----------------|------|----------|---------|-------------|
+| `<yaml_file_or_glob>` | positional | Yes | — | Path or glob pattern for YAML job config file(s). Quote glob patterns to prevent shell expansion (e.g. `"configs/*.yaml"`). |
+| `--verbose` | flag | No | false | Emit detailed per-repo progress messages to stderr |
+| `--auto-create-labels` | flag | No | false | Create any labels that don't exist in a repo before applying them to the issue |
+| `--skip-copilot` | flag | No | false | Skip assigning `@copilot` to issues. Also honoured if `job.skipCopilot: true` is set in the YAML. |
+| `--skip-lock` | flag | No | false | Bypass the lock file and always fetch live state from GitHub |
+| `--max-concurrency` | int | No | `4` | Maximum number of config files processed concurrently. High values may hit GitHub rate limits. |
+| `--no-parallel` | flag | No | false | Disable all parallelism — files are processed sequentially and repo checks within each file also run sequentially. Overrides `--max-concurrency`. |
+| `--continue-on-error` | flag | No | false | Continue processing remaining files when one fails, instead of stopping on the first error. |
+| `--json` | flag | No | false | Emit machine-readable JSON output to stdout (see [JSON output](#run-json-output) below). |
 
 ### What it does
 
-For each repository in the YAML (processed in parallel):
+For each repository in the YAML (processed in parallel by default):
 
 1. **Project** — finds or creates the GitHub Project for the org (idempotent).
 2. **Issue** — finds or creates an issue with `job.title` as the title and the template file as the body (idempotent, matched on open issues by title).
 3. **Project card** — adds the issue to the project (idempotent).
 4. **Copilot** — assigns `@copilot` to the issue if it has no assignees, unless `--skip-copilot` or `job.skipCopilot: true`.
 
+When processing multiple files (via glob), each file's output is preceded by a `--- <filename> ---` header.
+
 ### Lock file
 
-On success, a lock file `<basename>.lock.json` is written next to the YAML. On subsequent runs, if the YAML content is unchanged (SHA-256 match), the lock file is used to short-circuit all network calls. To force a re-run, delete the lock file or modify the YAML.
+On success, a lock file `<basename>.lock.json` is written next to the YAML. On subsequent runs, if the YAML content is unchanged (SHA-256 match), the lock file is used to short-circuit all network calls. To force a re-run, delete the lock file, use `--skip-lock`, or modify the YAML.
+
+### Run JSON output
+
+With `--json`, output is a filename-keyed object. Each key is the path to the YAML file:
+
+```json
+{
+  "path/to/config.yaml": {
+    "created": 3,
+    "alreadyExisted": 1,
+    "repos": [
+      { "repo": "org/repo-one", "issueNumber": 7, "status": "created" },
+      { "repo": "org/repo-two", "issueNumber": 12, "status": "alreadyExisted" }
+    ]
+  },
+  "path/to/other.yaml": {
+    "error": "YAML 'job.title' is required."
+  }
+}
+```
 
 ### Examples
 
 ```sh
+# Single file
 orca run jobs/my-upgrade.yml
 orca run jobs/my-upgrade.yml --verbose
 orca run jobs/my-upgrade.yml --auto-create-labels --skip-copilot
+
+# Glob — run all configs under a directory (quote to prevent shell expansion)
+orca run "jobs/*.yml"
+orca run "jobs/*.yml" --continue-on-error --json
+
+# Limit concurrency to avoid rate limits
+orca run "jobs/*.yml" --max-concurrency 2
+
+# Run sequentially (no parallelism at all)
+orca run "jobs/*.yml" --no-parallel
+```
+
+---
+
+## validate
+
+Validate one or more YAML job configs and verify that all listed repositories are accessible.
+
+```
+orca validate <yaml_file_or_glob> [--no-parallel] [--max-concurrency <n>]
+              [--continue-on-error] [--json]
+```
+
+### Arguments and flags
+
+| Argument / Flag | Type | Required | Default | Description |
+|-----------------|------|----------|---------|-------------|
+| `<yaml_file_or_glob>` | positional | Yes | — | Path or glob pattern for YAML job config file(s). Quote glob patterns to prevent shell expansion (e.g. `"configs/*.yaml"`). |
+| `--no-parallel` | flag | No | false | Check repositories sequentially instead of in parallel. Also disables file-level concurrency. Overrides `--max-concurrency`. |
+| `--max-concurrency` | int | No | `4` | Maximum number of config files validated concurrently. |
+| `--continue-on-error` | flag | No | false | Continue validating remaining files when one fails. |
+| `--json` | flag | No | false | Emit machine-readable JSON output to stdout (see [JSON output](#validate-json-output) below). |
+
+### What it does
+
+For each matched YAML file:
+
+1. Checks the file exists on disk and can be parsed.
+2. Validates the schema — all required fields present, template file exists.
+3. For each repo in the config, calls `gh repo view <org/repo>` to confirm it is accessible with the current credentials.
+
+Exit code is `0` if all files are valid, `1` if any file or repo check fails.
+
+### Validate JSON output
+
+With `--json`, output is a filename-keyed object:
+
+```json
+{
+  "path/to/config.yaml": {
+    "valid": true,
+    "configErrors": [],
+    "repoErrors": []
+  },
+  "path/to/other.yaml": {
+    "valid": false,
+    "configErrors": ["YAML 'job.title' is required."],
+    "repoErrors": [
+      { "repo": "my-org/missing-repo", "error": "Could not resolve to a Repository." }
+    ]
+  }
+}
+```
+
+### Examples
+
+```sh
+# Validate a single file
+orca validate jobs/my-upgrade.yml
+
+# Validate all configs under a directory
+orca validate "jobs/*.yml"
+
+# Validate with JSON output, continuing past failures
+orca validate "jobs/*.yml" --continue-on-error --json
+
+# Validate sequentially (no parallelism)
+orca validate "jobs/*.yml" --no-parallel
 ```
 
 ---
