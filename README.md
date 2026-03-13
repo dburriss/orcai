@@ -5,28 +5,21 @@ A CLI tool for automating bulk GitHub repository upgrades. It reads a YAML job c
 ## Prerequisites
 
 - **`gh` CLI**: Install from [cli.github.com](https://cli.github.com/) — must be installed and on `PATH`
-- **Authentication**: One of the following must be configured before running any command other than `orcai auth`:
-  1. Stored PAT — `ORCAI_PAT` env var, or `~/.config/orcai/auth.json` with `"type": "pat"`
-  2. Stored GitHub App — `ORCAI_APP_ID` / `ORCAI_APP_INSTALLATION_ID` / `ORCAI_APP_KEY_PATH` / `ORCAI_APP_PRIVATE_KEY` env vars, or `~/.config/orcai/auth.json` with `"type": "app"`
-  3. `GH_TOKEN` environment variable
-  4. Ambient `gh` CLI auth (`gh auth token`)
+- **Authentication**: The easiest option is to ensure `gh` is authenticated (`gh auth login`). OrcAI will use it automatically. For other methods see [docs/cli-reference.md](docs/cli-reference.md).
 
 ## Quick start
 
 ### 1. Authenticate
 
+The simplest option — if you already use the `gh` CLI, just make sure it's authenticated:
+
 ```bash
-# Store a Personal Access Token
-orcai auth pat --token ghp_xxxxxxxxxxxxxxxxxxxx
-
-# — or — store GitHub App credentials
-orcai auth app --app-id 123456 --key /path/to/private-key.pem --installation-id 78901234
-
-# — or — register a new GitHub App via browser
-orcai auth create-app --app-name orca-bot --org my-org
+gh auth login
 ```
 
-See [docs/app-auth.md](docs/app-auth.md) for a GitHub App walkthrough and [docs/AUTH-ENV-VARS.md](docs/AUTH-ENV-VARS.md) for environment variable reference.
+That's it. OrcAI will pick up the token automatically.
+
+For PAT, GitHub App, or environment variable auth see [docs/cli-reference.md](docs/cli-reference.md).
 
 ### 2. Run a job
 
