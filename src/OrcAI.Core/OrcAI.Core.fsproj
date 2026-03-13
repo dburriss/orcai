@@ -10,6 +10,7 @@
     <Compile Include="Domain.fs" />
     <Compile Include="GhClient.fs" />
     <Compile Include="AuthContext.fs" />
+    <Compile Include="OrcAIConfig.fs" />
     <Compile Include="Deps.fs" />
     <Compile Include="YamlConfig.fs" />
     <Compile Include="LockFile.fs" />

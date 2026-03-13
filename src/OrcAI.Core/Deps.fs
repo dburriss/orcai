@@ -2,6 +2,7 @@ module OrcAI.Core.Deps
 
 open OrcAI.Core.GhClient
 open OrcAI.Core.AuthContext
+open OrcAI.Core.OrcAIConfig
 open System.IO.Abstractions
 
 // ---------------------------------------------------------------------------
@@ -12,4 +13,5 @@ open System.IO.Abstractions
 type OrcAIDeps =
     { GhClient   : IGhClient
       AuthContext: IAuthContext
-      FileSystem : IFileSystem }
+      FileSystem : IFileSystem
+      Config     : OrcAIConfig }

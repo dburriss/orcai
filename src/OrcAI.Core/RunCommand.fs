@@ -27,7 +27,9 @@ type RunInput =
       SkipLock         : bool
       MaxConcurrency   : int
       NoParallel       : bool
-      ContinueOnError  : bool }
+      ContinueOnError  : bool
+      /// Extra labels to union-merge with the YAML labels (from config file).
+      DefaultLabels    : string list }
 
 /// Whether an issue was freshly created or already existed in GitHub.
 type IssueOutcome = | Created | AlreadyExisted
@@ -241,13 +243,22 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
     | Error e -> Error e
     | Ok config ->
 
+    // Union-merge default labels from config with YAML labels (no duplicates, case-insensitive).
+    let mergedConfig =
+        if input.DefaultLabels.IsEmpty then
+            config
+        else
+            let existingLower = config.Labels |> List.map (fun s -> s.ToLowerInvariant()) |> Set.ofList
+            let extraLabels   = input.DefaultLabels |> List.filter (fun l -> not (Set.contains (l.ToLowerInvariant()) existingLower))
+            { config with Labels = config.Labels @ extraLabels }
+
     let yamlHash = YamlConfig.computeHash deps.FileSystem input.YamlPath
 
     if input.SkipLock then
         // Bypass lock entirely — always do a full run
         if input.Verbose then
             eprintfn "--skip-lock set, bypassing lock file."
-        runFull deps input config yamlHash
+        runFull deps input mergedConfig yamlHash
     else
 
     match LockFile.tryRead deps.FileSystem input.YamlPath with
@@ -261,9 +272,9 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
     | Some _ ->
         if input.Verbose then
             eprintfn "Lock file found but YAML hash has changed — re-running."
-        runFull deps input config yamlHash
+        runFull deps input mergedConfig yamlHash
     | None ->
-        runFull deps input config yamlHash
+        runFull deps input mergedConfig yamlHash
 
 /// Execute the run command over a list of resolved file paths.
 /// Returns a Map from file path to Result<RunResult, string>.

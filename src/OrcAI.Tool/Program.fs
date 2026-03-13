@@ -11,6 +11,7 @@ open OrcAI.Auth.AppAuth
 open OrcAI.Auth.AuthConfig
 open OrcAI.Auth.CreateAppCommand
 open OrcAI.Core.Deps
+open OrcAI.Core.OrcAIConfig
 open OrcAI.Core.InfoCommand
 open OrcAI.Core.Domain
 open OrcAI.Core.GenerateCommand
@@ -76,10 +77,15 @@ let private withClient (f: OrcAIDeps -> int) : int =
             1
         | Ok ghToken ->
             let client = OrcAI.GitHub.GhClient.GhCliClient(ghToken)
+            let fs     = RealFileSystem() :> IFileSystem
+            let home   = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile)
+            let cwd    = System.Environment.CurrentDirectory
+            let cfg    = OrcAI.Core.OrcAIConfig.resolve fs home cwd
             let deps : OrcAIDeps =
                 { GhClient    = client :> OrcAI.Core.GhClient.IGhClient
                   AuthContext = authCtx
-                  FileSystem  = RealFileSystem() :> IFileSystem }
+                  FileSystem  = fs
+                  Config      = cfg }
             f deps
 
 /// Format an InfoResult for console output.
@@ -270,15 +276,24 @@ let main argv =
                 1
             | Ok paths ->
             withClient (fun deps ->
+                // Apply config fallbacks — CLI flags win, then config, then built-in defaults.
+                let effectiveSkipCopilot     = skipCopilot     || (deps.Config.SkipCopilot      |> Option.defaultValue false)
+                let effectiveAutoCreateLabels = autoCreateLabels || (deps.Config.AutoCreateLabels |> Option.defaultValue false)
+                let effectiveContinueOnError  = continueOnError  || (deps.Config.ContinueOnError  |> Option.defaultValue false)
+                let effectiveMaxConcurrency   =
+                    match args.TryGetResult(RunArgs.Max_Concurrency) with
+                    | Some v -> v
+                    | None   -> deps.Config.MaxConcurrency |> Option.defaultValue 4
                 let input : OrcAI.Core.RunCommand.RunInput =
                     { YamlPath         = ""   // overridden per-file in execute
                       Verbose          = verbose
-                      AutoCreateLabels = autoCreateLabels
-                      SkipCopilot      = skipCopilot
+                      AutoCreateLabels = effectiveAutoCreateLabels
+                      SkipCopilot      = effectiveSkipCopilot
                       SkipLock         = skipLock
-                      MaxConcurrency   = maxConcurrency
+                      MaxConcurrency   = effectiveMaxConcurrency
                       NoParallel       = noParallel
-                      ContinueOnError  = continueOnError }
+                      ContinueOnError  = effectiveContinueOnError
+                      DefaultLabels    = deps.Config.DefaultLabels |> Option.defaultValue [] }
                 let results =
                     OrcAI.Core.RunCommand.execute deps paths input
                     |> Async.RunSynchronously
@@ -526,6 +541,10 @@ let main argv =
             let explicitRepos = args.GetResults(GenerateArgs.Repo)
 
             withClient (fun deps ->
+                // Apply config fallbacks for generate.
+                let effectiveSkipCopilot =
+                    skipCopilot || (deps.Config.SkipCopilot |> Option.defaultValue false)
+
                 // --- Resolve name ---
                 let nameResult =
                     match args.TryGetResult(GenerateArgs.Name), interactive with
@@ -533,15 +552,16 @@ let main argv =
                     | None, true   -> Ok (AnsiConsole.Ask<string>("Job [bold]name[/]:"))
                     | None, false  -> Error "--name is required (or use --interactive)."
 
-                // --- Resolve org ---
+                // --- Resolve org (CLI > config > interactive) ---
                 let orgResult =
                     match nameResult with
                     | Error e -> Error e
                     | Ok _ ->
-                        match args.TryGetResult(GenerateArgs.Org), interactive with
-                        | Some o, _   -> Ok o
-                        | None, true  -> Ok (AnsiConsole.Ask<string>("GitHub [bold]org[/]:"))
-                        | None, false -> Error "--org is required (or use --interactive)."
+                        match args.TryGetResult(GenerateArgs.Org), deps.Config.DefaultOrg, interactive with
+                        | Some o, _, _     -> Ok o
+                        | None, Some o, _  -> Ok o
+                        | None, None, true -> Ok (AnsiConsole.Ask<string>("GitHub [bold]org[/]:"))
+                        | None, None, false -> Error "--org is required (or use --interactive)."
 
                 match nameResult, orgResult with
                 | Error e, _ | _, Error e ->
@@ -592,7 +612,7 @@ let main argv =
                               Org         = org
                               Repos       = repos
                               OutputPath  = outputPath
-                              SkipCopilot = skipCopilot }
+                              SkipCopilot = effectiveSkipCopilot }
 
                         match execute deps input with
                         | Error e ->
@@ -616,11 +636,18 @@ let main argv =
                 1
             | Ok paths ->
             withClient (fun deps ->
+                // Apply config fallbacks for validate.
+                let effectiveContinueOnError =
+                    continueOnError || (deps.Config.ContinueOnError |> Option.defaultValue false)
+                let effectiveMaxConcurrency =
+                    match args.TryGetResult(ValidateArgs.Max_Concurrency) with
+                    | Some v -> v
+                    | None   -> deps.Config.MaxConcurrency |> Option.defaultValue 4
                 let input : OrcAI.Core.ValidateCommand.ValidateInput =
                     { YamlPath        = ""  // overridden per-file in execute
                       NoParallel      = noParallel
-                      MaxConcurrency  = maxConcurrency
-                      ContinueOnError = continueOnError }
+                      MaxConcurrency  = effectiveMaxConcurrency
+                      ContinueOnError = effectiveContinueOnError }
                 let results =
                     OrcAI.Core.ValidateCommand.execute deps paths input
                     |> Async.RunSynchronously

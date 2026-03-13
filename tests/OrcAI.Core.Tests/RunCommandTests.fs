@@ -109,7 +109,8 @@ let private makeDeps (fs: MockFileSystem) (client: IGhClient) : OrcAIDeps =
     { GhClient    = client
       AuthContext = { new OrcAI.Core.AuthContext.IAuthContext with
                          member _.GetToken() = async { return Ok "fake-token" } }
-      FileSystem  = fs :> System.IO.Abstractions.IFileSystem }
+      FileSystem  = fs :> System.IO.Abstractions.IFileSystem
+      Config      = OrcAI.Core.OrcAIConfig.empty }
 
 let private defaultInput paths =
     { YamlPath         = ""
@@ -119,7 +120,8 @@ let private defaultInput paths =
       SkipLock         = true
       MaxConcurrency   = 4
       NoParallel       = false
-      ContinueOnError  = false }
+      ContinueOnError  = false
+      DefaultLabels    = [] }
 
 // ---------------------------------------------------------------------------
 // Multi-file execute tests

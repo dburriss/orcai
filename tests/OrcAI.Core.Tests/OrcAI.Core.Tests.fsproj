@@ -11,6 +11,7 @@
     <Compile Include="LockFileTests.fs" />
     <Compile Include="YamlConfigTests.fs" />
     <Compile Include="FileGlobTests.fs" />
+    <Compile Include="OrcAIConfigTests.fs" />
     <Compile Include="RunCommandTests.fs" />
     <Compile Include="ValidateCommandTests.fs" />
   </ItemGroup>
