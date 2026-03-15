@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-03-15
+
+### Fixed
+
+- `lockFilePath` now produces forward-slash paths on Windows, fixing CI test failures
+
 ## [0.4.0] - 2026-03-13
 
 ### Added
