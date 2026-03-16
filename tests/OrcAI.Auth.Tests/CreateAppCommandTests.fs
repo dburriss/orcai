@@ -188,7 +188,7 @@ let ``parseConversionResponse handles string id`` () =
 
 [<Fact>]
 let ``savePem writes PEM content to the expected path`` () =
-    let fs      = MockFileSystem()
+    let fs      = MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Linux))
     let homeDir = "/home/user"
     let appName = "my-app"
     let pem     = "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n"
@@ -201,7 +201,7 @@ let ``savePem writes PEM content to the expected path`` () =
 
 [<Fact>]
 let ``savePem creates parent directories if they do not exist`` () =
-    let fs      = MockFileSystem()
+    let fs      = MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Linux))
     let homeDir = "/home/newuser"
     match savePem fs homeDir "app" "pem-content" with
     | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
@@ -210,8 +210,34 @@ let ``savePem creates parent directories if they do not exist`` () =
 
 [<Fact>]
 let ``savePem returns the correct path for a different app name`` () =
-    let fs      = MockFileSystem()
+    let fs      = MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Linux))
     let homeDir = "/root"
     match savePem fs homeDir "other-app" "key" with
     | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
     | Ok path -> Assert.Equal("/root/.config/orcai/other-app.pem", path)
+
+[<Fact>]
+let ``savePem writes PEM to correct path on Linux-simulated filesystem`` () =
+    let fs      = MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Linux))
+    let homeDir = "/home/user"
+    let appName = "my-app"
+    let pem     = "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n"
+    match savePem fs homeDir appName pem with
+    | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+    | Ok path ->
+        Assert.Equal("/home/user/.config/orcai/my-app.pem", path)
+        Assert.True(fs.File.Exists(path), "PEM file should exist")
+        Assert.Equal(pem, fs.File.ReadAllText(path))
+
+[<Fact>]
+let ``savePem writes PEM to correct path on Windows-simulated filesystem`` () =
+    let fs      = MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Windows))
+    let homeDir = @"C:\Users\user"
+    let appName = "my-app"
+    let pem     = "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n"
+    match savePem fs homeDir appName pem with
+    | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+    | Ok path ->
+        Assert.Equal(@"C:\Users\user\.config\orcai\my-app.pem", path)
+        Assert.True(fs.File.Exists(path), "PEM file should exist")
+        Assert.Equal(pem, fs.File.ReadAllText(path))

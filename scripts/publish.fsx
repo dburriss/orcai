@@ -1,19 +1,19 @@
 #!/usr/bin/env -S dotnet fsi
 
 // =================================================================================
-// Publish Script for Orca CLI
+// Publish Script for OrcAI CLI
 // =================================================================================
-// This script automates the release process for the Orca CLI binary.
+// This script automates the release process for the OrcAI CLI binary.
 //
 // Normal release flow (when Unreleased changes exist):
-// 1. Reads the current version from src/Orca.Tool/Orca.Tool.fsproj
+// 1. Reads the current version from src/OrcAI.Tool/OrcAI.Tool.fsproj
 // 2. Extracts the "Unreleased" section from CHANGELOG.md
 // 3. Runs a preflight release build and test pass
 // 4. Prompts the user to select the next version (Major, Minor, or Patch)
 // 5. Updates CHANGELOG.md:
 //    - Moves "Unreleased" changes to a new versioned section
 //    - Creates a new empty "Unreleased" section
-// 6. Updates Orca.Tool.fsproj via XML APIs:
+// 6. Updates OrcAI.Tool.fsproj via XML APIs:
 //    - Increments the <Version> tag
 //    - Updates <PackageReleaseNotes> with escaped text content
 // 7. Runs a final release build before any git operations

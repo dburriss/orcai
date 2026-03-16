@@ -26,9 +26,9 @@ description = "Create a GitHub App and generate credentials for authentication"
 run = "dotnet run --project src/Orca.Tool/ -- auth create-app \"$@\""
 
 [tasks.example_validate]
-description = "Run the full orca validation suite against the fixture YAML"
+description = "Run the full orcai validation suite against the fixture YAML"
 run = "ORCAI_BIN=./src/OrcAI.Tool/bin/Debug/net10.0/orcai dotnet fsi validation/validate.fsx"
 
 [tasks.example_cleanup]
-description = "Run orca cleanup against the fixture YAML"
+description = "Run orcai cleanup against the fixture YAML"
 run = "ORCAI_BIN=./src/OrcAI.Tool/bin/Debug/net10.0/orcai dotnet fsi validation/cleanup.fsx"

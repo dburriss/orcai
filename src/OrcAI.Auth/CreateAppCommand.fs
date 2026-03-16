@@ -27,11 +27,11 @@ open OrcAI.Auth.AuthConfig
 //   3. Open the default browser to http://localhost:<port>/.
 //   4. Wait (up to 120 s) for GitHub to redirect back with the code.
 //   5. Exchange the code for app credentials via the GitHub API.
-//   6. Save the PEM private key to ~/.config/orca/<appName>.pem.
+//   6. Save the PEM private key to ~/.config/orcai/<appName>.pem.
 //   7. Write auth.json with a named profile (appName) set as active,
 //      type=app, appId, keyPath (installationId left empty until the user
 //      installs the app and provides it).
-//   8. Remove the legacy ~/.config/orca/app.pem if it exists.
+//   8. Remove the legacy ~/.config/orcai/app.pem if it exists.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ let buildManifest (appName: string) (redirectUrl: string) : string =
     let manifest =
         $"""{{
   "name": "{appName}",
-  "url": "https://github.com/dburriss/orca",
+  "url": "https://github.com/dburriss/orcai",
   "description": "OrcAI automation app for creating GitHub Projects and issues at scale.",
   "public": false,
   "default_permissions": {{
@@ -260,13 +260,13 @@ let runListener
 // Save PEM to disk
 // ---------------------------------------------------------------------------
 
-let private pemPath (homeDir: string) (appName: string) =
-    Path.Combine(homeDir, ".config", "orcai", $"{appName}.pem")
+let private pemPath (fs: IFileSystem) (homeDir: string) (appName: string) =
+    fs.Path.Combine(homeDir, ".config", "orcai", $"{appName}.pem")
 
 let savePem (fs: IFileSystem) (homeDir: string) (appName: string) (pem: string) : Result<string, string> =
     try
-        let path = pemPath homeDir appName
-        let dir  = Path.GetDirectoryName(path) |> Option.ofObj |> Option.defaultValue "."
+        let path = pemPath fs homeDir appName
+        let dir  = fs.Path.GetDirectoryName(path) |> Option.ofObj |> Option.defaultValue "."
         fs.Directory.CreateDirectory(dir) |> ignore
         fs.File.WriteAllText(path, pem)
         Ok path
