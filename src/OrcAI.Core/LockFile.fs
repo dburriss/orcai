@@ -128,10 +128,13 @@ let private ofDto (dto: LockFileDto) : LockFile =
 // ------------------------------------------------------------------
 
 /// Derive the lock file path from the YAML config file path.
+/// Uses the same path separator convention as the input (forward-slash safe).
 let lockFilePath (yamlPath: string) : string =
-    let dir  = System.IO.Path.GetDirectoryName(yamlPath) |> Option.ofObj |> Option.defaultValue "."
-    let stem = System.IO.Path.GetFileNameWithoutExtension(yamlPath)
-    System.IO.Path.Combine(dir, $"{stem}.lock.json")
+    let normalised = yamlPath.Replace('\\', '/')
+    let dir  = System.IO.Path.GetDirectoryName(normalised) |> Option.ofObj |> Option.defaultValue ""
+    let stem = System.IO.Path.GetFileNameWithoutExtension(normalised)
+    if dir = "" || dir = "." then $"{stem}.lock.json"
+    else $"{dir}/{stem}.lock.json"
 
 /// Read and deserialise a lock file.
 /// Returns None if the file does not exist.
