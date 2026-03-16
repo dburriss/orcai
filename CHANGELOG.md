@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-03-16
+
 ### Added
 
 - Extra callout in `auth create-app` instructions to guide users through the manual steps required to grant org permissions after app creation via the manifest flow. Permissions must be set before installing.
