@@ -2,11 +2,11 @@
 
 ## Summary
 
-Support multiple named GitHub App profiles in `auth.json`. Each profile stores its own credentials and PEM file named after the app. An `"active"` key controls which profile is used. A new `orca auth switch <profile>` command lets users change the active profile.
+Support multiple named GitHub App profiles in `auth.json`. Each profile stores its own credentials and PEM file named after the app. An `"active"` key controls which profile is used. A new `orcai auth switch <profile>` command lets users change the active profile.
 
 ## Motivation
 
-Currently `auth.json` holds a single credential (PAT or App) and the PEM is always saved as `~/.config/orca/app.pem`. This makes it impossible to manage more than one GitHub App with the CLI without manually overwriting the config each time.
+Currently `auth.json` holds a single credential (PAT or App) and the PEM is always saved as `~/.config/orcai/app.pem`. This makes it impossible to manage more than one GitHub App with the CLI without manually overwriting the config each time.
 
 ---
 
@@ -19,7 +19,7 @@ Currently `auth.json` holds a single credential (PAT or App) and the PEM is alwa
     "my-app": {
       "type": "app",
       "appId": "123",
-      "keyPath": "~/.config/orca/my-app.pem",
+      "keyPath": "~/.config/orcai/my-app.pem",
       "installationId": "456789"
     },
     "pat": {
@@ -41,10 +41,10 @@ Currently `auth.json` holds a single credential (PAT or App) and the PEM is alwa
 
 | Command | Profile name | PEM filename |
 |---|---|---|
-| `orca auth create-app --app-name foo` | `"foo"` | `foo.pem` |
-| `orca auth create-app --org acme` | `"orca-acme-gh-app"` | `orca-acme-gh-app.pem` |
-| `orca auth app --app-id 12345 ...` | `"12345"` | *(user-provided via `--key`, no PEM written)* |
-| `orca auth pat --token ghp_...` | `"pat"` | *(no PEM)* |
+| `orcai auth create-app --app-name foo` | `"foo"` | `foo.pem` |
+| `orcai auth create-app --org acme` | `"orcai-acme-gh-app"` | `orcai-acme-gh-app.pem` |
+| `orcai auth app --app-id 12345 ...` | `"12345"` | *(user-provided via `--key`, no PEM written)* |
+| `orcai auth pat --token ghp_...` | `"pat"` | *(no PEM)* |
 
 Profile names are auto-derived from existing arguments — no new `--name` flag is required.
 
@@ -53,7 +53,7 @@ Profile names are auto-derived from existing arguments — no new `--name` flag 
 ## New Command
 
 ```
-orca auth switch <profile-name>
+orcai auth switch <profile-name>
 ```
 
 Sets `"active"` in `auth.json` to the given profile name. Errors if the profile does not exist. Prints the new active profile on success.
@@ -62,7 +62,7 @@ Sets `"active"` in `auth.json` to the given profile name. Errors if the profile 
 
 ## File-by-File Changes
 
-### `src/Orca.Auth/AuthConfig.fs`
+### `src/OrcAI.Auth/AuthConfig.fs`
 
 - Replace the flat `AuthConfigFile` record with:
   - `ProfileEntry` — per-profile record (`type`, `token`, `appId`, `keyPath`, `installationId` — all optional except `type`)
@@ -72,27 +72,27 @@ Sets `"active"` in `auth.json` to the given profile name. Errors if the profile 
   - `getActiveProfile cfg` — returns the active `ProfileEntry` or an error.
   - `upsertProfile name profile cfg` — adds/replaces a profile and sets it as `active`.
   - `switchActive name cfg` — changes `active`; errors if `name` not in `profiles`.
-  - `removeOldPem ()` — deletes `~/.config/orca/app.pem` if present (migration helper).
+  - `removeOldPem ()` — deletes `~/.config/orcai/app.pem` if present (migration helper).
 
-### `src/Orca.Auth/AppAuth.fs`
+### `src/OrcAI.Auth/AppAuth.fs`
 
 - `storeConfig` / `storeConfigTo`: add `profileName: string` parameter. Read existing config, upsert the profile, write back.
 - `loadConfig` / `loadConfigFrom`: read the active profile, validate `type=app`, map to `AppAuthConfig`.
 - `resolveConfigWith` / `resolveConfig`: unchanged in signature.
 
-### `src/Orca.Auth/PatAuth.fs`
+### `src/OrcAI.Auth/PatAuth.fs`
 
 - `storeToken`: write into a profile named `"pat"`, set as active.
 - `loadToken` / `loadTokenWith`: read the active profile, validate `type=pat`, return token.
 
-### `src/Orca.Auth/CreateAppCommand.fs`
+### `src/OrcAI.Auth/CreateAppCommand.fs`
 
-- `pemPath (appName: string)` — `~/.config/orca/<appName>.pem`.
+- `pemPath (appName: string)` — `~/.config/orcai/<appName>.pem`.
 - `savePem (appName: string) (pem: string)` — uses named path.
 - `storeAppCredentials (appName: string) (appId: string) (keyPath: string)` — profile name = `appName`.
 - `execute` — passes `input.AppName` through to the above; calls `removeOldPem ()` after saving.
 
-### `src/Orca.Tool/Args.fs`
+### `src/OrcAI.Tool/Args.fs`
 
 Add `AuthSwitchArgs` and `Switch` subcommand to `AuthArgs`:
 
@@ -106,10 +106,10 @@ type AuthArgs =
     | [<CliPrefix(CliPrefix.None); SubCommand>] Switch of ParseResults<AuthSwitchArgs>
 ```
 
-### `src/Orca.Tool/Program.fs`
+### `src/OrcAI.Tool/Program.fs`
 
-- `orca auth app` handler: derive profile name from `--app-id`; pass to `storeConfig`.
-- Add `orca auth switch` handler:
+- `orcai auth app` handler: derive profile name from `--app-id`; pass to `storeConfig`.
+- Add `orcai auth switch` handler:
   1. Read `auth.json`.
   2. Call `switchActive profileName cfg`.
   3. Write updated config.
@@ -120,18 +120,18 @@ type AuthArgs =
 
 ## Test Changes
 
-### `tests/Orca.Auth.Tests/AppAuthTests.fs`
+### `tests/OrcAI.Auth.Tests/AppAuthTests.fs`
 
 - Update `storeConfigTo`/`loadConfigFrom` round-trip tests to pass a profile name.
 - Add: `loadConfigFrom returns active profile config`.
 - Add: `loadConfigFrom returns error when active profile does not exist`.
 - Update fixture `auth.json` strings to use new schema.
 
-### `tests/Orca.Auth.Tests/PatAuthTests.fs`
+### `tests/OrcAI.Auth.Tests/PatAuthTests.fs`
 
 - Update fixture `auth.json` strings to use new `profiles`/`active` schema.
 
-### `tests/Orca.Auth.Tests/AuthConfigTests.fs` *(new file)*
+### `tests/OrcAI.Auth.Tests/AuthConfigTests.fs` *(new file)*
 
 - `upsertProfile adds a new profile and sets active`
 - `upsertProfile replaces an existing profile`
@@ -148,9 +148,9 @@ type AuthArgs =
 
 On first run after upgrading:
 
-1. `removeOldPem ()` is called during `create-app` / `auth app`, silently deleting `~/.config/orca/app.pem` if present.
+1. `removeOldPem ()` is called during `create-app` / `auth app`, silently deleting `~/.config/orcai/app.pem` if present.
 2. Existing `auth.json` (old flat format) will fail to deserialise into the new schema. The existing error path already falls through to env vars and then `gh` CLI ambient auth.
-3. Users with a stored app config will need to re-run `orca auth app` or `orca auth create-app` once.
+3. Users with a stored app config will need to re-run `orcai auth app` or `orcai auth create-app` once.
 
 No automatic migration of the old config is performed.
 
@@ -158,6 +158,6 @@ No automatic migration of the old config is performed.
 
 ## Out of Scope
 
-- Listing all profiles (`orca auth list`) — can be added as a follow-up.
-- Deleting a profile (`orca auth remove <profile>`) — can be added as a follow-up.
+- Listing all profiles (`orcai auth list`) — can be added as a follow-up.
+- Deleting a profile (`orcai auth remove <profile>`) — can be added as a follow-up.
 - Per-command `--profile` flag override — can be added as a follow-up.

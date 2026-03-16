@@ -50,12 +50,12 @@ orcai run "jobs/*.yml" --max-concurrency 2
 
 | Command | Description |
 |---------|-------------|
-| `orca auth pat/app/create-app` | Store credentials for all other commands |
-| `orca generate` | Scaffold a YAML job config and stub issue template |
-| `orca run` | Execute a bulk upgrade job (supports globs, concurrency control, JSON output) |
-| `orca validate` | Validate YAML config(s) and verify all repos are accessible |
-| `orca info` | Display the current state of a job |
-| `orca cleanup` | Tear down everything created by `run` |
+| `orcai auth pat/app/create-app/switch` | Store credentials or switch profiles for all other commands |
+| `orcai generate` | Scaffold a YAML job config and stub issue template |
+| `orcai run` | Execute a bulk upgrade job (supports globs, concurrency control, JSON output) |
+| `orcai validate` | Validate YAML config(s) and verify all repos are accessible |
+| `orcai info` | Display the current state of a job |
+| `orcai cleanup` | Tear down everything created by `run` |
 
 For full flag details, output formats, lock file schema, and advanced usage see [docs/cli-reference.md](docs/cli-reference.md).
 

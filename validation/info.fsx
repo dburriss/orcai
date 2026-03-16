@@ -9,9 +9,9 @@
 //   3. Stdout contains the repo name ("orca-tests")
 //
 // Prerequisites:
-//   - orca run must have been executed first (lock file or live GitHub state)
-//   - orca binary on PATH (or ORCA_BIN env var set)
-//   - Valid GitHub credentials (orca auth / GH_TOKEN / gh auth)
+//   - orcai run must have been executed first (lock file or live GitHub state)
+//   - orcai binary on PATH (or ORCAI_BIN env var set)
+//   - Valid GitHub credentials (orcai auth / GH_TOKEN / gh auth)
 // =============================================================================
 
 #load "config.fsx"

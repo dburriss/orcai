@@ -1,6 +1,6 @@
-# Orca CLI Reference
+# OrcAI CLI Reference
 
-Complete reference for all `orca` commands, flags, configuration, and output formats.
+Complete reference for all `orcai` commands, flags, configuration, and output formats.
 
 ---
 
@@ -12,11 +12,13 @@ Complete reference for all `orca` commands, flags, configuration, and output for
   - [auth pat](#auth-pat)
   - [auth app](#auth-app)
   - [auth create-app](#auth-create-app)
+  - [auth switch](#auth-switch)
 - [run](#run)
 - [validate](#validate)
 - [info](#info)
 - [cleanup](#cleanup)
 - [YAML configuration](#yaml-configuration)
+- [Layered configuration](#layered-configuration)
 - [Lock file format](#lock-file-format)
 - [Authentication](#authentication)
 - [Environment variables](#environment-variables)
@@ -28,44 +30,40 @@ Complete reference for all `orca` commands, flags, configuration, and output for
 
 | Command | Description |
 |---------|-------------|
-| `orca generate` | Scaffold a new YAML job config and stub issue template |
-| `orca auth pat` | Store a Personal Access Token |
-| `orca auth app` | Store GitHub App credentials |
-| `orca auth create-app` | Register a new GitHub App via browser |
-| `orca run` | Execute a bulk upgrade job |
-| `orca validate` | Validate a YAML job config and verify all repos are accessible |
-| `orca info` | Display the current state of a job |
-| `orca cleanup` | Tear down everything created by `run` |
+| `orcai generate` | Scaffold a YAML job config and a stub issue template |
+| `orcai auth pat/app/create-app/switch` | Manage stored auth profiles and active credentials |
+| `orcai run` | Execute a bulk upgrade job (supports globs, concurrency control, JSON output) |
+| `orcai validate` | Validate YAML configs and verify repository access |
+| `orcai info` | Display the current state of a job |
+| `orcai cleanup` | Tear down everything created by `run` |
 
 ---
 
 ## generate
 
-Scaffold a new YAML job config file and a stub Markdown issue template. This is the recommended starting point for a new job.
+Scaffold a new YAML job definition and a Markdown issue template. This is the recommended starting point for any job.
 
 ```
-orca generate --name <name> --org <org> [--repo <repo>...] [--output <path>] [--skip-copilot] [--interactive]
+orcai generate --name <name> --org <org> [--repo <repo>...] [--output <path>] [--skip-copilot] [--interactive]
 ```
 
 ### Flags
 
 | Flag | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `--name` | string | Conditional | — | Job name used as the GitHub Project title and issue title. Required unless `--interactive` is set. |
-| `--org` | string | Conditional | — | GitHub organisation slug. Required unless `--interactive` is set. |
-| `--repo` | string | No | — | Repo short-name to include (no `org/` prefix). Repeatable: `--repo repo-a --repo repo-b`. |
-| `--output` | string | No | `<slug>.yml` | Output YAML file path. Defaults to the slugified name in the current directory. |
-| `--skip-copilot` | flag | No | false | Emit `skipCopilot: true` in the generated config, disabling `@copilot` assignment. |
-| `--interactive` | flag | No | false | Prompt for any missing values and show a paginated TUI multi-select for repo selection fetched live from GitHub. |
+| `--name` | string | Conditional | — | Job name used as both the GitHub Project title and issue title. Required unless `--interactive`. |
+| `--org` | string | Conditional | — | GitHub organization slug. Required unless `--interactive`. |
+| `--repo` | string | No | — | Repository short-name to include (exclude the `org/` prefix). Repeatable. |
+| `--output` | string | No | `<slug>.yml` | Output YAML path. Defaults to the slugified job name in the current directory. |
+| `--skip-copilot` | flag | No | false | Set `skipCopilot: true` in the generated config to avoid assigning `@copilot`. |
+| `--interactive` | flag | No | false | Prompt for missing values and present an interactive Spectre.Console picker to choose repositories. |
 
 ### Output
 
-Two files are created (or updated):
+Two files are created (or left untouched if already present):
 
-- `<slug>.yml` — YAML job configuration file ready for use with `orca run`.
-- `<slug>.md` — Stub Markdown issue template (only written if the file does not already exist).
-
-The slug is derived from `--name`: lowercased, non-alphanumeric characters replaced with `-`, consecutive dashes collapsed, leading/trailing dashes trimmed.
+- `<slug>.yml` — YAML job configuration ready for `orcai run`.
+- `<slug>.md` — Issue template written only if the file does not already exist.
 
 ```
 Generated:
@@ -73,141 +71,119 @@ Generated:
   /path/to/my-job.md
 ```
 
-### Interactive mode
-
-When `--interactive` is set, orca calls `gh repo list <org> --json name --limit 1000` and presents a paginated Spectre.Console multi-select prompt (20 items per page). Use **Space** to toggle a repo and **Enter** to confirm the selection.
-
-### Examples
-
-```sh
-# Minimal — generates my-upgrade.yml and my-upgrade.md
-orca generate --name "My Upgrade" --org my-org
-
-# With repos and a custom output path
-orca generate --name "My Upgrade" --org my-org \
-  --repo api-service --repo web-frontend \
-  --output jobs/my-upgrade.yml
-
-# Interactive — prompts for name/org and shows repo picker
-orca generate --interactive
-```
+When `--interactive` is set and repos are not passed explicitly, OrcAI calls `gh repo list <org> --json name --limit 1000` and shows a paginated multi-select prompt (20 items per page). Use **Space** to toggle a repo and **Enter** to confirm.
 
 ---
 
 ## auth
 
-Configure authentication used by all other commands. Credentials are stored in `~/.config/orca/auth.json` and validated immediately after saving.
+Configure authentication for all other commands. Credentials are persisted to `~/.config/orcai/auth.json` and recalled on every invocation. Environment variables with the `ORCAI_*` prefix silently override stored values at runtime.
 
 ### auth pat
 
 Store a GitHub Personal Access Token.
 
 ```
-orca auth pat --token <token>
+orcai auth pat --token <token>
 ```
 
 #### Flags
 
 | Flag | Type | Required | Description |
 |------|------|----------|-------------|
-| `--token` | string | Yes | GitHub Personal Access Token (`ghp_...`). Requires `repo` and `project` scopes. |
+| `--token` | string | Yes | GitHub PAT (e.g. `ghp_...`) with `repo`, `project`, and `issues` scopes. |
 
 #### Behavior
 
-1. Saves the token to `~/.config/orca/auth.json` as `{"type":"pat","token":"..."}`.
-2. Runs `gh auth status` with the token injected as `GH_TOKEN`.
+1. Saves the token under the `pat` profile in `~/.config/orcai/auth.json` and marks it as active.
+2. Validates the token by running `gh auth status` with it injected as `GH_TOKEN`.
 3. Prints the validation output on success.
 
 #### Example
 
-```sh
-orca auth pat --token ghp_xxxxxxxxxxxxxxxxxxxx
 ```
-
----
+orcai auth pat --token ghp_xxxxxxxxxxxxxxxxxxxx
+```
 
 ### auth app
 
-Store GitHub App credentials.
+Store GitHub App credentials for CI-friendly authentication.
 
 ```
-orca auth app --app-id <id> --key <path> --installation-id <id>
+orcai auth app --app-id <id> --key <path> --installation-id <id>
 ```
 
 #### Flags
 
 | Flag | Type | Required | Description |
 |------|------|----------|-------------|
-| `--app-id` | string | Yes | GitHub App ID (integer shown on the App settings page) |
-| `--key` | string | Yes | Path to the PEM private key file. PKCS#1 and PKCS#8 formats are both accepted. |
-| `--installation-id` | string | Yes | Installation ID for the target organisation |
+| `--app-id` | string | Yes | GitHub App ID (integer shown on the App general settings page). |
+| `--key` | string | Yes | Path to the PEM private key file (PKCS#1 or PKCS#8). |
+| `--installation-id` | string | Yes | Installation ID for the target organization. |
 
 #### Behavior
 
-1. Saves config to `~/.config/orca/auth.json` as `{"type":"app",...}`.
-2. Generates a short-lived JWT (RS256, 10-minute TTL, 60-second clock-skew buffer).
-3. Exchanges the JWT for an installation access token via `POST /app/installations/{id}/access_tokens`.
+1. Stores the details under a profile named after the App ID and sets it as active.
+2. Generates a short-lived JWT (RS256, 10-minute TTL with 60-second clock-skew buffer).
+3. Exchanges the JWT for an installation token via `/app/installations/{id}/access_tokens`.
 4. Validates the token with `gh auth status`.
 
 #### Example
 
-```sh
-orca auth app \
+```
+orcai auth app \
   --app-id 123456 \
   --key /path/to/private-key.pem \
   --installation-id 78901234
 ```
 
-See [app-auth.md](app-auth.md) for a full walkthrough including how to create the App and find the IDs.
-
----
-
 ### auth create-app
 
-Register a new GitHub App via the GitHub App Manifest flow (browser-based).
+Register a GitHub App automatically via the manifest flow, save the PEM key, and print next steps for installing the app.
 
 ```
-orca auth create-app [--app-name <name>] [--org <org>] [--port <port>]
+orcai auth create-app [--app-name <name>] [--org <org>] [--port <port>]
 ```
 
 #### Flags
 
 | Flag | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `--app-name` | string | No | `orca` | Name for the new GitHub App |
-| `--org` | string | No | — | Register the app under an organisation (omit to register under your personal account) |
-| `--port` | int | No | `9876` | Local port for the OAuth callback redirect |
+| `--app-name` | string | Conditional | `orcai-<org>-gh-app` when `--org` is supplied; required if `--org` is omitted | Name for the new GitHub App. |
+| `--org` | string | Conditional | — | Register the app under an organization. Required unless `--app-name` is provided (name must be supplied to register under a user account). |
+| `--port` | int | No | `9876` | Local callback port for the OAuth manifest redirect. |
 
 #### Behavior
 
-1. Starts a local HTTP server on `localhost:<port>`.
-2. Opens the default browser to the local server, which auto-submits a manifest form to GitHub.
-3. Waits up to 120 seconds for GitHub to redirect back with a `?code=` parameter.
-4. Exchanges the code for app credentials (App ID, PEM key, webhook secret) via `POST /app-manifests/{code}/conversions`.
-5. Saves the PEM to `~/.config/orca/app.pem`.
-6. Writes partial config to `~/.config/orca/auth.json` (without installation ID).
-7. In interactive mode, prints step-by-step instructions for finding the installation ID, then prompts for it and completes validation. In non-interactive mode, prints the same instructions along with the command to run after installing.
-
-The app is created with these permissions: Issues (write), Pull requests (read), Metadata (read), Organization projects (write), Projects (write). No webhooks are configured.
+1. Spins up a temporary HTTP server and redirects the browser to GitHub with a manifest payload.
+2. Receives the conversion response, saves the PEM to `~/.config/orcai/<app-name>.pem`, and prints where to install the app.
+3. In interactive mode, prompts for the installation ID to complete the `auth app` config; otherwise, instructs the user to run `orcai auth app --app-id ... --key ... --installation-id <id>` when ready.
 
 #### Example
 
-```sh
-# Register under an organisation
-orca auth create-app --app-name orca-bot --org my-org
-
-# Register under your personal account with a custom port
-orca auth create-app --port 8080
 ```
+orcai auth create-app --app-name orca-bot --org my-org
+orcai auth create-app --port 8080 --app-name personal-orcai
+```
+
+### auth switch
+
+Change the active profile stored in `~/.config/orcai/auth.json` without re-running `auth pat/app`.
+
+```
+orcai auth switch <profile>
+```
+
+Switch only succeeds if the target profile exists in the config file. Use `orcai auth` to list or edit profiles manually.
 
 ---
 
 ## run
 
-Execute a bulk upgrade job against every repository listed in the YAML config. Accepts a single file path or a glob pattern to run multiple configs at once.
+Execute a bulk upgrade job defined in one or more YAML files. Globs are supported when quoted (e.g. `"jobs/*.yml"`).
 
 ```
-orca run <yaml_file_or_glob> [--verbose] [--auto-create-labels] [--skip-copilot]
+orcai run <yaml_file_or_glob> [--verbose] [--auto-create-labels] [--skip-copilot]
          [--skip-lock] [--max-concurrency <n>] [--no-parallel] [--continue-on-error]
          [--json]
 ```
@@ -216,38 +192,38 @@ orca run <yaml_file_or_glob> [--verbose] [--auto-create-labels] [--skip-copilot]
 
 | Argument / Flag | Type | Required | Default | Description |
 |-----------------|------|----------|---------|-------------|
-| `<yaml_file_or_glob>` | positional | Yes | — | Path or glob pattern for YAML job config file(s). Quote glob patterns to prevent shell expansion (e.g. `"configs/*.yaml"`). |
-| `--verbose` | flag | No | false | Emit detailed per-repo progress messages to stderr |
-| `--auto-create-labels` | flag | No | false | Create any labels that don't exist in a repo before applying them to the issue |
-| `--skip-copilot` | flag | No | false | Skip assigning `@copilot` to issues. Also honoured if `job.skipCopilot: true` is set in the YAML. |
-| `--skip-lock` | flag | No | false | Bypass the lock file and always fetch live state from GitHub |
+| `<yaml_file_or_glob>` | positional | Yes | — | YAML job file path or quoted glob (e.g. `"jobs/*.yml"`). |
+| `--verbose` | flag | No | false | Emit per-repo status messages to stderr. |
+| `--auto-create-labels` | flag | No | false | Create missing labels in each repo before applying them. |
+| `--skip-copilot` | flag | No | false | Skip assigning `@copilot`. Honored even if the flag is set in `job.skipCopilot`. |
+| `--skip-lock` | flag | No | false | Always fetch live state from GitHub instead of using the lock file. |
 | `--max-concurrency` | int | No | `4` | Maximum number of config files processed concurrently. High values may hit GitHub rate limits. |
-| `--no-parallel` | flag | No | false | Disable all parallelism — files are processed sequentially and repo checks within each file also run sequentially. Overrides `--max-concurrency`. |
-| `--continue-on-error` | flag | No | false | Continue processing remaining files when one fails, instead of stopping on the first error. |
-| `--json` | flag | No | false | Emit machine-readable JSON output to stdout (see [JSON output](#run-json-output) below). |
+| `--no-parallel` | flag | No | false | Disable all parallelism — files and repo checks run sequentially. Overrides `--max-concurrency`. |
+| `--continue-on-error` | flag | No | false | Continue processing remaining files when one fails instead of stopping. |
+| `--json` | flag | No | false | Emit machine-readable JSON output to stdout instead of the human summary. |
 
-### What it does
+### Behavior
 
-For each repository in the YAML (processed in parallel by default):
+For each repository listed in every config file (processed concurrently by default):
 
-1. **Project** — finds or creates the GitHub Project for the org (idempotent).
-2. **Issue** — finds or creates an issue with `job.title` as the title and the template file as the body (idempotent, matched on open issues by title).
-3. **Project card** — adds the issue to the project (idempotent).
-4. **Copilot** — assigns `@copilot` to the issue if it has no assignees, unless `--skip-copilot` or `job.skipCopilot: true`.
+1. Finds or creates the GitHub Project (idempotent).
+2. Finds or creates an issue using `job.title` and the issue template. Open issues are matched by title.
+3. Adds the issue to the project.
+4. Assigns `@copilot` if the issue has no assignees, unless skipped.
 
-When processing multiple files (via glob), each file's output is preceded by a `--- <filename> ---` header.
+When processing multiple files, the human-readable output prints `--- <filename> ---` before each file's summary.
 
-### Lock file
+### Lock files
 
-On success, a lock file `<basename>.lock.json` is written next to the YAML. On subsequent runs, if the YAML content is unchanged (SHA-256 match), the lock file is used to short-circuit all network calls. To force a re-run, delete the lock file, use `--skip-lock`, or modify the YAML.
+Successful runs write a `<basename>.lock.json` next to the YAML file. Subsequent runs skip network calls if the YAML hash matches. Delete the lock file, modify the YAML, or pass `--skip-lock` to force a fresh sync.
 
-### Run JSON output
+### JSON output (`--json`)
 
-With `--json`, output is a filename-keyed object. Each key is the path to the YAML file:
+The output is a filename-keyed JSON object:
 
 ```json
 {
-  "path/to/config.yaml": {
+  "jobs/my-upgrade.yml": {
     "created": 3,
     "alreadyExisted": 1,
     "repos": [
@@ -255,7 +231,7 @@ With `--json`, output is a filename-keyed object. Each key is the path to the YA
       { "repo": "org/repo-two", "issueNumber": 12, "status": "alreadyExisted" }
     ]
   },
-  "path/to/other.yaml": {
+  "jobs/other.yml": {
     "error": "YAML 'job.title' is required."
   }
 }
@@ -264,167 +240,130 @@ With `--json`, output is a filename-keyed object. Each key is the path to the YA
 ### Examples
 
 ```sh
-# Single file
-orca run jobs/my-upgrade.yml
-orca run jobs/my-upgrade.yml --verbose
-orca run jobs/my-upgrade.yml --auto-create-labels --skip-copilot
-
-# Glob — run all configs under a directory (quote to prevent shell expansion)
-orca run "jobs/*.yml"
-orca run "jobs/*.yml" --continue-on-error --json
-
-# Limit concurrency to avoid rate limits
-orca run "jobs/*.yml" --max-concurrency 2
-
-# Run sequentially (no parallelism at all)
-orca run "jobs/*.yml" --no-parallel
+orcai run jobs/my-upgrade.yml
+orcai run jobs/my-upgrade.yml --auto-create-labels --skip-copilot
+orcai run "jobs/*.yml" --continue-on-error --json
+orcai run "jobs/*.yml" --max-concurrency 2
+orcai run "jobs/*.yml" --no-parallel
 ```
 
 ---
 
 ## validate
 
-Validate one or more YAML job configs and verify that all listed repositories are accessible.
+Validate YAML job configs and confirm all listed repositories are accessible.
 
 ```
-orca validate <yaml_file_or_glob> [--no-parallel] [--max-concurrency <n>]
-              [--continue-on-error] [--json]
+orcai validate <yaml_file_or_glob> [--no-parallel] [--max-concurrency <n>] [--continue-on-error] [--json]
 ```
 
-### Arguments and flags
+### Flags
 
 | Argument / Flag | Type | Required | Default | Description |
 |-----------------|------|----------|---------|-------------|
-| `<yaml_file_or_glob>` | positional | Yes | — | Path or glob pattern for YAML job config file(s). Quote glob patterns to prevent shell expansion (e.g. `"configs/*.yaml"`). |
-| `--no-parallel` | flag | No | false | Check repositories sequentially instead of in parallel. Also disables file-level concurrency. Overrides `--max-concurrency`. |
-| `--max-concurrency` | int | No | `4` | Maximum number of config files validated concurrently. |
-| `--continue-on-error` | flag | No | false | Continue validating remaining files when one fails. |
-| `--json` | flag | No | false | Emit machine-readable JSON output to stdout (see [JSON output](#validate-json-output) below). |
+| `<yaml_file_or_glob>` | positional | Yes | — | Path or glob for config file(s). |
+| `--no-parallel` | flag | No | false | Validate files and repos sequentially. Overrides `--max-concurrency`. |
+| `--max-concurrency` | int | No | `4` | Concurrent config files validated. |
+| `--continue-on-error` | flag | No | false | Continue validating remaining files after a failure. |
+| `--json` | flag | No | false | Emit machine-readable JSON instead of human output. |
 
-### What it does
+### Behavior
 
-For each matched YAML file:
+For each file:
 
-1. Checks the file exists on disk and can be parsed.
-2. Validates the schema — all required fields present, template file exists.
-3. For each repo in the config, calls `gh repo view <org/repo>` to confirm it is accessible with the current credentials.
+1. Parses the YAML.
+2. Validates the schema (required fields, issue template exists).
+3. Calls `gh repo view <org/repo>` for each repo to ensure access.
 
-Exit code is `0` if all files are valid, `1` if any file or repo check fails.
+Exit code `0` if every file and repo is valid; `1` otherwise.
 
-### Validate JSON output
-
-With `--json`, output is a filename-keyed object:
+### JSON output
 
 ```json
 {
-  "path/to/config.yaml": {
+  "jobs/my-upgrade.yml": {
     "valid": true,
     "configErrors": [],
     "repoErrors": []
   },
-  "path/to/other.yaml": {
+  "jobs/broken.yml": {
     "valid": false,
     "configErrors": ["YAML 'job.title' is required."],
     "repoErrors": [
-      { "repo": "my-org/missing-repo", "error": "Could not resolve to a Repository." }
+      { "repo": "my-org/missing", "error": "Could not resolve to a Repository." }
     ]
   }
 }
-```
-
-### Examples
-
-```sh
-# Validate a single file
-orca validate jobs/my-upgrade.yml
-
-# Validate all configs under a directory
-orca validate "jobs/*.yml"
-
-# Validate with JSON output, continuing past failures
-orca validate "jobs/*.yml" --continue-on-error --json
-
-# Validate sequentially (no parallelism)
-orca validate "jobs/*.yml" --no-parallel
 ```
 
 ---
 
 ## info
 
-Display a rich snapshot of the current state of a job using Spectre.Console.
+Show the current state of a job using the lock file or live GitHub data.
 
 ```
-orca info <yaml_file> [--skip-lock] [--save-lock]
+orcai info <yaml_file> [--skip-lock] [--save-lock] [--json]
 ```
 
-### Arguments and flags
+### Flags
 
-| Argument / Flag | Type | Required | Description |
-|-----------------|------|----------|-------------|
-| `<yaml_file>` | positional | Yes | Path to the YAML job configuration file |
-| `--skip-lock` | flag | No | Bypass the lock file and always fetch live state from GitHub |
-| `--save-lock` | flag | No | After fetching live state from GitHub, persist a new lock file |
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `--skip-lock` | flag | No | Always fetch live state from GitHub. |
+| `--save-lock` | flag | No | After fetching live state, overwrite the lock file. |
+| `--json` | flag | No | Emit JSON instead of the Spectre.Console tables. |
 
 ### Output
 
-**Metadata grid** — project name (with hyperlink), URL, data source (`lock file` or `GitHub (live)`), lock timestamp, YAML SHA-256, repo count, issue count, PR count.
+- **Metadata grid** — project title, URL, data source (`lock file` or `GitHub (live)`), lock timestamp, YAML SHA-256 hash, repo count, issue count, PR count.
+- **Issues table** — one row per repo with repo link, issue number, linked PRs, and assignees.
 
-**Issues table** — one row per repo with columns: Repo (hyperlink), Issue number, linked PR numbers, Assignees.
+### JSON output
 
-### Modes
-
-| Command | Behaviour |
-|---------|-----------|
-| `orca info job.yml` | Reads lock file if it exists; falls back to live fetch. |
-| `orca info job.yml --skip-lock` | Always fetches live from GitHub. |
-| `orca info job.yml --skip-lock --save-lock` | Fetches live from GitHub and updates the lock file. |
-| `orca info job.yml --save-lock` | Reads lock file if present; if no lock file, fetches live and saves. |
-
-### Examples
-
-```sh
-# Show current state (uses lock file if available)
-orca info jobs/my-upgrade.yml
-
-# Force live fetch and refresh the lock file
-orca info jobs/my-upgrade.yml --skip-lock --save-lock
+```json
+{
+  "project": "my-org / My Upgrade",
+  "url": "https://github.com/users/my-org/projects/13",
+  "source": "lock file",
+  "lockedAt": "2026-03-02T20:34:21.046+00:00",
+  "yamlHash": "...",
+  "repoCount": 2,
+  "issueCount": 2,
+  "prCount": 1,
+  "issues": [
+    { "repo": "my-org/repo-one", "issueNumber": 7, "prNumbers": [3], "assignees": ["copilot"] }
+  ]
+}
 ```
 
 ---
 
 ## cleanup
 
-Tear down everything that `run` created for the same YAML configuration.
+Tear down every resource created by `orcai run` for a YAML config.
 
 ```
-orca cleanup <yaml_file> [--dryrun]
+orcai cleanup <yaml_file> [--dryrun] [--force] [--json]
 ```
 
-### Arguments and flags
+### Flags
 
-| Argument / Flag | Type | Required | Description |
-|-----------------|------|----------|-------------|
-| `<yaml_file>` | positional | Yes | Path to the YAML job configuration file |
-| `--dryrun` | flag | No | Preview all deletions without making any changes |
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `--dryrun` | flag | No | Show what would be deleted without making changes. |
+| `--force` | flag | No | Skip the interactive confirmation prompt. |
+| `--json` | flag | No | Emit JSON describing cleaned-up resources. |
 
-### What it does
+### Behavior
 
-For each managed issue:
+1. Locates every managed issue, closes any open PRs that reference it, then deletes the issue.
+2. Deletes the GitHub Project.
+3. Removes the lock file.
 
-1. Finds and closes any open PRs that reference the issue (`closingIssuesReferences`).
-2. Deletes the issue.
-
-Then:
-
-3. Deletes the GitHub Project.
-4. Removes the lock file.
-
-If a lock file exists it is used for exact project number and issue list (avoids extra API calls). If not, the project is found by title and issues are looked up by title in each repo.
+If the lock file exists, it is used to find exact project/issue numbers; otherwise heuristics (project title, issue title) are used.
 
 ### Dry-run output
-
-With `--dryrun`, each action is printed as `DRY RUN: Would ...` and no changes are made:
 
 ```
 DRY RUN: Would close PR #3 in my-org/repo-one
@@ -433,64 +372,83 @@ DRY RUN: Would delete project "My Upgrade" (#13) in my-org
 Dry run complete. No changes were made.
 ```
 
-### Examples
+### JSON output
 
-```sh
-# Preview what would be deleted
-orca cleanup jobs/my-upgrade.yml --dryrun
-
-# Actually delete everything
-orca cleanup jobs/my-upgrade.yml
+```json
+{
+  "dryRun": true,
+  "resources": [
+    { "type": "pr", "repo": "org/repo", "number": 3, "org": null, "name": null },
+    { "type": "project", "org": "org", "name": "My Upgrade", "number": 13 }
+  ]
+}
 ```
 
 ---
 
 ## YAML configuration
 
-Full schema with all supported fields:
-
 ```yaml
 job:
-  title: "My Project Title"   # GitHub Project title and issue title (required)
-  org:   "my-github-org"      # GitHub organisation slug (required)
-  skipCopilot: false          # Disable @copilot assignment for this job (optional, default false)
+  title: "My Project Title"
+  org:   "my-github-org"
+  skipCopilot: false
 
-repos:                        # Short repo names — no org/ prefix (required, non-empty)
+repos:
   - "repo-one"
   - "repo-two"
 
 issue:
-  template: "./issue-body.md" # Path to Markdown template, relative to the YAML file (required)
-  labels:                     # Labels to apply to created issues (optional)
+  template: "./issue-body.md"
+  labels:
     - "migration"
     - "automated"
-
-copilot:                      # Optional section — parsed but not currently used by the CLI
-  agent: "default"
-  run_args: []
-  max_runs: 1
 ```
 
-### Validation rules
+`job.title` and `job.org` are required. `repos` must be a non-empty list. `issue.template` must point to a real Markdown file relative to the YAML. Missing labels will cause an error during `run` unless `--auto-create-labels` is supplied.
 
-| Field | Rule |
-|-------|------|
-| `job.title` | Must be non-empty |
-| `job.org` | Must be non-empty |
-| `repos` | Must be non-empty list |
-| `issue.template` | Must be non-empty and the referenced file must exist |
-| `issue.labels` | Optional; missing labels will cause an error during `run` unless `--auto-create-labels` is set |
+---
+
+## Layered configuration
+
+OrcAI loads configuration from two JSON files:
+
+1. **Global** – `~/.config/orcai/config.json`
+2. **Local** – `.orcai/config.json` in the current working directory (takes precedence over global).
+
+Each file can contain these optional fields:
+
+| Field | Description |
+|-------|-------------|
+| `skipCopilot` | Set default `--skip-copilot`. |
+| `defaultLabels` | List of labels applied to every issue. |
+| `autoCreateLabels` | Default for `--auto-create-labels`. |
+| `maxConcurrency` | Default for `--max-concurrency`. |
+| `continueOnError` | Default for `--continue-on-error`. |
+| `defaultOrg` | Default GitHub org for `generate`.
+
+Values from the local config override the global config when present.
+
+Example `~/.config/orcai/config.json`:
+
+```json
+{
+  "skipCopilot": true,
+  "defaultLabels": ["migration", "orcai"],
+  "maxConcurrency": 3
+}
+```
 
 ---
 
 ## Lock file format
 
-Written as `<basename>.lock.json` alongside the YAML file. Pretty-printed JSON.
+Lock files are written as `<basename>.lock.json` next to the YAML config.
 
 ```json
 {
   "lockedAt": "2026-03-02T20:34:21.046+00:00",
-  "yamlHash": "<sha256-hex of raw YAML bytes>",
+  "yamlHash": "<sha256>",
   "project": {
     "org": "my-org",
     "number": 13,
@@ -517,34 +475,21 @@ Written as `<basename>.lock.json` alongside the YAML file. Pretty-printed JSON.
 }
 ```
 
-The lock file is consumed by `run` (idempotency check), `info` (default data source), and `cleanup` (exact issue/project lookup). Delete it to force a fresh run.
+Lock files are consumed by `run`, `info`, and `cleanup`. Deleting the file forces a live refresh.
 
 ---
 
 ## Authentication
 
-### Priority order
+Credentials are resolved in the following order (highest priority first):
 
-Checked at every command invocation, highest priority first:
+1. `ORCAI_PAT` environment variable.
+2. GitHub App environment variables: `ORCAI_APP_ID`, `ORCAI_APP_INSTALLATION_ID`, `ORCAI_APP_PRIVATE_KEY` or `ORCAI_APP_KEY_PATH`.
+3. Stored config in `~/.config/orcai/auth.json` (`pat` or `app` profile).
+4. `GH_TOKEN` environment variable.
+5. Ambient `gh auth` session (`gh auth token`).
 
-1. `ORCA_PAT` environment variable → PAT auth (stored config not read)
-2. `ORCA_APP_ID` / `ORCA_APP_INSTALLATION_ID` / `ORCA_APP_PRIVATE_KEY` / `ORCA_APP_KEY_PATH` env vars, overlaid on `~/.config/orca/auth.json` (type=app)
-3. `GH_TOKEN` environment variable → raw token, no validation
-4. Ambient `gh` CLI auth — runs `gh auth token` and uses the result
-
-### Stored config file
-
-Location: `~/.config/orca/auth.json`
-
-PAT format:
-```json
-{ "type": "pat", "token": "ghp_..." }
-```
-
-GitHub App format:
-```json
-{ "type": "app", "appId": "123456", "keyPath": "/path/to/key.pem", "installationId": "78901234" }
-```
+When using a GitHub App, `orcai` generates a JWT, exchanges it for an installation token, and injects the token into `gh` subprocesses.
 
 ---
 
@@ -552,14 +497,14 @@ GitHub App format:
 
 | Variable | Description |
 |----------|-------------|
-| `ORCA_PAT` | GitHub Personal Access Token. When set, stored config is ignored. |
-| `ORCA_APP_ID` | GitHub App ID. Overrides `appId` in stored config. |
-| `ORCA_APP_INSTALLATION_ID` | Installation ID for the target org. Overrides `installationId` in stored config. |
-| `ORCA_APP_PRIVATE_KEY` | Raw PEM content of the App private key. No key file is read when set. Takes precedence over `ORCA_APP_KEY_PATH`. |
-| `ORCA_APP_KEY_PATH` | Path to the PEM private key file. Overrides `keyPath` in stored config. Ignored if `ORCA_APP_PRIVATE_KEY` is set. |
-| `GH_TOKEN` | Standard GitHub token env var. Used as fallback after all Orca-specific env vars. |
+| `ORCAI_PAT` | GitHub PAT. Overrides stored PAT config. |
+| `ORCAI_APP_ID` | GitHub App ID. Overrides stored profile value. |
+| `ORCAI_APP_INSTALLATION_ID` | Installation ID. Overrides stored value. |
+| `ORCAI_APP_PRIVATE_KEY` | Raw PEM content for the App key (highest priority). |
+| `ORCAI_APP_KEY_PATH` | Path to the App PEM file. Ignored if `ORCAI_APP_PRIVATE_KEY` is set. |
+| `GH_TOKEN` | GitHub token used when no OrcAI-specific credentials are available. |
 
-See [AUTH-ENV-VARS.md](AUTH-ENV-VARS.md) for detailed examples including CI pipeline patterns.
+No message is printed when env vars override stored config.
 
 ---
 
@@ -570,4 +515,4 @@ See [AUTH-ENV-VARS.md](AUTH-ENV-VARS.md) for detailed examples including CI pipe
 | `0` | Success |
 | `1` | Error — message printed to stderr |
 
-All commands print a human-readable error message to stderr on failure. Partial failures during `run` (e.g. one repo fails) result in exit code `1` and no lock file is written.
+Subcommands return `1` when validation fails, GitHub calls fail, or `run`/`validate` encounter invalid files.

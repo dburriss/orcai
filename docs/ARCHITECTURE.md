@@ -1,4 +1,4 @@
-# Orca CLI — Architecture
+# OrcAI CLI — Architecture
 
 ## Phases
 
@@ -44,8 +44,8 @@ This keeps the implementation simple and benefits from `gh`'s existing support f
 
 ```
 Local (PAT)
-  User runs: orca auth --pat <token>
-  Orca stores token securely.
+  User runs: orcai auth --pat <token>
+  OrcAI stores token securely.
   On command execution: sets GH_TOKEN=<token> in gh subprocess environment.
 
 CI (GitHub App)
@@ -66,13 +66,13 @@ CI (GitHub App)
 ```
 cli/
   src/
-    Orca.Tool/          -- Entry point, Argu argument definitions, command dispatch
-    Orca.Core/          -- Domain types, command logic, lock file, YAML parsing
-    Orca.GitHub/        -- gh CLI wrapper using simple-exec
-    Orca.Auth/          -- PAT storage, GitHub App JWT generation, token exchange
+    OrcAI.Tool/          -- Entry point, Argu argument definitions, command dispatch
+    OrcAI.Core/          -- Domain types, command logic, lock file, YAML parsing
+    OrcAI.GitHub/        -- gh CLI wrapper using simple-exec
+    OrcAI.Auth/          -- PAT storage, GitHub App JWT generation, token exchange
   tests/
-    Orca.Core.Tests/    -- xUnit v3 unit tests for domain logic
-    Orca.GitHub.Tests/  -- xUnit v3 integration tests for gh subprocess wrapper
+    OrcAI.Core.Tests/    -- xUnit v3 unit tests for domain logic
+    OrcAI.GitHub.Tests/  -- xUnit v3 integration tests for gh subprocess wrapper
   docs/
   example/
   orca.nu              -- Phase 1 reference script
@@ -83,7 +83,7 @@ cli/
 
 ## Lock File
 
-The lock file is a JSON file written alongside the YAML config file (e.g. `job.lock.json` for `job.yml`). It is managed by `Orca.Core` and contains:
+The lock file is a JSON file written alongside the YAML config file (e.g. `job.lock.json` for `job.yml`). It is managed by `OrcAI.Core` and contains:
 
 ```jsonc
 {
@@ -105,21 +105,21 @@ The lock file is a JSON file written alongside the YAML config file (e.g. `job.l
 ## Command Dispatch (Argu)
 
 ```
-orca run    <yaml_file> [--verbose]
-orca cleanup <yaml_file> [--dryrun]
-orca info   <yaml_file> [--no-lock] [--save-lock]
-orca auth   pat --token <token>
-orca auth   app --app-id <id> --key <path>
+orcai run    <yaml_file> [--verbose]
+orcai cleanup <yaml_file> [--dryrun]
+orcai info   <yaml_file> [--no-lock] [--save-lock]
+orcai auth   pat --token <token>
+orcai auth   app --app-id <id> --key <path>
 ```
 
-Each top-level subcommand maps to a module in `Orca.Core` with a pure function that takes typed input and returns a result type. The `Orca.Tool` entry point handles argument parsing, wires in the `gh` subprocess wrapper and auth context, and prints output.
+Each top-level subcommand maps to a module in `OrcAI.Core` with a pure function that takes typed input and returns a result type. The `OrcAI.Tool` entry point handles argument parsing, wires in the `gh` subprocess wrapper and auth context, and prints output.
 
 ---
 
 ## Testing Strategy
 
-- **Unit tests** (`Orca.Core.Tests`): test domain logic (YAML parsing, lock file read/write, idempotency checks, hash computation) without any I/O or subprocess calls. Dependencies are injected as interfaces or function parameters.
-- **Integration tests** (`Orca.GitHub.Tests`): test the `gh` wrapper (via simple-exec) against a real or stubbed `gh` binary. These are opt-in and require a configured `GH_TOKEN`.
+- **Unit tests** (`OrcAI.Core.Tests`): test domain logic (YAML parsing, lock file read/write, idempotency checks, hash computation) without any I/O or subprocess calls. Dependencies are injected as interfaces or function parameters.
+- **Integration tests** (`OrcAI.GitHub.Tests`): test the `gh` wrapper (via simple-exec) against a real or stubbed `gh` binary. These are opt-in and require a configured `GH_TOKEN`.
 
 ---
 
@@ -137,6 +137,6 @@ Two workflows live under `.github/workflows/`:
 
 - Triggers on `v*` tag pushes (e.g. `v1.0.0`) and `workflow_dispatch`.
 - Runs on a matrix of `ubuntu-latest`, `windows-latest`, and `macos-latest`.
-- Builds a self-contained, single-file binary named `orca` (or `orca.exe` on Windows) for each platform using `dotnet publish`.
+- Builds a self-contained, single-file binary named `orcai` (or `orcai.exe` on Windows) for each platform using `dotnet publish`.
 - Uploads the binaries as assets to a GitHub Release created for the tag.
 - Requires no secrets beyond the default `GITHUB_TOKEN`.

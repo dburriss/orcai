@@ -204,7 +204,7 @@ let ``generateJwtAt returns error for invalid PEM`` () =
 // ---------------------------------------------------------------------------
 
 [<Fact>]
-let ``AppAuthContext GetToken uses ORCA_APP_PRIVATE_KEY from getEnv instead of key file`` () =
+let ``AppAuthContext GetToken uses ORCAI_APP_PRIVATE_KEY from getEnv instead of key file`` () =
     // Provide an invalid PEM via getEnv — should fail at JWT generation, not file I/O.
     let getEnv name =
         match name with

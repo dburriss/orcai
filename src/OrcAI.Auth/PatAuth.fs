@@ -52,7 +52,7 @@ let loadTokenWith (getEnv: string -> string option) (readCfg: unit -> Result<Aut
                 | _ -> Error "PAT token is missing from auth config.")
 
 /// Load the previously stored PAT token.
-/// Checks the ORCA_PAT environment variable first; falls back to the stored config file.
+/// Checks the ORCAI_PAT environment variable first; falls back to the stored config file.
 let loadToken () : Result<string, string> =
     loadTokenWith (Environment.GetEnvironmentVariable >> Option.ofObj) readConfig
 

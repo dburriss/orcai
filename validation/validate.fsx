@@ -14,8 +14,8 @@
 //   dotnet fsi validation/validate.fsx
 //
 // Prerequisites:
-//   - orca binary on PATH (or ORCA_BIN env var set)
-//   - Valid GitHub credentials (orca auth / GH_TOKEN / gh auth)
+//   - orcai binary on PATH (or ORCAI_BIN env var set)
+//   - Valid GitHub credentials (orcai auth / GH_TOKEN / gh auth)
 // =============================================================================
 
 #load "config.fsx"

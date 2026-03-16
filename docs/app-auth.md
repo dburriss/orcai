@@ -1,14 +1,14 @@
 # GitHub App Authentication
 
-This guide covers how to authenticate Orca using a GitHub App. This is the recommended method for CI pipelines and automation where a personal token is not appropriate.
+This guide covers how to authenticate OrcAI using a GitHub App. This is the recommended method for CI pipelines and automation where a personal token is not appropriate.
 
 ## When to use GitHub App auth
 
 | Context | Recommended method |
 |---|---|
-| Local development | `gh auth login` or `orca auth pat` |
-| CI pipeline | GitHub App via `orca auth app` |
-| Shared automation | GitHub App via `orca auth app` |
+| Local development | `gh auth login` or `orcai auth pat` |
+| CI pipeline | GitHub App via `orcai auth app` |
+| Shared automation | GitHub App via `orcai auth app` |
 
 ---
 
@@ -17,9 +17,9 @@ This guide covers how to authenticate Orca using a GitHub App. This is the recom
 1. Go to your organisation settings: `https://github.com/organizations/<org>/settings/apps`
 2. Click **New GitHub App**.
 3. Fill in the required fields:
-   - **GitHub App name** — e.g. `orca-bot`
+   - **GitHub App name** — e.g. `orcai-bot`
    - **Homepage URL** — any URL (e.g. your repo URL)
-   - **Webhook** — uncheck *Active* (Orca does not use webhooks)
+   - **Webhook** — uncheck *Active* (OrcAI does not use webhooks)
 4. Set the following **Repository permissions**:
    - **Issues** — Read & write
    - **Pull requests** — Read & write
@@ -37,7 +37,7 @@ This guide covers how to authenticate Orca using a GitHub App. This is the recom
 2. Click **Generate a private key**.
 3. A `.pem` file is downloaded. Store it somewhere safe — you cannot download it again.
 
-Orca accepts both PKCS#1 (`-----BEGIN RSA PRIVATE KEY-----`) and PKCS#8 (`-----BEGIN PRIVATE KEY-----`) format keys.
+OrcAI accepts both PKCS#1 (`-----BEGIN RSA PRIVATE KEY-----`) and PKCS#8 (`-----BEGIN PRIVATE KEY-----`) format keys.
 
 ---
 
@@ -45,7 +45,7 @@ Orca accepts both PKCS#1 (`-----BEGIN RSA PRIVATE KEY-----`) and PKCS#8 (`-----B
 
 1. From the App settings page, click **Install App** in the left sidebar.
 2. Click **Install** next to your organisation.
-3. Choose **All repositories** or select specific repositories that Orca will manage.
+3. Choose **All repositories** or select specific repositories that OrcAI will manage.
 4. Click **Install**.
 
 ---
@@ -84,17 +84,17 @@ gh api /app/installations \
 
 ---
 
-## 5. Configure Orca
+## 5. Configure OrcAI
 
 ```bash
-orca auth app \
+orcai auth app \
   --app-id <APP_ID> \
   --key /path/to/private-key.pem \
   --installation-id <INSTALLATION_ID>
 ```
 
-Orca will:
-1. Save the config to `~/.config/orca/auth.json`.
+OrcAI will:
+1. Save the config to `~/.config/orcai/auth.json`.
 2. Generate a short-lived JWT from the App ID and private key.
 3. Exchange the JWT for an installation token via the GitHub API.
 4. Validate the token with `gh auth status`.
@@ -107,32 +107,32 @@ GitHub App config saved and validated.
 
 ---
 
-## 6. Using Orca in CI
+## 6. Using OrcAI in CI
 
-In a CI environment, store credentials as secrets and pass them at runtime. Orca reads from `~/.config/orca/auth.json`, so run the `auth app` command as part of your setup step:
+In a CI environment, store credentials as secrets and pass them at runtime. OrcAI reads from `~/.config/orcai/auth.json`, so run the `auth app` command as part of your setup step:
 
 ```yaml
-- name: Configure Orca auth
+- name: Configure OrcAI auth
   run: |
-    orca auth app \
-      --app-id ${{ secrets.ORCA_APP_ID }} \
-      --key ${{ secrets.ORCA_PRIVATE_KEY_PATH }} \
-      --installation-id ${{ secrets.ORCA_INSTALLATION_ID }}
+    orcai auth app \
+      --app-id ${{ secrets.ORCAI_APP_ID }} \
+      --key ${{ secrets.ORCAI_PRIVATE_KEY_PATH }} \
+      --installation-id ${{ secrets.ORCAI_INSTALLATION_ID }}
 ```
 
 If you prefer to avoid writing the key to disk, export the PEM content as an environment variable and write it to a temporary file:
 
 ```yaml
-- name: Configure Orca auth
+- name: Configure OrcAI auth
   env:
-    ORCA_PRIVATE_KEY: ${{ secrets.ORCA_PRIVATE_KEY }}
+    ORCAI_PRIVATE_KEY: ${{ secrets.ORCAI_PRIVATE_KEY }}
   run: |
-    echo "$ORCA_PRIVATE_KEY" > /tmp/orca-key.pem
-    orca auth app \
-      --app-id ${{ secrets.ORCA_APP_ID }} \
-      --key /tmp/orca-key.pem \
-      --installation-id ${{ secrets.ORCA_INSTALLATION_ID }}
-    rm /tmp/orca-key.pem
+    echo "$ORCAI_PRIVATE_KEY" > /tmp/orcai-key.pem
+    orcai auth app \
+      --app-id ${{ secrets.ORCAI_APP_ID }} \
+      --key /tmp/orcai-key.pem \
+      --installation-id ${{ secrets.ORCAI_INSTALLATION_ID }}
+    rm /tmp/orcai-key.pem
 ```
 
 ---
@@ -146,7 +146,7 @@ If you prefer to avoid writing the key to disk, export the PEM content as an env
 
 **`GitHub API returned 401`**
 
-- The JWT has expired or the App ID does not match the key. Re-run `orca auth app` to generate a fresh config.
+- The JWT has expired or the App ID does not match the key. Re-run `orcai auth app` to generate a fresh config.
 
 **`GitHub API returned 404`**
 

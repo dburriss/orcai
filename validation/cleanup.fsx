@@ -14,9 +14,9 @@
 //   2. Stdout contains "Dry run complete"
 //
 // Prerequisites:
-//   - orca run must have been executed first
-//   - orca binary on PATH (or ORCA_BIN env var set)
-//   - Valid GitHub credentials (orca auth / GH_TOKEN / gh auth)
+//   - orcai run must have been executed first
+//   - orcai binary on PATH (or ORCAI_BIN env var set)
+//   - Valid GitHub credentials (orcai auth / GH_TOKEN / gh auth)
 // =============================================================================
 
 #load "config.fsx"
