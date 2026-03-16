@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-03-16
+
+- scout: ENV VAR naming cleanup. Should have no user-facing impact since this is mostly a document update.
+
 ## [0.4.1] - 2026-03-15
 
 ### Fixed
