@@ -131,7 +131,7 @@ let private ofDto (dto: LockFileDto) : LockFile =
 /// Uses the same path separator convention as the input (forward-slash safe).
 let lockFilePath (yamlPath: string) : string =
     let normalised = yamlPath.Replace('\\', '/')
-    let dir  = System.IO.Path.GetDirectoryName(normalised) |> Option.ofObj |> Option.defaultValue ""
+    let dir  = System.IO.Path.GetDirectoryName(normalised) |> Option.ofObj |> Option.defaultValue "" |> fun s -> s.Replace('\\', '/')
     let stem = System.IO.Path.GetFileNameWithoutExtension(normalised)
     if dir = "" || dir = "." then $"{stem}.lock.json"
     else $"{dir}/{stem}.lock.json"

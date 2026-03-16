@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a bug where `lockFilePath` produced backslashes on Windows, causing CI test failures; now produces forward-slash paths for consistency across platforms
+
 ## [0.4.2] - 2026-03-16
 
 - scout: ENV VAR naming cleanup. Should have no user-facing impact since this is mostly a document update.
