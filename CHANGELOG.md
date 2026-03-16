@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-03-16
+
 ### Added
 
 - Use a PAT token in combination with GitHub App authenication to support assigning Copilot (since GitHub Apps don't have permission to assign Copilot, even if they have org-level permissions)
