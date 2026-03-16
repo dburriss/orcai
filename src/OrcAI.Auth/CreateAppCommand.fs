@@ -365,8 +365,12 @@ let execute (input: CreateAppInput) : Async<Result<CreatedApp, string>> =
         let permissionsUrl = buildPermissionsUrl ownerOrg app.Slug
 
         printfn ""
-        printfn "ACTION REQUIRED: Grant organisation project permissions"
-        printfn "--------------------------------------------------------"
+        printfn "⚠  ACTION REQUIRED: Set org project permissions BEFORE installing"
+        printfn "===================================================================="
+        printfn "You MUST complete this step BEFORE installing the app."
+        printfn "Installing first will lock in insufficient permissions and the app"
+        printfn "will not be able to read or write org-level Projects."
+        printfn ""
         printfn "The GitHub App manifest flow cannot set organisation-level"
         printfn "permissions. You must grant them manually:"
         printfn ""
@@ -374,6 +378,8 @@ let execute (input: CreateAppInput) : Async<Result<CreatedApp, string>> =
         printfn "  2. Scroll to 'Organization permissions'."
         printfn "  3. Set 'Projects' to 'Read and write'."
         printfn "  4. Click 'Save changes' and confirm."
+        printfn ""
+        printfn "  ⚠  Do NOT install the app until this step is complete."
         printfn ""
         printfn "  URL: %s" permissionsUrl
         printfn ""

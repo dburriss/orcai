@@ -416,7 +416,7 @@ let main argv =
                 let appId          = appArgs.GetResult(AuthAppArgs.App_Id)
                 let key            = appArgs.GetResult(AuthAppArgs.Key)
                 let installationId = appArgs.GetResult(AuthAppArgs.Installation_Id)
-                let config         = { AppId = appId; PrivateKeyPath = key; InstallationId = installationId }
+                let config         = { AppId = appId; PrivateKeyPath = key; InstallationId = installationId; PrivateKeyPem = None }
                 // Profile name is derived from the App ID.
                 let profileName    = appId
                 match storeConfig profileName config with
@@ -472,6 +472,9 @@ let main argv =
                         printfn "---------------------------------------------------------"
                         printfn "  1. Open the app installation page in your browser:"
                         printfn "       https://github.com/apps/%s" appSlug
+                        printfn "  ⚠  NOTE: You must have already set 'Projects' to 'Read and write'"
+                        printfn "     under Organization permissions BEFORE installing. If you have not"
+                        printfn "     done this yet, stop and complete that step first."
                         printfn "  2. Click 'Install' (or 'Configure' if already installed) next to your org."
                         printfn "  3. Select the repositories OrcAI should access and confirm."
                         printfn "  4. After installation GitHub redirects you to a URL like:"
@@ -491,7 +494,7 @@ let main argv =
                         let line = Console.ReadLine() |> Option.ofObj |> Option.defaultValue ""
                         if not (String.IsNullOrWhiteSpace(line)) then
                             let installId = line.Trim()
-                            let cfg = { AppId = created.Id; PrivateKeyPath = created.PemPath; InstallationId = installId }
+                            let cfg = { AppId = created.Id; PrivateKeyPath = created.PemPath; InstallationId = installId; PrivateKeyPem = None }
                             match storeConfig name cfg with
                             | Error e ->
                                 eprintfn "Warning: could not save installation ID: %s" e

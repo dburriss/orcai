@@ -26,3 +26,7 @@
 - [x] pem file saved with the app name <app_name>.pem for easier identification
 - [ ] security review of pat and pem file handling to ensure best practices are followed (e.g. least privilege, secure storage, etc.)
 - [ ] Chech that all commands have --output text/json support. Default to text for human users, but allow json output for machine parsing.
+- [ ] Set the type of auth to use (PAT vs App) via config file and environment variables, with clear precedence (e.g. env vars override config file). This would allow users to set up multiple profiles for different orgs or use cases and switch between them easily.
+- [ ] Add support to add auth args to run, validate, and cleanup commands
+- [ ] Add support for a auth profile field in the YAML config to specify which auth profile to use for that config. This would allow different configs to use different credentials if needed. If not provided, default to the active profile. Can be passed into the command via a `--auth-profile` flag as well to override the config file value.
+- [ ] Add support for creating projects on the current repository instead of the org level. This would allow users to create projects that are specific to a repo instead of the whole org. The YAML config would need to specify the repo name in this case, and the command would need to handle creating the project in the correct location.

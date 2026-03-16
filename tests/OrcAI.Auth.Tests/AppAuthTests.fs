@@ -34,7 +34,7 @@ let ``resolveConfigWith succeeds when all fields provided via getEnv`` () =
 
 [<Fact>]
 let ``resolveConfigWith uses ORCAI_APP_ID over stored value`` () =
-    let stored () = Ok { AppId = "stored-id"; PrivateKeyPath = "/tmp/key.pem"; InstallationId = "install-456" }
+    let stored () = Ok { AppId = "stored-id"; PrivateKeyPath = "/tmp/key.pem"; InstallationId = "install-456"; PrivateKeyPem = None }
     let result = resolveConfigWith (fakeEnv ["ORCAI_APP_ID", "env-app-id"
                                              "ORCAI_APP_INSTALLATION_ID", "install-456"
                                              "ORCAI_APP_KEY_PATH", "/tmp/key.pem"]) stored
@@ -44,7 +44,7 @@ let ``resolveConfigWith uses ORCAI_APP_ID over stored value`` () =
 
 [<Fact>]
 let ``resolveConfigWith uses ORCAI_APP_INSTALLATION_ID over stored value`` () =
-    let stored () = Ok { AppId = "app-123"; PrivateKeyPath = "/tmp/key.pem"; InstallationId = "stored-install" }
+    let stored () = Ok { AppId = "app-123"; PrivateKeyPath = "/tmp/key.pem"; InstallationId = "stored-install"; PrivateKeyPem = None }
     let result = resolveConfigWith (fakeEnv ["ORCAI_APP_ID", "app-123"
                                              "ORCAI_APP_INSTALLATION_ID", "env-install-id"
                                              "ORCAI_APP_KEY_PATH", "/tmp/key.pem"]) stored
@@ -54,7 +54,7 @@ let ``resolveConfigWith uses ORCAI_APP_INSTALLATION_ID over stored value`` () =
 
 [<Fact>]
 let ``resolveConfigWith uses ORCAI_APP_KEY_PATH over stored value`` () =
-    let stored () = Ok { AppId = "app-123"; PrivateKeyPath = "/stored/key.pem"; InstallationId = "install-456" }
+    let stored () = Ok { AppId = "app-123"; PrivateKeyPath = "/stored/key.pem"; InstallationId = "install-456"; PrivateKeyPem = None }
     let result = resolveConfigWith (fakeEnv ["ORCAI_APP_ID", "app-123"
                                              "ORCAI_APP_INSTALLATION_ID", "install-456"
                                              "ORCAI_APP_KEY_PATH", "/env/key.pem"]) stored
@@ -88,7 +88,7 @@ let ``resolveConfigWith returns error when private key is missing`` () =
 
 [<Fact>]
 let ``resolveConfigWith falls back to stored config when env vars absent`` () =
-    let stored () = Ok { AppId = "stored-app"; PrivateKeyPath = "/stored/k.pem"; InstallationId = "stored-install" }
+    let stored () = Ok { AppId = "stored-app"; PrivateKeyPath = "/stored/k.pem"; InstallationId = "stored-install"; PrivateKeyPem = None }
     let result = resolveConfigWith (fakeEnv []) stored
     match result with
     | Error e -> Assert.Fail($"Expected Ok: {e}")
@@ -210,7 +210,7 @@ let ``AppAuthContext GetToken uses ORCAI_APP_PRIVATE_KEY from getEnv instead of 
         match name with
         | "ORCAI_APP_PRIVATE_KEY" -> Some "not-a-real-pem"
         | _                      -> None
-    let config = { AppId = "app-123"; PrivateKeyPath = "/nonexistent/key.pem"; InstallationId = "install-456" }
+    let config = { AppId = "app-123"; PrivateKeyPath = "/nonexistent/key.pem"; InstallationId = "install-456"; PrivateKeyPem = None }
     // readFile should never be called when the env var is set
     let readFile _ = failwith "readFile should not be called"
     let ctx = AppAuthContext(config, getEnv, readFile) :> OrcAI.Core.AuthContext.IAuthContext
@@ -222,7 +222,7 @@ let ``AppAuthContext GetToken uses ORCAI_APP_PRIVATE_KEY from getEnv instead of 
 [<Fact>]
 let ``AppAuthContext GetToken falls back to readFile when env var absent`` () =
     let getEnv _ = None  // no env var
-    let config = { AppId = "app-123"; PrivateKeyPath = "/some/key.pem"; InstallationId = "install-456" }
+    let config = { AppId = "app-123"; PrivateKeyPath = "/some/key.pem"; InstallationId = "install-456"; PrivateKeyPem = None }
     let mutable readFileCalled = false
     let readFile _ =
         readFileCalled <- true
@@ -245,7 +245,7 @@ let private withTempHome (f: string -> unit) =
 [<Fact>]
 let ``storeConfigTo then loadConfigFrom round-trips all fields`` () =
     withTempHome (fun home ->
-        let config = { AppId = "app-999"; PrivateKeyPath = "/keys/my.pem"; InstallationId = "install-777" }
+        let config = { AppId = "app-999"; PrivateKeyPath = "/keys/my.pem"; InstallationId = "install-777"; PrivateKeyPem = None }
         match storeConfigTo home "my-app" config with
         | Error e -> Assert.Fail($"storeConfigTo failed: {e}")
         | Ok ()   ->
@@ -259,7 +259,7 @@ let ``storeConfigTo then loadConfigFrom round-trips all fields`` () =
 [<Fact>]
 let ``storeConfigTo stores profile under the given name`` () =
     withTempHome (fun home ->
-        let config = { AppId = "app-999"; PrivateKeyPath = "/keys/my.pem"; InstallationId = "install-777" }
+        let config = { AppId = "app-999"; PrivateKeyPath = "/keys/my.pem"; InstallationId = "install-777"; PrivateKeyPem = None }
         match storeConfigTo home "my-profile" config with
         | Error e -> Assert.Fail($"storeConfigTo failed: {e}")
         | Ok ()   ->
@@ -311,3 +311,55 @@ let ``loadConfigFrom returns error when active profile does not exist`` () =
         match loadConfigFrom home with
         | Ok _    -> Assert.Fail("Expected Error when active profile does not exist")
         | Error e -> Assert.Contains("missing-profile", e))
+
+// ---------------------------------------------------------------------------
+// resolveConfigWith — ORCAI_APP_PRIVATE_KEY at config resolution time
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``resolveConfigWith succeeds with ORCAI_APP_PRIVATE_KEY and no key path`` () =
+    let pairs = [ "ORCAI_APP_ID",              "app-123"
+                  "ORCAI_APP_INSTALLATION_ID", "install-456"
+                  "ORCAI_APP_PRIVATE_KEY",      "pem-content" ]
+    let result = resolveConfigWith (fakeEnv pairs) noFileConfig
+    match result with
+    | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+    | Ok cfg  ->
+        Assert.Equal("app-123",     cfg.AppId)
+        Assert.Equal("install-456", cfg.InstallationId)
+        Assert.Equal(Some "pem-content", cfg.PrivateKeyPem)
+
+[<Fact>]
+let ``resolveConfigWith ORCAI_APP_PRIVATE_KEY takes precedence when both key vars set`` () =
+    let pairs = [ "ORCAI_APP_ID",              "app-123"
+                  "ORCAI_APP_INSTALLATION_ID", "install-456"
+                  "ORCAI_APP_KEY_PATH",         "/tmp/key.pem"
+                  "ORCAI_APP_PRIVATE_KEY",      "raw-pem" ]
+    let result = resolveConfigWith (fakeEnv pairs) noFileConfig
+    match result with
+    | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+    | Ok cfg  ->
+        Assert.Equal(Some "raw-pem",  cfg.PrivateKeyPem)
+        Assert.Equal("/tmp/key.pem",  cfg.PrivateKeyPath)
+
+[<Fact>]
+let ``resolveConfigWith returns error when neither key path nor private key env var is set`` () =
+    let pairs = [ "ORCAI_APP_ID",              "app-123"
+                  "ORCAI_APP_INSTALLATION_ID", "install-456" ]
+    let result = resolveConfigWith (fakeEnv pairs) noFileConfig
+    match result with
+    | Ok _    -> Assert.Fail("Expected Error when no key is provided")
+    | Error e -> Assert.Contains("key", e.ToLowerInvariant())
+
+[<Fact>]
+let ``AppAuthContext GetToken uses PrivateKeyPem from config without calling readFile or getEnv`` () =
+    // PrivateKeyPem set on config — neither getEnv nor readFile should be needed.
+    let config = { AppId = "app-123"; PrivateKeyPath = "/nonexistent/key.pem"; InstallationId = "install-456"; PrivateKeyPem = Some "not-a-real-pem" }
+    let getEnv _ = failwith "getEnv should not be called" : string option
+    let readFile _ = failwith "readFile should not be called" : string
+    let ctx = AppAuthContext(config, getEnv, readFile) :> OrcAI.Core.AuthContext.IAuthContext
+    let result = ctx.GetToken() |> Async.RunSynchronously
+    // Should fail at JWT generation (bad PEM), not at env/file lookup.
+    match result with
+    | Ok _    -> Assert.Fail("Expected error with invalid PEM content")
+    | Error e -> Assert.Contains("Failed to generate JWT", e)

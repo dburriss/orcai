@@ -28,7 +28,10 @@ open OrcAI.Auth.AuthConfig
 type AppAuthConfig =
     { AppId          : string
       PrivateKeyPath : string
-      InstallationId : string }
+      InstallationId : string
+      /// Raw PEM content, populated when ORCAI_APP_PRIVATE_KEY is set at config
+      /// resolution time. Takes precedence over PrivateKeyPath in GetToken.
+      PrivateKeyPem  : string option }
 
 /// Store GitHub App auth configuration under a given home directory (useful for testing).
 /// The profile is stored under `profileName` and set as the active profile.
@@ -62,7 +65,7 @@ let loadConfigFrom (homeDir: string) : Result<AppAuthConfig, string> =
         else
             match profile.AppId, profile.KeyPath, profile.InstallationId with
             | Some appId, Some keyPath, Some installId ->
-                Ok { AppId = appId; PrivateKeyPath = keyPath; InstallationId = installId }
+                Ok { AppId = appId; PrivateKeyPath = keyPath; InstallationId = installId; PrivateKeyPem = None }
             | _ ->
                 Error "App auth config is incomplete. Re-run 'orcai auth app ...'.")
 
@@ -76,7 +79,7 @@ let loadConfig () : Result<AppAuthConfig, string> =
         else
             match profile.AppId, profile.KeyPath, profile.InstallationId with
             | Some appId, Some keyPath, Some installId ->
-                Ok { AppId = appId; PrivateKeyPath = keyPath; InstallationId = installId }
+                Ok { AppId = appId; PrivateKeyPath = keyPath; InstallationId = installId; PrivateKeyPem = None }
             | _ ->
                 Error "App auth config is incomplete. Re-run 'orcai auth app ...'.") 
 
@@ -87,9 +90,10 @@ let loadConfig () : Result<AppAuthConfig, string> =
 ///   ORCAI_APP_ID               — GitHub App ID
 ///   ORCAI_APP_INSTALLATION_ID  — Installation ID for the target organisation
 ///   ORCAI_APP_KEY_PATH         — Path to the PEM private key file
-///
-/// Note: ORCAI_APP_PRIVATE_KEY (raw PEM content) is handled separately in
-/// AppAuthContext.GetToken and takes precedence over ORCAI_APP_KEY_PATH.
+///   ORCAI_APP_PRIVATE_KEY      — Raw PEM content (satisfies the key requirement on its
+///                                own; takes precedence over ORCAI_APP_KEY_PATH at
+///                                token-generation time and is stored on the returned
+///                                AppAuthConfig.PrivateKeyPem)
 ///
 /// Pass `Environment.GetEnvironmentVariable >> Option.ofObj` for production.
 let resolveConfigWith (getEnv: string -> string option) (loadCfg: unit -> Result<AppAuthConfig, string>) : Result<AppAuthConfig, string> =
@@ -98,15 +102,18 @@ let resolveConfigWith (getEnv: string -> string option) (loadCfg: unit -> Result
     let base_ =
         match loadCfg () with
         | Ok cfg  -> cfg
-        | Error _ -> { AppId = ""; PrivateKeyPath = ""; InstallationId = "" }
+        | Error _ -> { AppId = ""; PrivateKeyPath = ""; InstallationId = ""; PrivateKeyPem = None }
     let appId     = env "ORCAI_APP_ID"              |> Option.defaultValue base_.AppId
     let installId = env "ORCAI_APP_INSTALLATION_ID" |> Option.defaultValue base_.InstallationId
     let keyPath   = env "ORCAI_APP_KEY_PATH"         |> Option.defaultValue base_.PrivateKeyPath
-    match appId, installId, keyPath with
-    | "", _, _ -> Error "App ID is missing. Set ORCAI_APP_ID or run 'orcai auth app ...'."
-    | _, "", _ -> Error "Installation ID is missing. Set ORCAI_APP_INSTALLATION_ID or run 'orcai auth app ...'."
-    | _, _, "" -> Error "Private key is missing. Set ORCAI_APP_KEY_PATH / ORCAI_APP_PRIVATE_KEY or run 'orcai auth app ...'."
-    | _        -> Ok { AppId = appId; PrivateKeyPath = keyPath; InstallationId = installId }
+    let rawPem    = env "ORCAI_APP_PRIVATE_KEY"
+    match appId, installId with
+    | "", _ -> Error "App ID is missing. Set ORCAI_APP_ID or run 'orcai auth app ...'."
+    | _, "" -> Error "Installation ID is missing. Set ORCAI_APP_INSTALLATION_ID or run 'orcai auth app ...'."
+    | _ ->
+        match keyPath, rawPem with
+        | "", None -> Error "Private key is missing. Set ORCAI_APP_KEY_PATH / ORCAI_APP_PRIVATE_KEY or run 'orcai auth app ...'."
+        | _        -> Ok { AppId = appId; PrivateKeyPath = keyPath; InstallationId = installId; PrivateKeyPem = rawPem }
 
 /// Resolve the App auth configuration, overlaying environment variables on top of
 /// any stored file config. The following env vars are checked (each silently
@@ -115,9 +122,8 @@ let resolveConfigWith (getEnv: string -> string option) (loadCfg: unit -> Result
 ///   ORCAI_APP_ID               — GitHub App ID
 ///   ORCAI_APP_INSTALLATION_ID  — Installation ID for the target organisation
 ///   ORCAI_APP_KEY_PATH         — Path to the PEM private key file
-///
-/// Note: ORCAI_APP_PRIVATE_KEY (raw PEM content) is handled separately in
-/// AppAuthContext.GetToken and takes precedence over ORCAI_APP_KEY_PATH.
+///   ORCAI_APP_PRIVATE_KEY      — Raw PEM content (satisfies the key requirement on its
+///                                own; takes precedence over ORCAI_APP_KEY_PATH)
 let resolveConfig () : Result<AppAuthConfig, string> =
     resolveConfigWith (Environment.GetEnvironmentVariable >> Option.ofObj) loadConfig
 
@@ -208,11 +214,16 @@ type AppAuthContext(config: AppAuthConfig, getEnv: string -> string option, read
     interface IAuthContext with
         member _.GetToken() = async {
             let pemResult =
-                match getEnv "ORCAI_APP_PRIVATE_KEY" |> Option.bind (fun s -> if s.Length > 0 then Some s else None) with
+                // Priority: PrivateKeyPem on config (set from ORCAI_APP_PRIVATE_KEY at
+                // resolve time) > getEnv fallback > key file.
+                match config.PrivateKeyPem with
                 | Some pem -> Ok pem
-                | None     ->
-                    try Ok (readFile config.PrivateKeyPath)
-                    with ex -> Error $"Failed to read private key file '{config.PrivateKeyPath}': {ex.Message}"
+                | None ->
+                    match getEnv "ORCAI_APP_PRIVATE_KEY" |> Option.bind (fun s -> if s.Length > 0 then Some s else None) with
+                    | Some pem -> Ok pem
+                    | None     ->
+                        try Ok (readFile config.PrivateKeyPath)
+                        with ex -> Error $"Failed to read private key file '{config.PrivateKeyPath}': {ex.Message}"
             match pemResult with
             | Error e -> return Error e
             | Ok pem  ->

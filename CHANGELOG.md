@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Extra callout in `auth create-app` instructions to guide users through the manual steps required to grant org permissions after app creation via the manifest flow. Permissions must be set before installing.
+
+### Fixed
+
+- Fixed a bug where `lockFilePath` produced backslashes on Windows, causing CI test failures; now produces forward-slash paths for consistency across platforms. Validated with unit tests on Windows and Linux.
+- ORCAI_APP_PRIVATE_KEY environment variable is now supported for CI usage, allowing users to avoid writing the private key to disk. Updated documentation and CI example to reflect this.
+ 
 ## [0.4.3] - 2026-03-16
 
 ### Fixed
