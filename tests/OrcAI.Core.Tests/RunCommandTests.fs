@@ -106,22 +106,24 @@ type FakeGhClient(repoErrors: Map<string, string>) =
         member _.RepoExists _          = async { return Ok () }
 
 let private makeDeps (fs: MockFileSystem) (client: IGhClient) : OrcAIDeps =
-    { GhClient    = client
-      AuthContext = { new OrcAI.Core.AuthContext.IAuthContext with
-                         member _.GetToken() = async { return Ok "fake-token" } }
-      FileSystem  = fs :> System.IO.Abstractions.IFileSystem
-      Config      = OrcAI.Core.OrcAIConfig.empty }
+    { GhClient      = client
+      CopilotClient = None
+      AuthContext   = { new OrcAI.Core.AuthContext.IAuthContext with
+                           member _.GetToken() = async { return Ok "fake-token" } }
+      FileSystem    = fs :> System.IO.Abstractions.IFileSystem
+      Config        = OrcAI.Core.OrcAIConfig.empty }
 
 let private defaultInput paths =
-    { YamlPath         = ""
-      Verbose          = false
-      AutoCreateLabels = false
-      SkipCopilot      = true    // skip copilot to avoid AssignIssue calls
-      SkipLock         = true
-      MaxConcurrency   = 4
-      NoParallel       = false
-      ContinueOnError  = false
-      DefaultLabels    = [] }
+    { YamlPath           = ""
+      Verbose            = false
+      AutoCreateLabels   = false
+      SkipCopilot        = true    // skip copilot to avoid AssignIssue calls
+      SkipLock           = true
+      MaxConcurrency     = 4
+      NoParallel         = false
+      ContinueOnError    = false
+      DefaultLabels      = []
+      IsPrimaryAuthApp   = false }
 
 // ---------------------------------------------------------------------------
 // Multi-file execute tests
@@ -213,3 +215,99 @@ let ``execute with NoParallel=true processes files sequentially and returns corr
 
     Assert.Equal(2, results.Count)
     Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
+
+// ---------------------------------------------------------------------------
+// Copilot assignment / mixed-auth tests
+// ---------------------------------------------------------------------------
+
+/// A fake IGhClient that records which client label was used for AssignIssue.
+/// `label` is added to `assignCalls` whenever AssignIssue is invoked.
+type TrackingGhClient(label: string, assignCalls: System.Collections.Concurrent.ConcurrentBag<string>) =
+    let fakeProject =
+        { Title  = "My Project"
+          Org    = OrgName "myorg"
+          Number = 1
+          Url    = "https://github.com/orgs/myorg/projects/1" }
+    let fakeIssue repo num =
+        { Repo      = RepoName repo
+          Number    = IssueNumber num
+          Url       = $"https://github.com/{repo}/issues/{num}"
+          Assignees = [] }
+    interface IGhClient with
+        member _.FindProject _ _       = async { return Some fakeProject }
+        member _.CreateProject _ _     = async { return Ok fakeProject }
+        member _.DeleteProject _       = async { return failwith "not expected" }
+        member _.ListLabels _          = async { return Ok [] }
+        member _.CreateLabel _ _       = async { return Ok () }
+        member _.FindIssue _ _         = async { return None }
+        member _.CreateIssue repo _ _ _ =
+            let (RepoName r) = repo
+            async { return Ok (fakeIssue r 42) }
+        member _.CloseIssue _ _        = async { return failwith "not expected" }
+        member _.AddIssueToProject _ _ = async { return Ok () }
+        member _.AssignIssue _ _ _ =
+            assignCalls.Add(label)
+            async { return Ok () }
+        member _.FindPrsForIssue _ _   = async { return failwith "not expected" }
+        member _.ClosePr _ _           = async { return failwith "not expected" }
+        member _.ListRepos _           = async { return failwith "not expected" }
+        member _.RepoExists _          = async { return Ok () }
+
+[<Fact>]
+let ``processRepo uses CopilotClient when Some for AssignIssue`` () =
+    let fs          = MockFileSystem()
+    let path        = writeMockYaml fs "job.yml"
+    let assignCalls = System.Collections.Concurrent.ConcurrentBag<string>()
+    let primary     = TrackingGhClient("primary", assignCalls)
+    let copilot     = TrackingGhClient("copilot", assignCalls)
+    let deps        = { makeDeps fs (primary :> IGhClient) with CopilotClient = Some (copilot :> IGhClient) }
+    let input       = { defaultInput [path] with SkipCopilot = false; IsPrimaryAuthApp = true }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
+    Assert.Contains("copilot", assignCalls)
+    Assert.DoesNotContain("primary", assignCalls)
+
+[<Fact>]
+let ``processRepo uses primary client for AssignIssue when CopilotClient is None and IsPrimaryAuthApp=false`` () =
+    let fs          = MockFileSystem()
+    let path        = writeMockYaml fs "job.yml"
+    let assignCalls = System.Collections.Concurrent.ConcurrentBag<string>()
+    let primary     = TrackingGhClient("primary", assignCalls)
+    let deps        = { makeDeps fs (primary :> IGhClient) with CopilotClient = None }
+    let input       = { defaultInput [path] with SkipCopilot = false; IsPrimaryAuthApp = false }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
+    Assert.Contains("primary", assignCalls)
+
+[<Fact>]
+let ``processRepo skips assignment and does not call AssignIssue when CopilotClient=None and IsPrimaryAuthApp=true`` () =
+    let fs          = MockFileSystem()
+    let path        = writeMockYaml fs "job.yml"
+    let assignCalls = System.Collections.Concurrent.ConcurrentBag<string>()
+    let primary     = TrackingGhClient("primary", assignCalls)
+    let deps        = { makeDeps fs (primary :> IGhClient) with CopilotClient = None }
+    let input       = { defaultInput [path] with SkipCopilot = false; IsPrimaryAuthApp = true }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
+    Assert.Empty(assignCalls)
+
+[<Fact>]
+let ``processRepo skips assignment entirely when skipCopilot=true regardless of CopilotClient`` () =
+    let fs          = MockFileSystem()
+    let path        = writeMockYaml fs "job.yml"
+    let assignCalls = System.Collections.Concurrent.ConcurrentBag<string>()
+    let primary     = TrackingGhClient("primary", assignCalls)
+    let copilot     = TrackingGhClient("copilot", assignCalls)
+    let deps        = { makeDeps fs (primary :> IGhClient) with CopilotClient = Some (copilot :> IGhClient) }
+    let input       = { defaultInput [path] with SkipCopilot = true; IsPrimaryAuthApp = true }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
+    Assert.Empty(assignCalls)

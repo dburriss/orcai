@@ -20,16 +20,19 @@ open OrcAI.Core.Deps
 
 /// Input parameters derived from parsed CLI arguments.
 type RunInput =
-    { YamlPath         : string
-      Verbose          : bool
-      AutoCreateLabels : bool
-      SkipCopilot      : bool
-      SkipLock         : bool
-      MaxConcurrency   : int
-      NoParallel       : bool
-      ContinueOnError  : bool
+    { YamlPath           : string
+      Verbose            : bool
+      AutoCreateLabels   : bool
+      SkipCopilot        : bool
+      SkipLock           : bool
+      MaxConcurrency     : int
+      NoParallel         : bool
+      ContinueOnError    : bool
       /// Extra labels to union-merge with the YAML labels (from config file).
-      DefaultLabels    : string list }
+      DefaultLabels      : string list
+      /// True when the primary auth is a GitHub App. Used to emit an appropriate
+      /// warning when no secondary PAT is available for Copilot assignment.
+      IsPrimaryAuthApp   : bool }
 
 /// Whether an issue was freshly created or already existed in GitHub.
 type IssueOutcome = | Created | AlreadyExisted
@@ -102,15 +105,17 @@ let private ensureLabelsExist
 /// Returns Some RepoResult on success (with outcome Created or AlreadyExisted),
 /// None on any error (error is printed to stderr).
 let private processRepo
-    (client           : IGhClient)
+    (deps             : OrcAIDeps)
     (config           : JobConfig)
     (project          : ProjectInfo)
     (verbose          : bool)
     (autoCreateLabels : bool)
     (skipCopilot      : bool)
+    (isPrimaryAuthApp : bool)
     (repo             : RepoName)
     : Async<RepoResult option> =
     async {
+        let client = deps.GhClient
         let (RepoName repoStr) = repo
 
         // 0. Auto-create missing labels if requested
@@ -143,7 +148,10 @@ let private processRepo
         if verbose then eprintfn "[%s] Adding issue to project" repoStr
         let! _ = client.AddIssueToProject project issue
 
-        // 3. Assign @copilot only if not already assigned and not disabled
+        // 3. Assign @copilot only if not already assigned and not disabled.
+        //    When the primary auth is a GitHub App, use the CopilotClient (PAT-based)
+        //    instead — GitHub Apps cannot assign @copilot.
+        //    If no CopilotClient is available and primary auth is App-based, warn and skip.
         let! finalIssue =
             if skipCopilot then
                 if verbose then eprintfn "[%s] Skipping @copilot assignment (--skip-copilot)" repoStr
@@ -152,16 +160,22 @@ let private processRepo
                 if verbose then eprintfn "[%s] Copilot already assigned, skipping" repoStr
                 async { return issue }
             else
-                async {
-                    if verbose then eprintfn "[%s] Assigning @copilot" repoStr
-                    match! client.AssignIssue repo issue.Number "@copilot" with
-                    | Error e ->
-                        eprintfn "[%s] Warning: failed to assign @copilot: %s" repoStr e
-                        return issue
-                    | Ok () ->
-                        // Return issue with copilot added to assignees list
-                        return { issue with Assignees = issue.Assignees @ ["copilot"] }
-                }
+                match deps.CopilotClient, isPrimaryAuthApp with
+                | None, true ->
+                    eprintfn "[%s] Warning: primary auth is a GitHub App which cannot assign @copilot. Set ORCAI_PAT or add a 'pat' profile to auth.json to enable Copilot assignment." repoStr
+                    async { return issue }
+                | clientOpt, _ ->
+                    let assignClient = clientOpt |> Option.defaultValue client
+                    async {
+                        if verbose then eprintfn "[%s] Assigning @copilot" repoStr
+                        match! assignClient.AssignIssue repo issue.Number "@copilot" with
+                        | Error e ->
+                            eprintfn "[%s] Warning: failed to assign @copilot: %s" repoStr e
+                            return issue
+                        | Ok () ->
+                            // Return issue with copilot added to assignees list
+                            return { issue with Assignees = issue.Assignees @ ["copilot"] }
+                    }
 
         return Some { Issue = finalIssue; Outcome = outcome }
     }
@@ -207,7 +221,7 @@ let private runFull
     let skipCopilot = input.SkipCopilot || config.SkipCopilot
     let repoResults =
         config.Repos
-        |> List.map (processRepo deps.GhClient config project input.Verbose input.AutoCreateLabels skipCopilot)
+        |> List.map (processRepo deps config project input.Verbose input.AutoCreateLabels skipCopilot input.IsPrimaryAuthApp)
         |> Async.Parallel
         |> Async.RunSynchronously
 

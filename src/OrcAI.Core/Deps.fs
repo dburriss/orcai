@@ -11,7 +11,11 @@ open System.IO.Abstractions
 
 /// Dependencies injected by the CLI entry point into every command.
 type OrcAIDeps =
-    { GhClient   : IGhClient
-      AuthContext: IAuthContext
-      FileSystem : IFileSystem
-      Config     : OrcAIConfig }
+    { GhClient      : IGhClient
+      /// Secondary client authenticated with a PAT, used only for Copilot assignment
+      /// when the primary auth is a GitHub App (Apps cannot assign @copilot).
+      /// None when primary auth is already PAT-based, or when no PAT could be resolved.
+      CopilotClient : IGhClient option
+      AuthContext   : IAuthContext
+      FileSystem    : IFileSystem
+      Config        : OrcAIConfig }

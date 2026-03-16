@@ -80,11 +80,12 @@ type NeverCalledGhClient() =
         member _.ListRepos _               = boom "ListRepos"
 
 let private makeDeps (fs: MockFileSystem) (client: IGhClient) : OrcAIDeps =
-    { GhClient    = client
-      AuthContext = { new OrcAI.Core.AuthContext.IAuthContext with
-                         member _.GetToken() = async { return Ok "fake-token" } }
-      FileSystem  = fs :> System.IO.Abstractions.IFileSystem
-      Config      = OrcAI.Core.OrcAIConfig.empty }
+    { GhClient      = client
+      CopilotClient = None
+      AuthContext   = { new OrcAI.Core.AuthContext.IAuthContext with
+                           member _.GetToken() = async { return Ok "fake-token" } }
+      FileSystem    = fs :> System.IO.Abstractions.IFileSystem
+      Config        = OrcAI.Core.OrcAIConfig.empty }
 
 let private makeInput path noParallel =
     { YamlPath = path; NoParallel = noParallel; MaxConcurrency = 4; ContinueOnError = false }

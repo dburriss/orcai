@@ -65,7 +65,7 @@ let private resolveAuthContext () =
 
 /// Resolve auth, obtain a token, create the gh client, and invoke `f`.
 /// Returns 1 on any auth failure, otherwise returns the result of `f`.
-let private withClient (f: OrcAIDeps -> int) : int =
+let private withClient (f: OrcAIDeps -> bool -> int) : int =
     match resolveAuthContext () with
     | Error e ->
         eprintfn "Auth error: %s" e
@@ -76,17 +76,31 @@ let private withClient (f: OrcAIDeps -> int) : int =
             eprintfn "Auth error: %s" e
             1
         | Ok ghToken ->
+            let isPrimaryAuthApp =
+                match authCtx with
+                | :? AppAuthContext -> true
+                | _ -> false
+            // When the primary auth is a GitHub App, attempt to resolve a secondary
+            // PAT for use exclusively in @copilot assignment (Apps cannot assign copilot).
+            let copilotClient : OrcAI.Core.GhClient.IGhClient option =
+                if isPrimaryAuthApp then
+                    match loadToken () with
+                    | Ok pat -> Some (OrcAI.GitHub.GhClient.GhCliClient(pat) :> OrcAI.Core.GhClient.IGhClient)
+                    | Error _ -> None
+                else
+                    None
             let client = OrcAI.GitHub.GhClient.GhCliClient(ghToken)
             let fs     = RealFileSystem() :> IFileSystem
             let home   = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile)
             let cwd    = System.Environment.CurrentDirectory
             let cfg    = OrcAI.Core.OrcAIConfig.resolve fs home cwd
             let deps : OrcAIDeps =
-                { GhClient    = client :> OrcAI.Core.GhClient.IGhClient
-                  AuthContext = authCtx
-                  FileSystem  = fs
-                  Config      = cfg }
-            f deps
+                { GhClient      = client :> OrcAI.Core.GhClient.IGhClient
+                  CopilotClient = copilotClient
+                  AuthContext   = authCtx
+                  FileSystem    = fs
+                  Config        = cfg }
+            f deps isPrimaryAuthApp
 
 /// Format an InfoResult for console output.
 let private printInfoResult (result: InfoResult) =
@@ -275,7 +289,7 @@ let main argv =
                 eprintfn "Error: %s" e
                 1
             | Ok paths ->
-            withClient (fun deps ->
+            withClient (fun deps isPrimaryAuthApp ->
                 // Apply config fallbacks — CLI flags win, then config, then built-in defaults.
                 let effectiveSkipCopilot     = skipCopilot     || (deps.Config.SkipCopilot      |> Option.defaultValue false)
                 let effectiveAutoCreateLabels = autoCreateLabels || (deps.Config.AutoCreateLabels |> Option.defaultValue false)
@@ -285,15 +299,16 @@ let main argv =
                     | Some v -> v
                     | None   -> deps.Config.MaxConcurrency |> Option.defaultValue 4
                 let input : OrcAI.Core.RunCommand.RunInput =
-                    { YamlPath         = ""   // overridden per-file in execute
-                      Verbose          = verbose
-                      AutoCreateLabels = effectiveAutoCreateLabels
-                      SkipCopilot      = effectiveSkipCopilot
-                      SkipLock         = skipLock
-                      MaxConcurrency   = effectiveMaxConcurrency
-                      NoParallel       = noParallel
-                      ContinueOnError  = effectiveContinueOnError
-                      DefaultLabels    = deps.Config.DefaultLabels |> Option.defaultValue [] }
+                    { YamlPath           = ""   // overridden per-file in execute
+                      Verbose            = verbose
+                      AutoCreateLabels   = effectiveAutoCreateLabels
+                      SkipCopilot        = effectiveSkipCopilot
+                      SkipLock           = skipLock
+                      MaxConcurrency     = effectiveMaxConcurrency
+                      NoParallel         = noParallel
+                      ContinueOnError    = effectiveContinueOnError
+                      DefaultLabels      = deps.Config.DefaultLabels |> Option.defaultValue []
+                      IsPrimaryAuthApp   = isPrimaryAuthApp }
                 let results =
                     OrcAI.Core.RunCommand.execute deps paths input
                     |> Async.RunSynchronously
@@ -350,7 +365,7 @@ let main argv =
                 printfn "Aborted."
                 0
             else
-            withClient (fun deps ->
+            withClient (fun deps _ ->
                 let input : OrcAI.Core.CleanupCommand.CleanupInput = { YamlPath = yamlFile; DryRun = dryRun }
                 match OrcAI.Core.CleanupCommand.execute deps input with
                 | Error e ->
@@ -384,7 +399,7 @@ let main argv =
             let skipLock  = args.Contains(InfoArgs.Skip_Lock)
             let saveLock  = args.Contains(InfoArgs.Save_Lock)
             let json      = args.Contains(InfoArgs.Json)
-            withClient (fun deps ->
+            withClient (fun deps _ ->
                 let input  = { YamlPath = yamlFile; SkipLock = skipLock; SaveLock = saveLock }
                 match OrcAI.Core.InfoCommand.execute deps input with
                 | Error e ->
@@ -543,8 +558,7 @@ let main argv =
             let skipCopilot  = args.Contains(GenerateArgs.Skip_Copilot)
             let explicitRepos = args.GetResults(GenerateArgs.Repo)
 
-            withClient (fun deps ->
-                // Apply config fallbacks for generate.
+            withClient (fun deps _ ->
                 let effectiveSkipCopilot =
                     skipCopilot || (deps.Config.SkipCopilot |> Option.defaultValue false)
 
@@ -638,7 +652,7 @@ let main argv =
                 eprintfn "Error: %s" e
                 1
             | Ok paths ->
-            withClient (fun deps ->
+            withClient (fun deps _ ->
                 // Apply config fallbacks for validate.
                 let effectiveContinueOnError =
                     continueOnError || (deps.Config.ContinueOnError |> Option.defaultValue false)
