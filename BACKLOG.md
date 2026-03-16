@@ -25,3 +25,4 @@
 - [ ] add an assignees field to the YAML config to allow for assigning users or teams to issues instead of copilot. This could be a list of GitHub usernames or team slugs. If not provided, default to assigning copilot. Unless `--skip-copilot` is set, in which case no assignees will be added.
 - [x] pem file saved with the app name <app_name>.pem for easier identification
 - [ ] security review of pat and pem file handling to ensure best practices are followed (e.g. least privilege, secure storage, etc.)
+- [ ] Chech that all commands have --output text/json support. Default to text for human users, but allow json output for machine parsing.
