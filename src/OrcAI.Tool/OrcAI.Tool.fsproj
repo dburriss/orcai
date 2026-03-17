@@ -10,7 +10,7 @@
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
     <!-- Binary identity -->
-    <Version>0.5.0</Version>
+    <Version>0.5.1</Version>
     <Authors>Devon Burriss</Authors>
     <Description>A CLI tool for managing GitHub Projects and Copilot-assigned issues in bulk. Define your project in a YAML file and let orcai create issues, assign them to Copilot, and clean up when done.</Description>
     <Title>orcai</Title>
@@ -25,7 +25,7 @@
     <!-- Discoverability -->
     <PackageTags>github copilot cli project-management automation</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Use a PAT token in combination with GitHub App authenication to support assigning Copilot (since GitHub Apps don't have permission to assign Copilot, even if they have org-level permissions)</PackageReleaseNotes>
+    <PackageReleaseNotes>Fixed order of PAT and GitHub App authentication methods — PAT is now correctly used as a fallback when App auth fails due to insufficient permissions (e.g. for Copilot assignment), instead of being used as the primary method and causing failures when only App credentials are provided. Updated documentation to clarify this behavior.</PackageReleaseNotes>
     <!-- SourceLink / reproducible builds -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
