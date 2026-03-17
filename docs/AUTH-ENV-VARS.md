@@ -17,6 +17,36 @@ export ORCAI_PAT=ghp_xxxxxxxxxxxxxxxxxxxx
 orcai run job.yml
 ```
 
+### PAT as a secondary credential for `@copilot` assignment
+
+GitHub Apps cannot assign `@copilot` to issues. If your primary auth is a GitHub App, set `ORCAI_PAT` (or store a `pat` profile via `orcai auth pat`) alongside your App credentials. OrcAI will use the PAT only for the `@copilot` assignment step and the App token for everything else.
+
+The PAT requires the following permissions:
+
+| Permission | Level |
+|---|---|
+| Issues | Read & write |
+| Metadata | Read (implicit) |
+
+For an org, use a fine-grained PAT scoped to the org or specific repositories, or a classic PAT with `repo` scope.
+
+If `ORCAI_PAT` is not set and primary auth is a GitHub App, OrcAI will skip `@copilot` assignment and print a warning:
+
+```
+Warning: primary auth is a GitHub App which cannot assign @copilot.
+Set ORCAI_PAT or add a 'pat' profile to auth.json to enable Copilot assignment.
+```
+
+#### Example — GitHub App + PAT in CI
+
+```sh
+export ORCAI_APP_ID=123456
+export ORCAI_APP_INSTALLATION_ID=78901234
+export ORCAI_APP_PRIVATE_KEY="$(cat /run/secrets/orcai-app-key.pem)"
+export ORCAI_PAT=ghp_xxxxxxxxxxxxxxxxxxxx
+orcai run job.yml
+```
+
 ---
 
 ## GitHub App authentication

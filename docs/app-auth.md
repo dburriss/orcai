@@ -137,6 +137,62 @@ If you prefer to avoid writing the key to disk, export the PEM content as an env
 
 ---
 
+## 7. Enabling `@copilot` assignment
+
+GitHub Apps cannot assign `@copilot` to issues. If you want OrcAI to assign Copilot to issues as part of a run, you must supply a PAT alongside your App credentials.
+
+Set `ORCAI_PAT` to a fine-grained PAT (or classic PAT with `repo` scope) that has **Issues: Read & write** permission on the target repositories. OrcAI will use it only for the `@copilot` assignment step.
+
+### Required PAT permissions
+
+| Permission | Level |
+|---|---|
+| Issues | Read & write |
+| Metadata | Read (implicit) |
+
+For an org, scope the fine-grained PAT to the org or to the specific repositories OrcAI manages.
+
+### In CI
+
+Add `ORCAI_PAT` as an additional secret alongside your App credentials:
+
+```yaml
+- name: Configure OrcAI auth
+  env:
+    ORCAI_PRIVATE_KEY: ${{ secrets.ORCAI_PRIVATE_KEY }}
+    ORCAI_PAT: ${{ secrets.ORCAI_COPILOT_PAT }}
+  run: |
+    echo "$ORCAI_PRIVATE_KEY" > /tmp/orcai-key.pem
+    orcai auth app \
+      --app-id ${{ secrets.ORCAI_APP_ID }} \
+      --key /tmp/orcai-key.pem \
+      --installation-id ${{ secrets.ORCAI_INSTALLATION_ID }}
+    rm /tmp/orcai-key.pem
+```
+
+Or use all env vars with no file config:
+
+```yaml
+- name: Run OrcAI
+  env:
+    ORCAI_APP_ID: ${{ secrets.ORCAI_APP_ID }}
+    ORCAI_APP_INSTALLATION_ID: ${{ secrets.ORCAI_INSTALLATION_ID }}
+    ORCAI_APP_PRIVATE_KEY: ${{ secrets.ORCAI_PRIVATE_KEY }}
+    ORCAI_PAT: ${{ secrets.ORCAI_COPILOT_PAT }}
+  run: orcai run job.yml
+```
+
+If `ORCAI_PAT` is not set, OrcAI skips `@copilot` assignment and prints:
+
+```
+Warning: primary auth is a GitHub App which cannot assign @copilot.
+Set ORCAI_PAT or add a 'pat' profile to auth.json to enable Copilot assignment.
+```
+
+To suppress the warning and intentionally skip Copilot assignment, pass `--skip-copilot` or set `skipCopilot: true` in your job config.
+
+---
+
 ## Troubleshooting
 
 **`Failed to generate JWT`**

@@ -24,19 +24,19 @@ open Testably.Abstractions
 // ---------------------------------------------------------------------------
 
 /// Resolve the active GH_TOKEN using the following priority order:
-///   1. Stored PAT config  (ORCAI_PAT env var or ~/.config/orcai/auth.json type=pat)
-///   2. Stored App config  (env vars or ~/.config/orcai/auth.json type=app)
+///   1. Stored App config  (env vars or ~/.config/orcai/auth.json type=app)
+///   2. Stored PAT config  (ORCAI_PAT env var or ~/.config/orcai/auth.json type=pat)
 ///   3. GH_TOKEN environment variable
 ///   4. gh CLI ambient auth  (gh auth token)
 /// `getEnv` is injected so the env-var reads are testable without mutation.
 let resolveAuthContextWith (getEnv: string -> string option) : Result<OrcAI.Core.AuthContext.IAuthContext, string> =
-    // 1. Try PAT
-    match loadToken () with
-    | Ok _ -> Ok (PatAuthContext() :> OrcAI.Core.AuthContext.IAuthContext)
+    // 1. Try App
+    match resolveConfig () with
+    | Ok appCfg -> Ok (AppAuthContext(appCfg) :> OrcAI.Core.AuthContext.IAuthContext)
     | Error _ ->
-        // 2. Try App
-        match resolveConfig () with
-        | Ok appCfg -> Ok (AppAuthContext(appCfg) :> OrcAI.Core.AuthContext.IAuthContext)
+        // 2. Try PAT
+        match loadToken () with
+        | Ok _ -> Ok (PatAuthContext() :> OrcAI.Core.AuthContext.IAuthContext)
         | Error _ ->
             // 3. Fallback: GH_TOKEN env var
             match getEnv "GH_TOKEN" |> Option.bind (fun t -> if t.Length > 0 then Some t else None) with
