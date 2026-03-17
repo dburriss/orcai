@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed order of PAT and GitHub App authentication methods — PAT is now correctly used as a fallback when App auth fails due to insufficient permissions (e.g. for Copilot assignment), instead of being used as the primary method and causing failures when only App credentials are provided. Updated documentation to clarify this behavior. 
+
 ## [0.5.0] - 2026-03-16
 
 ### Added
