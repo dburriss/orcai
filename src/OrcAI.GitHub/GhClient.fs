@@ -125,6 +125,64 @@ type GhCliClient(ghToken: string) =
                         | _ -> None)
         }
 
+    /// `gh issue list --repo <org/repo> --state closed --json title,number,url,assignees`
+    member private _.FindClosedIssueImpl(repo: RepoName) (title: string) : Async<IssueRef option> =
+        async {
+            let (RepoName repoStr) = repo
+            match! runGh ghToken $"issue list --repo {repoStr} --state closed --json title,number,url,assignees" with
+            | Error _ -> return None
+            | Ok json ->
+                let arr = JsonDocument.Parse(json).RootElement
+                return
+                    arr.EnumerateArray()
+                    |> Seq.tryFind (fun el ->
+                        strProp el "title" = Some title)
+                    |> Option.bind (fun el ->
+                        match intProp el "number", strProp el "url" with
+                        | Some n, Some url ->
+                            let assignees =
+                                match el.TryGetProperty("assignees") with
+                                | true, arr ->
+                                    arr.EnumerateArray()
+                                    |> Seq.choose (fun a -> strProp a "login")
+                                    |> List.ofSeq
+                                | _ -> []
+                            Some { Repo      = repo
+                                   Number    = IssueNumber n
+                                   Url       = url
+                                   Assignees = assignees }
+                        | _ -> None)
+        }
+
+    /// Reopen a closed issue and return the refreshed IssueRef.
+    member private _.ReopenIssueImpl(repo: RepoName) (issue: IssueNumber) : Async<Result<IssueRef, string>> =
+        async {
+            let (RepoName repoStr)   = repo
+            let (IssueNumber issueN) = issue
+            match! runGh ghToken $"issue reopen {issueN} --repo {repoStr}" with
+            | Error e -> return Error e
+            | Ok _ ->
+                match! runGh ghToken $"issue view {issueN} --repo {repoStr} --json number,url,assignees" with
+                | Error e -> return Error e
+                | Ok json ->
+                    let el = JsonDocument.Parse(json).RootElement
+                    match intProp el "number", strProp el "url" with
+                    | Some n, Some url ->
+                        let assignees =
+                            match el.TryGetProperty("assignees") with
+                            | true, arr ->
+                                arr.EnumerateArray()
+                                |> Seq.choose (fun a -> strProp a "login")
+                                |> List.ofSeq
+                            | _ -> []
+                        return Ok { Repo      = repo
+                                    Number    = IssueNumber n
+                                    Url       = url
+                                    Assignees = assignees }
+                    | _ ->
+                        return Error $"Could not parse issue view response for issue #{issueN} in {repoStr}"
+        }
+
     // ------------------------------------------------------------------
     // Pull requests
     // ------------------------------------------------------------------
@@ -166,9 +224,11 @@ type GhCliClient(ghToken: string) =
     // ------------------------------------------------------------------
 
     interface IGhClient with
-        member this.FindProject org title           = this.FindProjectImpl org title
-        member this.FindIssue   repo title          = this.FindIssueImpl repo title
-        member this.FindPrsForIssue repo issue      = this.FindPrsForIssueImpl repo issue
+        member this.FindProject      org title       = this.FindProjectImpl org title
+        member this.FindIssue        repo title      = this.FindIssueImpl repo title
+        member this.FindClosedIssue  repo title      = this.FindClosedIssueImpl repo title
+        member this.ReopenIssue      repo issue      = this.ReopenIssueImpl repo issue
+        member this.FindPrsForIssue  repo issue      = this.FindPrsForIssueImpl repo issue
 
         member _.ListLabels repo =
             async {

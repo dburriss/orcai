@@ -36,6 +36,8 @@ type PullRequestRef =
       Url         : string
       ClosesIssue : IssueNumber }
 
+type ClosedIssueAction = | Create | Reopen | Skip | Fail
+
 /// Top-level job configuration parsed from the YAML file.
 type JobConfig =
     { Org           : OrgName
@@ -44,7 +46,8 @@ type JobConfig =
       IssueTitle    : string
       IssueBody     : string
       Labels        : string list
-      SkipCopilot   : bool }
+      SkipCopilot   : bool
+      OnClosedIssue : ClosedIssueAction }
 
 /// Snapshot of a completed job, persisted as a lock file.
 type LockFile =

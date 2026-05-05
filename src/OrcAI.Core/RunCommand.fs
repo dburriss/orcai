@@ -32,10 +32,12 @@ type RunInput =
       DefaultLabels      : string list
       /// True when the primary auth is a GitHub App. Used to emit an appropriate
       /// warning when no secondary PAT is available for Copilot assignment.
-      IsPrimaryAuthApp   : bool }
+      IsPrimaryAuthApp   : bool
+      /// Overrides the YAML onClosedIssue value when explicitly set via CLI.
+      OnClosedIssue      : ClosedIssueAction option }
 
 /// Whether an issue was freshly created or already existed in GitHub.
-type IssueOutcome = | Created | AlreadyExisted
+type IssueOutcome = | Created | AlreadyExisted | Reopened | Skipped
 
 /// The result for a single repo processed during the run.
 type RepoResult =
@@ -112,6 +114,7 @@ let private processRepo
     (autoCreateLabels : bool)
     (skipCopilot      : bool)
     (isPrimaryAuthApp : bool)
+    (closedIssueAction: ClosedIssueAction)
     (repo             : RepoName)
     : Async<RepoResult option> =
     async {
@@ -133,9 +136,28 @@ let private processRepo
                     if verbose then eprintfn "[%s] Issue already exists: %s" repoStr issue.Url
                     return Ok (issue, AlreadyExisted)
                 | None ->
-                    if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
-                    let! result = client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels
-                    return result |> Result.map (fun issue -> (issue, Created))
+                    let! closedOpt = client.FindClosedIssue repo config.IssueTitle
+                    match closedOpt with
+                    | None ->
+                        if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
+                        let! result = client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels
+                        return result |> Result.map (fun issue -> (issue, Created))
+                    | Some closed ->
+                        match closedIssueAction with
+                        | Create ->
+                            if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
+                            let! result = client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels
+                            return result |> Result.map (fun issue -> (issue, Created))
+                        | Reopen ->
+                            if verbose then eprintfn "[%s] Reopening closed issue: %s" repoStr closed.Url
+                            let! reopenResult = client.ReopenIssue repo closed.Number
+                            return reopenResult |> Result.map (fun issue -> (issue, Reopened))
+                        | Skip ->
+                            if verbose then eprintfn "[%s] Closed issue found, skipping: %s" repoStr closed.Url
+                            return Ok (closed, Skipped)
+                        | Fail ->
+                            eprintfn "[%s] Closed issue found and --on-closed-issue=fail is set: %s" repoStr closed.Url
+                            return Error $"Closed issue exists for repo {repoStr}: {closed.Url}"
             }
 
         match issueResult with
@@ -144,7 +166,12 @@ let private processRepo
             return None
         | Ok (issue, outcome) ->
 
-        // 2. Add to project (idempotent — errors are swallowed in GhClient)
+        // 2. Add to project and assign copilot (bypassed for Skipped outcome)
+        if outcome = Skipped then
+            return Some { Issue = issue; Outcome = outcome }
+        else
+
+        // 3. Add to project (idempotent — errors are swallowed in GhClient)
         if verbose then eprintfn "[%s] Adding issue to project" repoStr
         let! _ = client.AddIssueToProject project issue
 
@@ -218,10 +245,11 @@ let private runFull
     | Ok project ->
 
     // 2. Process all repos in parallel
-    let skipCopilot = input.SkipCopilot || config.SkipCopilot
+    let skipCopilot       = input.SkipCopilot || config.SkipCopilot
+    let closedIssueAction = input.OnClosedIssue |> Option.defaultValue config.OnClosedIssue
     let repoResults =
         config.Repos
-        |> List.map (processRepo deps config project input.Verbose input.AutoCreateLabels skipCopilot input.IsPrimaryAuthApp)
+        |> List.map (processRepo deps config project input.Verbose input.AutoCreateLabels skipCopilot input.IsPrimaryAuthApp closedIssueAction)
         |> Async.Parallel
         |> Async.RunSynchronously
 

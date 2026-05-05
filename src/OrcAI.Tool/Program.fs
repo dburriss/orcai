@@ -215,6 +215,8 @@ let private printRunJsonMulti (results: Map<string, Result<OrcAI.Core.RunCommand
                 | Ok result ->
                     let created  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Created)       |> List.length
                     let existing = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.AlreadyExisted) |> List.length
+                    let reopened = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Reopened)       |> List.length
+                    let skipped  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Skipped)        |> List.length
                     let issues =
                         result.Results |> List.map (fun r ->
                             let (RepoName repo)   = r.Issue.Repo
@@ -223,8 +225,10 @@ let private printRunJsonMulti (results: Map<string, Result<OrcAI.Core.RunCommand
                                 match r.Outcome with
                                 | OrcAI.Core.RunCommand.Created        -> "created"
                                 | OrcAI.Core.RunCommand.AlreadyExisted -> "alreadyExisted"
+                                | OrcAI.Core.RunCommand.Reopened       -> "reopened"
+                                | OrcAI.Core.RunCommand.Skipped        -> "skipped"
                             {| repo = repo; issueNumber = num; status = status |})
-                    box {| created = created; alreadyExisted = existing; repos = issues |}
+                    box {| created = created; alreadyExisted = existing; reopened = reopened; skipped = skipped; repos = issues |}
             path, value)
         |> dict
     printfn "%s" (JsonSerializer.Serialize(entries, jsonOptions))
@@ -283,6 +287,18 @@ let main argv =
             let noParallel      = args.Contains(RunArgs.No_Parallel)
             let continueOnError = args.Contains(RunArgs.Continue_On_Error)
             let json            = args.Contains(RunArgs.Json)
+            let onClosedIssue   =
+                match args.TryGetResult(RunArgs.On_Closed_Issue) with
+                | None -> None
+                | Some s ->
+                    match s.ToLowerInvariant() with
+                    | "create" -> Some OrcAI.Core.Domain.Create
+                    | "reopen" -> Some OrcAI.Core.Domain.Reopen
+                    | "skip"   -> Some OrcAI.Core.Domain.Skip
+                    | "fail"   -> Some OrcAI.Core.Domain.Fail
+                    | other    ->
+                        eprintfn "Unknown --on-closed-issue value '%s'. Valid values: create, reopen, skip, fail." other
+                        None
             let cwd             = System.Environment.CurrentDirectory
             match OrcAI.Core.FileGlob.expand cwd pattern with
             | Error e ->
@@ -308,7 +324,8 @@ let main argv =
                       NoParallel         = noParallel
                       ContinueOnError    = effectiveContinueOnError
                       DefaultLabels      = deps.Config.DefaultLabels |> Option.defaultValue []
-                      IsPrimaryAuthApp   = isPrimaryAuthApp }
+                      IsPrimaryAuthApp   = isPrimaryAuthApp
+                      OnClosedIssue      = onClosedIssue }
                 let results =
                     OrcAI.Core.RunCommand.execute deps paths input
                     |> Async.RunSynchronously
@@ -325,10 +342,16 @@ let main argv =
                             | OrcAI.Core.RunCommand.FromLockFile ->
                                 printfn "  Nothing to do — lock file is up to date."
                             | OrcAI.Core.RunCommand.FullRun ->
-                                let created  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Created)      |> List.length
+                                let created  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Created)       |> List.length
                                 let existing = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.AlreadyExisted) |> List.length
-                                printfn "  Run complete. %d issue(s) created, %d already existed across %d repo(s). Lock file written."
-                                    created existing result.Lock.Repos.Length
+                                let reopened = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Reopened)       |> List.length
+                                let skipped  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Skipped)        |> List.length
+                                let extras =
+                                    [ if reopened > 0 then $", {reopened} reopened"
+                                      if skipped  > 0 then $", {skipped} skipped" ]
+                                    |> String.concat ""
+                                printfn "  Run complete. %d issue(s) created, %d already existed%s across %d repo(s). Lock file written."
+                                    created existing extras result.Lock.Repos.Length
                             if verbose && not result.Results.IsEmpty then
                                 AnsiConsole.WriteLine()
                                 let table = Table()
@@ -342,8 +365,10 @@ let main argv =
                                     let repoUrl            = $"https://github.com/{repo}"
                                     let statusMarkup =
                                         match r.Outcome with
-                                        | OrcAI.Core.RunCommand.Created       -> "[green]created[/]"
+                                        | OrcAI.Core.RunCommand.Created        -> "[green]created[/]"
                                         | OrcAI.Core.RunCommand.AlreadyExisted -> "[grey]already existed[/]"
+                                        | OrcAI.Core.RunCommand.Reopened       -> "[yellow]reopened[/]"
+                                        | OrcAI.Core.RunCommand.Skipped        -> "[grey]skipped[/]"
                                     table.AddRow(
                                         [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repo)}[/][/]") :> Rendering.IRenderable
                                            Markup($"[yellow]#{num}[/]")

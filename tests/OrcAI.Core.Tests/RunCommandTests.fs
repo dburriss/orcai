@@ -92,6 +92,8 @@ type FakeGhClient(repoErrors: Map<string, string>) =
             match Map.tryFind r repoErrors with
             | Some _ -> async { return None }
             | None   -> async { return None }   // always create fresh
+        member _.FindClosedIssue _ _   = async { return None }
+        member _.ReopenIssue _ _       = notImpl "ReopenIssue"
         member _.CreateIssue repo _ _ _ =
             let (RepoName r) = repo
             match Map.tryFind r repoErrors with
@@ -123,7 +125,8 @@ let private defaultInput paths =
       NoParallel         = false
       ContinueOnError    = false
       DefaultLabels      = []
-      IsPrimaryAuthApp   = false }
+      IsPrimaryAuthApp   = false
+      OnClosedIssue      = None }
 
 // ---------------------------------------------------------------------------
 // Multi-file execute tests
@@ -240,6 +243,8 @@ type TrackingGhClient(label: string, assignCalls: System.Collections.Concurrent.
         member _.ListLabels _          = async { return Ok [] }
         member _.CreateLabel _ _       = async { return Ok () }
         member _.FindIssue _ _         = async { return None }
+        member _.FindClosedIssue _ _   = async { return None }
+        member _.ReopenIssue _ _       = async { return failwith "not expected" }
         member _.CreateIssue repo _ _ _ =
             let (RepoName r) = repo
             async { return Ok (fakeIssue r 42) }
@@ -311,3 +316,209 @@ let ``processRepo skips assignment entirely when skipCopilot=true regardless of 
 
     Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
     Assert.Empty(assignCalls)
+
+// ---------------------------------------------------------------------------
+// ClosedIssueAction tests
+// ---------------------------------------------------------------------------
+
+let private closedIssue repo =
+    { Repo      = RepoName repo
+      Number    = IssueNumber 7
+      Url       = $"https://github.com/{repo}/issues/7"
+      Assignees = [] }
+
+let private reopenedIssue repo =
+    { Repo      = RepoName repo
+      Number    = IssueNumber 7
+      Url       = $"https://github.com/{repo}/issues/7"
+      Assignees = [] }
+
+/// Returns a closed issue; ReopenIssue returns Ok; CreateIssue throws.
+type ReopeningGhClient() =
+    let fakeProject =
+        { Title  = "My Project"; Org = OrgName "myorg"; Number = 1
+          Url    = "https://github.com/orgs/myorg/projects/1" }
+    interface IGhClient with
+        member _.FindProject _ _       = async { return Some fakeProject }
+        member _.CreateProject _ _     = async { return Ok fakeProject }
+        member _.DeleteProject _       = async { return failwith "not expected" }
+        member _.ListLabels _          = async { return Ok [] }
+        member _.CreateLabel _ _       = async { return Ok () }
+        member _.FindIssue _ _         = async { return None }
+        member _.FindClosedIssue repo _= async { return Some (closedIssue (let (RepoName r) = repo in r)) }
+        member _.ReopenIssue repo _    = async { return Ok (reopenedIssue (let (RepoName r) = repo in r)) }
+        member _.CreateIssue _ _ _ _   = async { return failwith "CreateIssue should not be called" }
+        member _.CloseIssue _ _        = async { return failwith "not expected" }
+        member _.AddIssueToProject _ _ = async { return Ok () }
+        member _.AssignIssue _ _ _     = async { return Ok () }
+        member _.FindPrsForIssue _ _   = async { return failwith "not expected" }
+        member _.ClosePr _ _           = async { return failwith "not expected" }
+        member _.ListRepos _           = async { return failwith "not expected" }
+        member _.RepoExists _          = async { return Ok () }
+
+/// Returns a closed issue; tracks whether project/assign methods are called.
+type SkippingGhClient(projectCalls: System.Collections.Concurrent.ConcurrentBag<unit>,
+                      assignCalls:  System.Collections.Concurrent.ConcurrentBag<unit>) =
+    let fakeProject =
+        { Title  = "My Project"; Org = OrgName "myorg"; Number = 1
+          Url    = "https://github.com/orgs/myorg/projects/1" }
+    interface IGhClient with
+        member _.FindProject _ _       = async { return Some fakeProject }
+        member _.CreateProject _ _     = async { return Ok fakeProject }
+        member _.DeleteProject _       = async { return failwith "not expected" }
+        member _.ListLabels _          = async { return Ok [] }
+        member _.CreateLabel _ _       = async { return Ok () }
+        member _.FindIssue _ _         = async { return None }
+        member _.FindClosedIssue repo _= async { return Some (closedIssue (let (RepoName r) = repo in r)) }
+        member _.ReopenIssue _ _       = async { return failwith "not expected" }
+        member _.CreateIssue _ _ _ _   = async { return failwith "not expected" }
+        member _.CloseIssue _ _        = async { return failwith "not expected" }
+        member _.AddIssueToProject _ _ =
+            projectCalls.Add(())
+            async { return Ok () }
+        member _.AssignIssue _ _ _ =
+            assignCalls.Add(())
+            async { return Ok () }
+        member _.FindPrsForIssue _ _   = async { return failwith "not expected" }
+        member _.ClosePr _ _           = async { return failwith "not expected" }
+        member _.ListRepos _           = async { return failwith "not expected" }
+        member _.RepoExists _          = async { return Ok () }
+
+/// Returns a closed issue; for testing fail action.
+type FailingClosedGhClient() =
+    let fakeProject =
+        { Title  = "My Project"; Org = OrgName "myorg"; Number = 1
+          Url    = "https://github.com/orgs/myorg/projects/1" }
+    interface IGhClient with
+        member _.FindProject _ _       = async { return Some fakeProject }
+        member _.CreateProject _ _     = async { return Ok fakeProject }
+        member _.DeleteProject _       = async { return failwith "not expected" }
+        member _.ListLabels _          = async { return Ok [] }
+        member _.CreateLabel _ _       = async { return Ok () }
+        member _.FindIssue _ _         = async { return None }
+        member _.FindClosedIssue repo _= async { return Some (closedIssue (let (RepoName r) = repo in r)) }
+        member _.ReopenIssue _ _       = async { return failwith "not expected" }
+        member _.CreateIssue _ _ _ _   = async { return failwith "not expected" }
+        member _.CloseIssue _ _        = async { return failwith "not expected" }
+        member _.AddIssueToProject _ _ = async { return failwith "not expected" }
+        member _.AssignIssue _ _ _     = async { return failwith "not expected" }
+        member _.FindPrsForIssue _ _   = async { return failwith "not expected" }
+        member _.ClosePr _ _           = async { return failwith "not expected" }
+        member _.ListRepos _           = async { return failwith "not expected" }
+        member _.RepoExists _          = async { return Ok () }
+
+[<Fact>]
+let ``reopen action reopens closed issue and returns Reopened outcome`` () =
+    let fs    = MockFileSystem()
+    let path  = writeMockYaml fs "job.yml"
+    let deps  = makeDeps fs (ReopeningGhClient() :> IGhClient)
+    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Reopen }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.True(results.ContainsKey(path))
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+    | Ok result ->
+        Assert.True(result.Results |> List.forall (fun r -> r.Outcome = Reopened))
+
+[<Fact>]
+let ``reopen action does not call CreateIssue when closed issue exists`` () =
+    let fs    = MockFileSystem()
+    let path  = writeMockYaml fs "job.yml"
+    let deps  = makeDeps fs (ReopeningGhClient() :> IGhClient)
+    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Reopen }
+
+    // ReopeningGhClient.CreateIssue throws; success means it was not called
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
+
+[<Fact>]
+let ``skip action returns Skipped outcome without creating or reopening`` () =
+    let fs    = MockFileSystem()
+    let path  = writeMockYaml fs "job.yml"
+    let pc    = System.Collections.Concurrent.ConcurrentBag<unit>()
+    let ac    = System.Collections.Concurrent.ConcurrentBag<unit>()
+    let deps  = makeDeps fs (SkippingGhClient(pc, ac) :> IGhClient)
+    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Skip }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.True(results.ContainsKey(path))
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+    | Ok result ->
+        Assert.True(result.Results |> List.forall (fun r -> r.Outcome = Skipped))
+
+[<Fact>]
+let ``skip action does not add issue to project or assign copilot`` () =
+    let fs    = MockFileSystem()
+    let path  = writeMockYaml fs "job.yml"
+    let pc    = System.Collections.Concurrent.ConcurrentBag<unit>()
+    let ac    = System.Collections.Concurrent.ConcurrentBag<unit>()
+    let deps  = makeDeps fs (SkippingGhClient(pc, ac) :> IGhClient)
+    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Skip; SkipCopilot = false }
+
+    execute deps [path] input |> Async.RunSynchronously |> ignore
+
+    Assert.Empty(pc)
+    Assert.Empty(ac)
+
+[<Fact>]
+let ``fail action returns error and does not create or reopen`` () =
+    let fs    = MockFileSystem()
+    let path  = writeMockYaml fs "job.yml"
+    let deps  = makeDeps fs (FailingClosedGhClient() :> IGhClient)
+    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Fail }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.True(results.ContainsKey(path))
+    match results.[path] with
+    | Ok result ->
+        // processRepo returns None on error, so Results should be empty (no successes)
+        Assert.Empty(result.Results)
+    | Error _ -> ()   // also acceptable if the whole file errors
+
+[<Fact>]
+let ``create action (default) creates new issue even when closed issue exists`` () =
+    let fs    = MockFileSystem()
+    let path  = writeMockYaml fs "job.yml"
+    // FakeGhClient has FindClosedIssue = None, but we need one that returns Some.
+    // Use a small inline fake with Create action.
+    let fakeProject = { Title = "My Project"; Org = OrgName "myorg"; Number = 1; Url = "https://github.com/orgs/myorg/projects/1" }
+    let createCallCount = System.Collections.Concurrent.ConcurrentBag<unit>()
+    let client =
+        { new IGhClient with
+            member _.FindProject _ _       = async { return Some fakeProject }
+            member _.CreateProject _ _     = async { return Ok fakeProject }
+            member _.DeleteProject _       = async { return failwith "not expected" }
+            member _.ListLabels _          = async { return Ok [] }
+            member _.CreateLabel _ _       = async { return Ok () }
+            member _.FindIssue _ _         = async { return None }
+            member _.FindClosedIssue repo _=
+                async { return Some (closedIssue (let (RepoName r) = repo in r)) }
+            member _.ReopenIssue _ _       = async { return failwith "not expected" }
+            member _.CreateIssue repo _ _ _ =
+                createCallCount.Add(())
+                let (RepoName r) = repo
+                async { return Ok { Repo = RepoName r; Number = IssueNumber 99; Url = $"https://github.com/{r}/issues/99"; Assignees = [] } }
+            member _.CloseIssue _ _        = async { return failwith "not expected" }
+            member _.AddIssueToProject _ _ = async { return Ok () }
+            member _.AssignIssue _ _ _     = async { return Ok () }
+            member _.FindPrsForIssue _ _   = async { return failwith "not expected" }
+            member _.ClosePr _ _           = async { return failwith "not expected" }
+            member _.ListRepos _           = async { return failwith "not expected" }
+            member _.RepoExists _          = async { return Ok () } }
+    let deps  = makeDeps fs client
+    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Create }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
+    Assert.NotEmpty(createCallCount)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+    | Ok result ->
+        Assert.True(result.Results |> List.forall (fun r -> r.Outcome = Created))

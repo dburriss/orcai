@@ -17,6 +17,7 @@ type RunArgs =
     | Max_Concurrency of n: int
     | No_Parallel
     | Continue_On_Error
+    | On_Closed_Issue of action: string
     | Json
     interface IArgParserTemplate with
         member a.Usage =
@@ -29,6 +30,7 @@ type RunArgs =
             | Max_Concurrency _  -> "Maximum number of config files processed concurrently (default: 4). Note: high values may hit GitHub rate limits."
             | No_Parallel        -> "Disable all parallelism — files are processed sequentially and repo checks within each file run sequentially. Overrides --max-concurrency."
             | Continue_On_Error  -> "Continue processing remaining files when one fails, instead of stopping on the first error."
+            | On_Closed_Issue _  -> "What to do when a closed issue with a matching title is found: create (default), reopen, skip, or fail."
             | Json               -> "Emit machine-readable JSON output to stdout."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]

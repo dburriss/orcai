@@ -26,9 +26,10 @@ open OrcAI.Core.Domain
 
 [<CLIMutable>]
 type YamlJob =
-    { title:     string
-      org:       string
-      skipCopilot: bool }
+    { title:         string
+      org:           string
+      skipCopilot:   bool
+      onClosedIssue: string }
 
 [<CLIMutable>]
 type YamlIssue =
@@ -71,13 +72,21 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
             let labels =
                 if isNull (box root.issue.labels) then []
                 else root.issue.labels |> Seq.toList
-            Ok { Org          = OrgName root.job.org
-                 ProjectTitle = root.job.title
-                 Repos        = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
-                 IssueTitle   = root.job.title
-                 IssueBody    = templateContent
-                 Labels       = labels
-                 SkipCopilot  = root.job.skipCopilot }
+            let closedIssueAction =
+                match root.job.onClosedIssue with
+                | null | "" | "create" -> Create
+                | "reopen"             -> Reopen
+                | "skip"               -> Skip
+                | "fail"               -> Fail
+                | other                -> failwith $"Unknown onClosedIssue value: '{other}'. Valid values: create, reopen, skip, fail."
+            Ok { Org           = OrgName root.job.org
+                 ProjectTitle  = root.job.title
+                 Repos         = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
+                 IssueTitle    = root.job.title
+                 IssueBody     = templateContent
+                 Labels        = labels
+                 SkipCopilot   = root.job.skipCopilot
+                 OnClosedIssue = closedIssueAction }
     with ex ->
         Error $"Failed to parse YAML: {ex.Message}"
 

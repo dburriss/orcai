@@ -24,6 +24,7 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 - Keep answers concise
 - Break solutions into small incremental steps
 - Do one step at a time
+- When asked to write a plan to file, write it to the repository's `plans/` folder
 
 # Tech stack
 
