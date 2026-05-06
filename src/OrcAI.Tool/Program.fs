@@ -80,20 +80,22 @@ let private withClient (f: OrcAIDeps -> bool -> int) : int =
                 match authCtx with
                 | :? AppAuthContext -> true
                 | _ -> false
+            let fs   = RealFileSystem() :> IFileSystem
+            let home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile)
+            let cwd  = System.Environment.CurrentDirectory
+            let cfg  = OrcAI.Core.OrcAIConfig.resolve fs home cwd
+            let writesPerMinute  = cfg.WritesPerMinute  |> Option.defaultValue 60
+            let rateLimitRetries = cfg.RateLimitRetries |> Option.defaultValue 3
             // When the primary auth is a GitHub App, attempt to resolve a secondary
             // PAT for use exclusively in @copilot assignment (Apps cannot assign copilot).
             let copilotClient : OrcAI.Core.GhClient.IGhClient option =
                 if isPrimaryAuthApp then
                     match loadToken () with
-                    | Ok pat -> Some (OrcAI.GitHub.GhClient.GhCliClient(pat) :> OrcAI.Core.GhClient.IGhClient)
+                    | Ok pat -> Some (OrcAI.GitHub.GhClient.GhCliClient(pat, writesPerMinute, rateLimitRetries) :> OrcAI.Core.GhClient.IGhClient)
                     | Error _ -> None
                 else
                     None
-            let client = OrcAI.GitHub.GhClient.GhCliClient(ghToken)
-            let fs     = RealFileSystem() :> IFileSystem
-            let home   = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile)
-            let cwd    = System.Environment.CurrentDirectory
-            let cfg    = OrcAI.Core.OrcAIConfig.resolve fs home cwd
+            let client = OrcAI.GitHub.GhClient.GhCliClient(ghToken, writesPerMinute, rateLimitRetries)
             let deps : OrcAIDeps =
                 { GhClient      = client :> OrcAI.Core.GhClient.IGhClient
                   CopilotClient = copilotClient

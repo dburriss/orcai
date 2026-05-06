@@ -17,7 +17,9 @@ type OrcAIConfig =
       AutoCreateLabels : bool option
       MaxConcurrency   : int option
       ContinueOnError  : bool option
-      DefaultOrg       : string option }
+      DefaultOrg       : string option
+      WritesPerMinute  : int option
+      RateLimitRetries : int option }
 
 /// All-None config — represents "no config loaded".
 let empty : OrcAIConfig =
@@ -26,7 +28,9 @@ let empty : OrcAIConfig =
       AutoCreateLabels = None
       MaxConcurrency   = None
       ContinueOnError  = None
-      DefaultOrg       = None }
+      DefaultOrg       = None
+      WritesPerMinute  = None
+      RateLimitRetries = None }
 
 // ---------------------------------------------------------------------------
 // Merge: local wins per field when Some; falls back to global otherwise.
@@ -40,7 +44,9 @@ let merge (globalCfg: OrcAIConfig) (localCfg: OrcAIConfig) : OrcAIConfig =
       AutoCreateLabels = pick localCfg.AutoCreateLabels  globalCfg.AutoCreateLabels
       MaxConcurrency   = pick localCfg.MaxConcurrency    globalCfg.MaxConcurrency
       ContinueOnError  = pick localCfg.ContinueOnError   globalCfg.ContinueOnError
-      DefaultOrg       = pick localCfg.DefaultOrg        globalCfg.DefaultOrg }
+      DefaultOrg       = pick localCfg.DefaultOrg        globalCfg.DefaultOrg
+      WritesPerMinute  = pick localCfg.WritesPerMinute   globalCfg.WritesPerMinute
+      RateLimitRetries = pick localCfg.RateLimitRetries  globalCfg.RateLimitRetries }
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -73,7 +79,11 @@ type OrcAIConfigDto =
       [<JsonPropertyName("continueOnError")>]
       ContinueOnError  : System.Nullable<bool>
       [<JsonPropertyName("defaultOrg")>]
-      DefaultOrg       : string option }
+      DefaultOrg       : string option
+      [<JsonPropertyName("writesPerMinute")>]
+      WritesPerMinute  : System.Nullable<int>
+      [<JsonPropertyName("rateLimitRetries")>]
+      RateLimitRetries : System.Nullable<int> }
 
 let private jsonOptions =
     let opts = JsonSerializerOptions()
@@ -87,7 +97,9 @@ let private ofDto (dto: OrcAIConfigDto) : OrcAIConfig =
       AutoCreateLabels = if dto.AutoCreateLabels.HasValue then Some dto.AutoCreateLabels.Value else None
       MaxConcurrency   = if dto.MaxConcurrency.HasValue   then Some dto.MaxConcurrency.Value   else None
       ContinueOnError  = if dto.ContinueOnError.HasValue  then Some dto.ContinueOnError.Value  else None
-      DefaultOrg       = dto.DefaultOrg }
+      DefaultOrg       = dto.DefaultOrg
+      WritesPerMinute  = if dto.WritesPerMinute.HasValue  then Some dto.WritesPerMinute.Value  else None
+      RateLimitRetries = if dto.RateLimitRetries.HasValue then Some dto.RateLimitRetries.Value else None }
 
 // ---------------------------------------------------------------------------
 // File I/O

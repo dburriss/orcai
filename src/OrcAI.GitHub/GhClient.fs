@@ -56,8 +56,7 @@ let private withRetry maxAttempts (run: unit -> Async<Result<'a, string>>) : Asy
     }
     loop 1 60_000  // first retry after 60s, doubles each time, capped at 5min
 
-type private WriteBucket() =
-    let perMinuteCap = 60
+type private WriteBucket(perMinuteCap: int) =
     let mutable tokens = perMinuteCap
     let mutable lastRefill = DateTime.UtcNow
     let gate = obj()
@@ -76,13 +75,10 @@ type private WriteBucket() =
             else
                 int (60_000.0 / float perMinuteCap) + 1)  // ms until next token
 
-let private writeBucket = WriteBucket()
-
 // Like runGh but acquires a write token first and retries on rate-limit errors.
-// Shared bucket across all parallel workers caps total writes at 60/min.
-let private runGhWrite (token: string) (args: string) : Async<Result<string, string>> =
-    withRetry 3 (fun () -> async {
-        let waitMs = writeBucket.Acquire()
+let private runGhWrite (bucket: WriteBucket) (retries: int) (token: string) (args: string) : Async<Result<string, string>> =
+    withRetry retries (fun () -> async {
+        let waitMs = bucket.Acquire()
         if waitMs > 0 then do! Async.Sleep waitMs
         return! runGh token args
     })
@@ -111,7 +107,9 @@ let private intProp (el: JsonElement) (name: string) =
 // ------------------------------------------------------------------
 
 /// Production implementation that shells out to `gh` via SimpleExec.
-type GhCliClient(ghToken: string) =
+type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int) =
+    let bucket  = WriteBucket(writesPerMinute)
+    let retries = rateLimitRetries
 
     // ------------------------------------------------------------------
     // Projects
@@ -211,7 +209,7 @@ type GhCliClient(ghToken: string) =
         async {
             let (RepoName repoStr)   = repo
             let (IssueNumber issueN) = issue
-            match! runGhWrite ghToken $"issue reopen {issueN} --repo {repoStr}" with
+            match! runGhWrite bucket retries ghToken $"issue reopen {issueN} --repo {repoStr}" with
             | Error e -> return Error e
             | Ok _ ->
                 match! runGh ghToken $"issue view {issueN} --repo {repoStr} --json number,url,assignees" with
@@ -299,7 +297,7 @@ type GhCliClient(ghToken: string) =
         member _.CreateLabel repo name =
             async {
                 let (RepoName repoStr) = repo
-                match! runGhWrite ghToken $"label create \"{name}\" --repo {repoStr}" with
+                match! runGhWrite bucket retries ghToken $"label create \"{name}\" --repo {repoStr}" with
                 | Error e -> return Error e
                 | Ok _    -> return Ok ()
             }
@@ -307,7 +305,7 @@ type GhCliClient(ghToken: string) =
         member this.CreateProject org title =
             async {
                 let (OrgName orgStr) = org
-                match! runGhWrite ghToken $"project create --title \"{title}\" --owner {orgStr} --format json" with
+                match! runGhWrite bucket retries ghToken $"project create --title \"{title}\" --owner {orgStr} --format json" with
                 | Error e -> return Error e
                 | Ok json ->
                     let el = JsonDocument.Parse(json).RootElement
@@ -321,7 +319,7 @@ type GhCliClient(ghToken: string) =
         member _.DeleteProject project =
             async {
                 let (OrgName orgStr) = project.Org
-                match! runGhWrite ghToken $"project delete {project.Number} --owner {orgStr}" with
+                match! runGhWrite bucket retries ghToken $"project delete {project.Number} --owner {orgStr}" with
                 | Error e -> return Error e
                 | Ok _    -> return Ok ()
             }
@@ -339,7 +337,7 @@ type GhCliClient(ghToken: string) =
                             let flags = labels |> List.map (fun l -> $"--label \"{l}\"") |> String.concat " "
                             $" {flags}"
                     // gh issue create outputs the issue URL as plain text (no --json support)
-                    match! runGhWrite ghToken $"issue create --repo {repoStr} --title \"{title}\" --body-file \"{tmpFile}\"{labelPart}" with
+                    match! runGhWrite bucket retries ghToken $"issue create --repo {repoStr} --title \"{title}\" --body-file \"{tmpFile}\"{labelPart}" with
                     | Error e -> return Error e
                     | Ok url ->
                         // URL format: https://github.com/owner/repo/issues/123
@@ -361,7 +359,7 @@ type GhCliClient(ghToken: string) =
             async {
                 let (RepoName repoStr)   = repo
                 let (IssueNumber issueN) = issue
-                match! runGhWrite ghToken $"issue delete {issueN} --repo {repoStr} --yes" with
+                match! runGhWrite bucket retries ghToken $"issue delete {issueN} --repo {repoStr} --yes" with
                 | Ok _    -> return Ok ()
                 | Error e ->
                     // Treat "not found" as success — the issue is already gone.
@@ -376,7 +374,7 @@ type GhCliClient(ghToken: string) =
                 let (OrgName orgStr) = project.Org
                 // Idempotent: if the item is already in the project the gh CLI succeeds silently.
                 // We intentionally ignore non-zero exits here (e.g. "already exists" variants).
-                let! _ = runGhWrite ghToken $"project item-add {project.Number} --owner {orgStr} --url {issue.Url}"
+                let! _ = runGhWrite bucket retries ghToken $"project item-add {project.Number} --owner {orgStr} --url {issue.Url}"
                 return Ok ()
             }
 
@@ -384,7 +382,7 @@ type GhCliClient(ghToken: string) =
             async {
                 let (RepoName repoStr)   = repo
                 let (IssueNumber issueN) = issue
-                match! runGhWrite ghToken $"issue edit {issueN} --repo {repoStr} --add-assignee {assignee}" with
+                match! runGhWrite bucket retries ghToken $"issue edit {issueN} --repo {repoStr} --add-assignee {assignee}" with
                 | Error e -> return Error e
                 | Ok _    -> return Ok ()
             }
@@ -393,7 +391,7 @@ type GhCliClient(ghToken: string) =
             async {
                 let (RepoName repoStr) = repo
                 let (PrNumber prN)     = pr
-                match! runGhWrite ghToken $"pr close {prN} --repo {repoStr}" with
+                match! runGhWrite bucket retries ghToken $"pr close {prN} --repo {repoStr}" with
                 | Error e -> return Error e
                 | Ok _    -> return Ok ()
             }
