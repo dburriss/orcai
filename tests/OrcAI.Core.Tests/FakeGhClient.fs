@@ -69,7 +69,7 @@ let neverCalledHandlers : Handlers =
         RepoExists        = fun _          -> async { return failwith "GhClient should not be called" } }
 
 /// Wraps a Handlers record in an IGhClient interface.
-let make (h: Handlers) : IGhClient =
+let from (h: Handlers) : IGhClient =
     { new IGhClient with
         member _.FindProject org title      = h.FindProject org title
         member _.CreateProject org title    = h.CreateProject org title

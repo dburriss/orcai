@@ -13,7 +13,7 @@ open OrcAI.Auth.Tests.TestHelpers
 let private noConfig () : Result<AuthConfigFile, string> = Error "no config"
 
 let private patConfig token =
-    fun () -> Ok (A.AuthConfigFile.make "pat" [ "pat", A.ProfileEntry.pat token ])
+    fun () -> Ok (A.AuthConfig.withProfiles "pat" [ "pat", A.ProfileEntry.pat token ])
 
 [<Fact>]
 let ``loadTokenWith returns token from getEnv when ORCAI_PAT is set`` () =
@@ -32,7 +32,7 @@ let ``loadTokenWith returns error when env var absent and no config`` () =
 [<Fact>]
 let ``loadTokenWith returns error when active profile type is not pat`` () =
     let appConfig =
-        fun () -> Ok (A.AuthConfigFile.make "my-app" [ "my-app", A.ProfileEntry.app "id" "/k" "i" ])
+        fun () -> Ok (A.AuthConfig.withProfiles "my-app" [ "my-app", A.ProfileEntry.app "id" "/k" "i" ])
     match loadTokenWith (fun _ -> None) appConfig with
     | Ok _    -> Assert.Fail("Expected error for non-PAT config")
     | Error e -> Assert.Contains("PAT", e)
@@ -40,7 +40,7 @@ let ``loadTokenWith returns error when active profile type is not pat`` () =
 [<Fact>]
 let ``loadTokenWith returns error when pat token in config is empty`` () =
     let emptyToken =
-        fun () -> Ok (A.AuthConfigFile.make "pat" [ "pat", A.ProfileEntry.pat "" ])
+        fun () -> Ok (A.AuthConfig.withProfiles "pat" [ "pat", A.ProfileEntry.pat "" ])
     Assert.True(Result.isError (loadTokenWith (fun _ -> None) emptyToken))
 
 // ---------------------------------------------------------------------------

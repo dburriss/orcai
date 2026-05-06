@@ -13,12 +13,12 @@ open OrcAI.Core.Tests.TestData
 /// Client where all methods throw — validates that GitHub is never contacted
 /// when config or file validation fails before reaching repo checks.
 let private neverCalledClient () =
-    FakeGhClient.make FakeGhClient.neverCalledHandlers
+    FakeGhClient.from FakeGhClient.neverCalledHandlers
 
 /// Client where only RepoExists is wired; all other methods throw.
 /// Pass an empty map to have all repos return Ok.
 let private validateClient (repoResults: Map<string, Result<unit, string>>) =
-    FakeGhClient.make
+    FakeGhClient.from
         { FakeGhClient.neverCalledHandlers with
             RepoExists = fun repo ->
                 let (RepoName r) = repo
@@ -33,7 +33,7 @@ let private validateClient (repoResults: Map<string, Result<unit, string>>) =
 [<Fact>]
 let ``validate returns IsValid=true when file exists, config parses, and all repos exist`` () =
     let fs    = MockFileSystem()
-    let path  = A.Yaml.writeTo fs A.Yaml.valid "# body"
+    let path  = Given.yamlFile fs A.Yaml.valid "# body"
     let deps  = Given.deps fs (validateClient Map.empty)
     let input = A.ValidateInput.defaults path
 
@@ -94,7 +94,7 @@ let ``validate returns config error when template file is missing`` () =
 [<Fact>]
 let ``validate returns repo error for one inaccessible repo and reports others as ok`` () =
     let fs       = MockFileSystem()
-    let path     = A.Yaml.writeTo fs A.Yaml.valid "# body"
+    let path     = Given.yamlFile fs A.Yaml.valid "# body"
     let repoMap  = Map.ofList [ "myorg/repo-a", Error "not found"; "myorg/repo-b", Ok () ]
     let deps     = Given.deps fs (validateClient repoMap)
     let input    = A.ValidateInput.defaults path
@@ -111,7 +111,7 @@ let ``validate returns repo error for one inaccessible repo and reports others a
 [<Fact>]
 let ``validate collects errors for all inaccessible repos, not just the first`` () =
     let fs      = MockFileSystem()
-    let path    = A.Yaml.writeTo fs A.Yaml.valid "# body"
+    let path    = Given.yamlFile fs A.Yaml.valid "# body"
     let repoMap = Map.ofList [ "myorg/repo-a", Error "404"; "myorg/repo-b", Error "403" ]
     let deps    = Given.deps fs (validateClient repoMap)
     let input   = A.ValidateInput.defaults path
@@ -126,7 +126,7 @@ let ``validate collects errors for all inaccessible repos, not just the first`` 
 [<Fact>]
 let ``validate with NoParallel=true returns same results as parallel`` () =
     let fs      = MockFileSystem()
-    let path    = A.Yaml.writeTo fs A.Yaml.valid "# body"
+    let path    = Given.yamlFile fs A.Yaml.valid "# body"
     let repoMap = Map.ofList [ "myorg/repo-a", Error "not found" ]
     let deps    = Given.deps fs (validateClient repoMap)
 

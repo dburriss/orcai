@@ -263,7 +263,7 @@ let ``loadConfigFrom returns error when config file does not exist`` () =
 [<Fact>]
 let ``loadConfigFrom returns error when active profile is type pat`` () =
     withTempHome (fun home ->
-        let cfg = A.AuthConfigFile.make "pat" [ "pat", A.ProfileEntry.pat "ghp_test" ]
+        let cfg = A.AuthConfig.withProfiles "pat" [ "pat", A.ProfileEntry.pat "ghp_test" ]
         OrcAI.Auth.AuthConfig.writeConfigTo home cfg |> ignore
         match loadConfigFrom home with
         | Ok _    -> Assert.Fail("Expected Error when active profile type is pat")
@@ -283,7 +283,7 @@ let ``loadConfigFrom returns error when app config fields are incomplete`` () =
 [<Fact>]
 let ``loadConfigFrom returns error when active profile does not exist`` () =
     withTempHome (fun home ->
-        let cfg = A.AuthConfigFile.make "missing-profile" [ "other-app", A.ProfileEntry.app "app-123" "/key.pem" "install-1" ]
+        let cfg = A.AuthConfig.withProfiles "missing-profile" [ "other-app", A.ProfileEntry.app "app-123" "/key.pem" "install-1" ]
         OrcAI.Auth.AuthConfig.writeConfigTo home cfg |> ignore
         match loadConfigFrom home with
         | Ok _    -> Assert.Fail("Expected Error when active profile does not exist")

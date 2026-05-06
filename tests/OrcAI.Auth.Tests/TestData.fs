@@ -14,8 +14,8 @@ module A =
         let pat token : ProfileEntry =
             { Type = "pat"; Token = Some token; AppId = None; KeyPath = None; InstallationId = None }
 
-    module AuthConfigFile =
-        let make (active: string) (profiles: (string * ProfileEntry) list) : AuthConfigFile =
+    module AuthConfig =
+        let withProfiles (active: string) (profiles: (string * ProfileEntry) list) : AuthConfigFile =
             let dict = System.Collections.Generic.Dictionary<string, ProfileEntry>()
             for (name, entry) in profiles do dict.[name] <- entry
             { Active = active; Profiles = dict }

@@ -66,33 +66,6 @@ module A =
             "  template: \"TEMPLATE_PLACEHOLDER\"\n" +
             "  labels: [\"documentation\"]\n"
 
-        /// Write a YAML file and its template to a MockFileSystem; returns the YAML path.
-        let writeTo (fs: MockFileSystem) (yaml: string) (templateContent: string) : string =
-            let dir          = "/work"
-            fs.Directory.CreateDirectory(dir) |> ignore
-            let templatePath = dir + "/template.md"
-            fs.File.WriteAllText(templatePath, templateContent)
-            let resolvedYaml = yaml.Replace("TEMPLATE_PLACEHOLDER", "./template.md")
-            let yamlPath     = dir + "/job.yml"
-            fs.File.WriteAllText(yamlPath, resolvedYaml)
-            yamlPath
-
-        /// Write a named valid YAML file (with a shared template stub) to a MockFileSystem;
-        /// returns the YAML path. Suitable for multi-file execute tests.
-        let writeNamedTo (fs: MockFileSystem) (name: string) : string =
-            let dir          = "/work"
-            fs.Directory.CreateDirectory(dir) |> ignore
-            let templatePath = $"{dir}/template.md"
-            if not (fs.File.Exists(templatePath)) then
-                fs.File.WriteAllText(templatePath, "# body")
-            let yaml =
-                "job:\n  title: \"Add AGENTS.md\"\n  org: \"myorg\"\n" +
-                "repos:\n  - \"repo-a\"\n" +
-                "issue:\n  template: \"./template.md\"\n  labels: []\n"
-            let yamlPath = $"{dir}/{name}"
-            fs.File.WriteAllText(yamlPath, yaml)
-            yamlPath
-
     module RunInput =
         let defaults () : OrcAI.Core.RunCommand.RunInput =
             { YamlPath         = ""
@@ -121,6 +94,33 @@ module A =
 
 /// Pre-populated state builders for test setup.
 module Given =
+
+    /// Write a YAML file and its template to a MockFileSystem; returns the YAML path.
+    let yamlFile (fs: MockFileSystem) (yaml: string) (templateContent: string) : string =
+        let dir          = "/work"
+        fs.Directory.CreateDirectory(dir) |> ignore
+        let templatePath = dir + "/template.md"
+        fs.File.WriteAllText(templatePath, templateContent)
+        let resolvedYaml = yaml.Replace("TEMPLATE_PLACEHOLDER", "./template.md")
+        let yamlPath     = dir + "/job.yml"
+        fs.File.WriteAllText(yamlPath, resolvedYaml)
+        yamlPath
+
+    /// Write a named valid YAML file (with a shared template stub) to a MockFileSystem;
+    /// returns the YAML path. Suitable for multi-file execute tests.
+    let namedYamlFile (fs: MockFileSystem) (name: string) : string =
+        let dir          = "/work"
+        fs.Directory.CreateDirectory(dir) |> ignore
+        let templatePath = $"{dir}/template.md"
+        if not (fs.File.Exists(templatePath)) then
+            fs.File.WriteAllText(templatePath, "# body")
+        let yaml =
+            "job:\n  title: \"Add AGENTS.md\"\n  org: \"myorg\"\n" +
+            "repos:\n  - \"repo-a\"\n" +
+            "issue:\n  template: \"./template.md\"\n  labels: []\n"
+        let yamlPath = $"{dir}/{name}"
+        fs.File.WriteAllText(yamlPath, yaml)
+        yamlPath
 
     let deps (fs: MockFileSystem) (client: IGhClient) : OrcAIDeps =
         { GhClient      = client

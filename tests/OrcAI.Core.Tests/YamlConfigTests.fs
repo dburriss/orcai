@@ -19,7 +19,7 @@ let ``parseFile returns error for missing file`` () =
 [<Fact>]
 let ``parseFile parses valid YAML into JobConfig`` () =
     let fs      = MockFileSystem()
-    let path    = A.Yaml.writeTo fs A.Yaml.valid "# Issue body"
+    let path    = Given.yamlFile fs A.Yaml.valid "# Issue body"
     match parseFile fs path with
     | Error e  -> Assert.True(false, $"Expected Ok but got Error: {e}")
     | Ok cfg   ->
@@ -34,7 +34,7 @@ let ``parseFile parses valid YAML into JobConfig`` () =
 [<Fact>]
 let ``parseFile prefixes repos with org`` () =
     let fs   = MockFileSystem()
-    let path = A.Yaml.writeTo fs A.Yaml.valid "body"
+    let path = Given.yamlFile fs A.Yaml.valid "body"
     match parseFile fs path with
     | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
     | Ok cfg  ->
@@ -62,7 +62,7 @@ let ``parseFile returns error when job section is missing`` () =
 [<Fact>]
 let ``parseFile parses labels from YAML into JobConfig`` () =
     let fs   = MockFileSystem()
-    let path = A.Yaml.writeTo fs A.Yaml.valid "# Issue body"
+    let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
     match parseFile fs path with
     | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
     | Ok cfg  ->
@@ -76,7 +76,7 @@ let ``parseFile sets Labels to empty list when not present in YAML`` () =
         "repos:\n  - \"repo-a\"\n" +
         "issue:\n  template: \"TEMPLATE_PLACEHOLDER\"\n"
     let fs   = MockFileSystem()
-    let path = A.Yaml.writeTo fs yaml "body"
+    let path = Given.yamlFile fs yaml "body"
     match parseFile fs path with
     | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
     | Ok cfg  -> Assert.Empty(cfg.Labels)

@@ -50,9 +50,9 @@ let ``labelsToCreate returns empty when existing labels list is empty and no lab
 [<Fact>]
 let ``execute processes all files in a resolved path list`` () =
     let fs    = MockFileSystem()
-    let path1 = A.Yaml.writeNamedTo fs "job1.yml"
-    let path2 = A.Yaml.writeNamedTo fs "job2.yml"
-    let deps  = Given.deps fs (FakeGhClient.make FakeGhClient.defaults)
+    let path1 = Given.namedYamlFile fs "job1.yml"
+    let path2 = Given.namedYamlFile fs "job2.yml"
+    let deps  = Given.deps fs (FakeGhClient.from FakeGhClient.defaults)
 
     let results = execute deps [path1; path2] (A.RunInput.defaults ()) |> Async.RunSynchronously
 
@@ -62,8 +62,8 @@ let ``execute processes all files in a resolved path list`` () =
 [<Fact>]
 let ``execute result is always a filename-keyed dictionary`` () =
     let fs   = MockFileSystem()
-    let path = A.Yaml.writeNamedTo fs "job.yml"
-    let deps = Given.deps fs (FakeGhClient.make FakeGhClient.defaults)
+    let path = Given.namedYamlFile fs "job.yml"
+    let deps = Given.deps fs (FakeGhClient.from FakeGhClient.defaults)
 
     let results = execute deps [path] (A.RunInput.defaults ()) |> Async.RunSynchronously
 
@@ -72,10 +72,10 @@ let ``execute result is always a filename-keyed dictionary`` () =
 [<Fact>]
 let ``execute stops on first failure without ContinueOnError (sequential)`` () =
     let fs    = MockFileSystem()
-    let path1 = A.Yaml.writeNamedTo fs "job1.yml"
-    let path2 = A.Yaml.writeNamedTo fs "job2.yml"
+    let path1 = Given.namedYamlFile fs "job1.yml"
+    let path2 = Given.namedYamlFile fs "job2.yml"
     (fs :> System.IO.Abstractions.IFileSystem).File.WriteAllText(path1, "not: valid: yaml: at: all\n!!!")
-    let deps  = Given.deps fs (FakeGhClient.make FakeGhClient.defaults)
+    let deps  = Given.deps fs (FakeGhClient.from FakeGhClient.defaults)
     let input = A.RunInput.defaults () |> A.RunInput.withNoParallel true
 
     let results = execute deps [path1; path2] input |> Async.RunSynchronously
@@ -89,10 +89,10 @@ let ``execute stops on first failure without ContinueOnError (sequential)`` () =
 [<Fact>]
 let ``execute continues past failures with ContinueOnError`` () =
     let fs    = MockFileSystem()
-    let path1 = A.Yaml.writeNamedTo fs "job1.yml"
-    let path2 = A.Yaml.writeNamedTo fs "job2.yml"
+    let path1 = Given.namedYamlFile fs "job1.yml"
+    let path2 = Given.namedYamlFile fs "job2.yml"
     (fs :> System.IO.Abstractions.IFileSystem).File.WriteAllText(path1, "not: valid: yaml: at: all\n!!!")
-    let deps  = Given.deps fs (FakeGhClient.make FakeGhClient.defaults)
+    let deps  = Given.deps fs (FakeGhClient.from FakeGhClient.defaults)
     let input =
         A.RunInput.defaults ()
         |> A.RunInput.withNoParallel true
@@ -112,9 +112,9 @@ let ``execute continues past failures with ContinueOnError`` () =
 [<Fact>]
 let ``execute with NoParallel=true processes files sequentially and returns correct results`` () =
     let fs    = MockFileSystem()
-    let path1 = A.Yaml.writeNamedTo fs "job1.yml"
-    let path2 = A.Yaml.writeNamedTo fs "job2.yml"
-    let deps  = Given.deps fs (FakeGhClient.make FakeGhClient.defaults)
+    let path1 = Given.namedYamlFile fs "job1.yml"
+    let path2 = Given.namedYamlFile fs "job2.yml"
+    let deps  = Given.deps fs (FakeGhClient.from FakeGhClient.defaults)
     let input =
         A.RunInput.defaults ()
         |> A.RunInput.withNoParallel true
@@ -132,10 +132,10 @@ let ``execute with NoParallel=true processes files sequentially and returns corr
 [<Fact>]
 let ``processRepo uses CopilotClient when Some for AssignIssue`` () =
     let fs          = MockFileSystem()
-    let path        = A.Yaml.writeNamedTo fs "job.yml"
+    let path        = Given.namedYamlFile fs "job.yml"
     let assignCalls = ConcurrentBag<string>()
-    let primary     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
-    let copilot     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "copilot"  assignCalls }
+    let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
+    let copilot     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "copilot"  assignCalls }
     let deps        = { Given.deps fs primary with CopilotClient = Some copilot }
     let input       = A.RunInput.defaults () |> A.RunInput.withSkipCopilot false |> A.RunInput.withIsPrimaryAuthApp true
 
@@ -148,9 +148,9 @@ let ``processRepo uses CopilotClient when Some for AssignIssue`` () =
 [<Fact>]
 let ``processRepo uses primary client for AssignIssue when CopilotClient is None and IsPrimaryAuthApp=false`` () =
     let fs          = MockFileSystem()
-    let path        = A.Yaml.writeNamedTo fs "job.yml"
+    let path        = Given.namedYamlFile fs "job.yml"
     let assignCalls = ConcurrentBag<string>()
-    let primary     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
+    let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
     let deps        = Given.deps fs primary
     let input       = A.RunInput.defaults () |> A.RunInput.withSkipCopilot false
 
@@ -162,9 +162,9 @@ let ``processRepo uses primary client for AssignIssue when CopilotClient is None
 [<Fact>]
 let ``processRepo skips assignment and does not call AssignIssue when CopilotClient=None and IsPrimaryAuthApp=true`` () =
     let fs          = MockFileSystem()
-    let path        = A.Yaml.writeNamedTo fs "job.yml"
+    let path        = Given.namedYamlFile fs "job.yml"
     let assignCalls = ConcurrentBag<string>()
-    let primary     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
+    let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
     let deps        = Given.deps fs primary
     let input       = A.RunInput.defaults () |> A.RunInput.withSkipCopilot false |> A.RunInput.withIsPrimaryAuthApp true
 
@@ -176,10 +176,10 @@ let ``processRepo skips assignment and does not call AssignIssue when CopilotCli
 [<Fact>]
 let ``processRepo skips assignment entirely when skipCopilot=true regardless of CopilotClient`` () =
     let fs          = MockFileSystem()
-    let path        = A.Yaml.writeNamedTo fs "job.yml"
+    let path        = Given.namedYamlFile fs "job.yml"
     let assignCalls = ConcurrentBag<string>()
-    let primary     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
-    let copilot     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "copilot"  assignCalls }
+    let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
+    let copilot     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "copilot"  assignCalls }
     let deps        = { Given.deps fs primary with CopilotClient = Some copilot }
     let input       = A.RunInput.defaults () |> A.RunInput.withIsPrimaryAuthApp true
 
@@ -193,7 +193,7 @@ let ``processRepo skips assignment entirely when skipCopilot=true regardless of 
 // ---------------------------------------------------------------------------
 
 let private closedIssueClient () =
-    FakeGhClient.make
+    FakeGhClient.from
         { FakeGhClient.defaults with
             FindClosedIssue = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
             ReopenIssue     = fun repo _ -> async { return Ok (FakeGhClient.issueFor repo 7) }
@@ -202,7 +202,7 @@ let private closedIssueClient () =
 [<Fact>]
 let ``reopen action reopens closed issue and returns Reopened outcome`` () =
     let fs    = MockFileSystem()
-    let path  = A.Yaml.writeNamedTo fs "job.yml"
+    let path  = Given.namedYamlFile fs "job.yml"
     let deps  = Given.deps fs (closedIssueClient ())
     let input = A.RunInput.defaults () |> A.RunInput.withOnClosedIssue (Some Reopen)
 
@@ -217,7 +217,7 @@ let ``reopen action reopens closed issue and returns Reopened outcome`` () =
 [<Fact>]
 let ``reopen action does not call CreateIssue when closed issue exists`` () =
     let fs    = MockFileSystem()
-    let path  = A.Yaml.writeNamedTo fs "job.yml"
+    let path  = Given.namedYamlFile fs "job.yml"
     let deps  = Given.deps fs (closedIssueClient ())
     let input = A.RunInput.defaults () |> A.RunInput.withOnClosedIssue (Some Reopen)
 
@@ -228,11 +228,11 @@ let ``reopen action does not call CreateIssue when closed issue exists`` () =
 [<Fact>]
 let ``skip action returns Skipped outcome without creating or reopening`` () =
     let fs    = MockFileSystem()
-    let path  = A.Yaml.writeNamedTo fs "job.yml"
+    let path  = Given.namedYamlFile fs "job.yml"
     let pc    = ConcurrentBag<unit>()
     let ac    = ConcurrentBag<unit>()
     let client =
-        FakeGhClient.make
+        FakeGhClient.from
             { FakeGhClient.defaults with
                 FindClosedIssue   = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
                 CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
@@ -252,11 +252,11 @@ let ``skip action returns Skipped outcome without creating or reopening`` () =
 [<Fact>]
 let ``skip action does not add issue to project or assign copilot`` () =
     let fs    = MockFileSystem()
-    let path  = A.Yaml.writeNamedTo fs "job.yml"
+    let path  = Given.namedYamlFile fs "job.yml"
     let pc    = ConcurrentBag<unit>()
     let ac    = ConcurrentBag<unit>()
     let client =
-        FakeGhClient.make
+        FakeGhClient.from
             { FakeGhClient.defaults with
                 FindClosedIssue   = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
                 CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
@@ -276,9 +276,9 @@ let ``skip action does not add issue to project or assign copilot`` () =
 [<Fact>]
 let ``fail action returns error and does not create or reopen`` () =
     let fs    = MockFileSystem()
-    let path  = A.Yaml.writeNamedTo fs "job.yml"
+    let path  = Given.namedYamlFile fs "job.yml"
     let client =
-        FakeGhClient.make
+        FakeGhClient.from
             { FakeGhClient.defaults with
                 FindClosedIssue   = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
                 CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
@@ -297,10 +297,10 @@ let ``fail action returns error and does not create or reopen`` () =
 [<Fact>]
 let ``create action (default) creates new issue even when closed issue exists`` () =
     let fs              = MockFileSystem()
-    let path            = A.Yaml.writeNamedTo fs "job.yml"
+    let path            = Given.namedYamlFile fs "job.yml"
     let createCallCount = ConcurrentBag<unit>()
     let client =
-        FakeGhClient.make
+        FakeGhClient.from
             { FakeGhClient.defaults with
                 FindClosedIssue = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
                 CreateIssue     = fun repo _ _ _ ->
