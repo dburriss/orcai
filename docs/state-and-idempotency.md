@@ -100,11 +100,15 @@ GitHub issues have exactly two states: `open` and `closed`. There is no draft, p
 
 ### Closed issues are not detected
 
+Status: Done
+
 `FindIssue` only searches open issues. If an issue created by a previous run was manually closed, a subsequent run (without a valid lock file) will create a duplicate open issue.
 
 **Workaround:** Keep the lock file intact, or manually reopen the issue before running again.
 
 ### Copilot non-delivery is not detected
+
+Status: By design
 
 Once `@copilot` appears in an issue's assignees, the application considers the work done. It does not poll for PR creation or verify that Copilot actually produced output. If Copilot was assigned but failed silently or was unresponsive, a subsequent run will still see `hasCopilot = true` and skip re-assignment.
 
@@ -112,10 +116,14 @@ Once `@copilot` appears in an issue's assignees, the application considers the w
 
 ### Lock file and live state can diverge
 
+Status: By design
+
 If GitHub resources are modified or deleted outside of OrcAI after a successful run, the lock file still reflects the original state. OrcAI will treat the run as complete and make no corrections.
 
 **Workaround:** Use `--skip-lock` to force a full re-run, which will re-check each resource against the live API.
 
 ### Title is the only uniqueness key
+
+Status: By design
 
 Both project and issue detection rely solely on exact title matching. Renaming a resource in GitHub (without changing the YAML) will cause OrcAI to treat it as missing and create a duplicate on the next lock-invalidating run.
