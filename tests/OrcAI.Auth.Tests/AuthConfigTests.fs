@@ -4,27 +4,8 @@ open System
 open System.IO
 open Xunit
 open OrcAI.Auth.AuthConfig
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-let private withTempHome (f: string -> unit) =
-    let dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
-    try f dir
-    finally
-        if Directory.Exists(dir) then Directory.Delete(dir, true)
-
-let private makeConfig (active: string) (profiles: (string * ProfileEntry) list) : AuthConfigFile =
-    let dict = System.Collections.Generic.Dictionary<string, ProfileEntry>()
-    for (name, entry) in profiles do dict.[name] <- entry
-    { Active = active; Profiles = dict }
-
-let private appEntry appId keyPath installId =
-    { Type = "app"; Token = None; AppId = Some appId; KeyPath = Some keyPath; InstallationId = Some installId }
-
-let private patEntry token =
-    { Type = "pat"; Token = Some token; AppId = None; KeyPath = None; InstallationId = None }
+open OrcAI.Auth.Tests.TestData
+open OrcAI.Auth.Tests.TestHelpers
 
 // ---------------------------------------------------------------------------
 // getActiveProfile
@@ -32,21 +13,21 @@ let private patEntry token =
 
 [<Fact>]
 let ``getActiveProfile returns correct profile`` () =
-    let cfg = makeConfig "my-app" [ "my-app", appEntry "123" "/key.pem" "install-1" ]
+    let cfg = A.AuthConfigFile.make "my-app" [ "my-app", A.ProfileEntry.app "123" "/key.pem" "install-1" ]
     match getActiveProfile cfg with
     | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
     | Ok p    -> Assert.Equal("app", p.Type)
 
 [<Fact>]
 let ``getActiveProfile returns error when active key is empty`` () =
-    let cfg = makeConfig "" [ "my-app", appEntry "123" "/key.pem" "install-1" ]
+    let cfg = A.AuthConfigFile.make "" [ "my-app", A.ProfileEntry.app "123" "/key.pem" "install-1" ]
     match getActiveProfile cfg with
     | Ok _    -> Assert.Fail("Expected error for empty active key")
     | Error e -> Assert.Contains("No active profile", e)
 
 [<Fact>]
 let ``getActiveProfile returns error when active points to missing profile`` () =
-    let cfg = makeConfig "missing" [ "my-app", appEntry "123" "/key.pem" "install-1" ]
+    let cfg = A.AuthConfigFile.make "missing" [ "my-app", A.ProfileEntry.app "123" "/key.pem" "install-1" ]
     match getActiveProfile cfg with
     | Ok _    -> Assert.Fail("Expected error when active profile is missing")
     | Error e -> Assert.Contains("missing", e)
@@ -57,23 +38,21 @@ let ``getActiveProfile returns error when active points to missing profile`` () 
 
 [<Fact>]
 let ``upsertProfile adds a new profile and sets it as active`` () =
-    let cfg    = makeConfig "" []
-    let entry  = appEntry "123" "/key.pem" "install-1"
-    let result = upsertProfile "my-app" entry cfg
+    let cfg    = A.AuthConfigFile.make "" []
+    let result = upsertProfile "my-app" (A.ProfileEntry.app "123" "/key.pem" "install-1") cfg
     Assert.Equal("my-app", result.Active)
     Assert.True(result.Profiles.ContainsKey("my-app"))
 
 [<Fact>]
 let ``upsertProfile replaces an existing profile`` () =
-    let cfg    = makeConfig "my-app" [ "my-app", appEntry "old-id" "/old.pem" "old-install" ]
-    let entry  = appEntry "new-id" "/new.pem" "new-install"
-    let result = upsertProfile "my-app" entry cfg
+    let cfg    = A.AuthConfigFile.make "my-app" [ "my-app", A.ProfileEntry.app "old-id" "/old.pem" "old-install" ]
+    let result = upsertProfile "my-app" (A.ProfileEntry.app "new-id" "/new.pem" "new-install") cfg
     Assert.Equal("new-id", result.Profiles.["my-app"].AppId |> Option.defaultValue "")
 
 [<Fact>]
 let ``upsertProfile sets the named profile as active`` () =
-    let cfg    = makeConfig "other" [ "other", patEntry "tok"; "my-app", appEntry "id" "/k.pem" "i" ]
-    let result = upsertProfile "my-app" (appEntry "id" "/k.pem" "i") cfg
+    let cfg    = A.AuthConfigFile.make "other" [ "other", A.ProfileEntry.pat "tok"; "my-app", A.ProfileEntry.app "id" "/k.pem" "i" ]
+    let result = upsertProfile "my-app" (A.ProfileEntry.app "id" "/k.pem" "i") cfg
     Assert.Equal("my-app", result.Active)
 
 // ---------------------------------------------------------------------------
@@ -82,23 +61,23 @@ let ``upsertProfile sets the named profile as active`` () =
 
 [<Fact>]
 let ``switchActive succeeds when profile exists`` () =
-    let cfg = makeConfig "app1" [ "app1", appEntry "1" "/k1.pem" "i1"; "app2", appEntry "2" "/k2.pem" "i2" ]
+    let cfg = A.AuthConfigFile.make "app1" [ "app1", A.ProfileEntry.app "1" "/k1.pem" "i1"; "app2", A.ProfileEntry.app "2" "/k2.pem" "i2" ]
     match switchActive "app2" cfg with
-    | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+    | Error e    -> Assert.Fail($"Expected Ok but got Error: {e}")
     | Ok updated -> Assert.Equal("app2", updated.Active)
 
 [<Fact>]
 let ``switchActive returns error when profile does not exist`` () =
-    let cfg = makeConfig "app1" [ "app1", appEntry "1" "/k1.pem" "i1" ]
+    let cfg = A.AuthConfigFile.make "app1" [ "app1", A.ProfileEntry.app "1" "/k1.pem" "i1" ]
     match switchActive "nonexistent" cfg with
     | Ok _    -> Assert.Fail("Expected error when profile does not exist")
     | Error e -> Assert.Contains("nonexistent", e)
 
 [<Fact>]
 let ``switchActive does not modify other profiles`` () =
-    let cfg = makeConfig "app1" [ "app1", appEntry "1" "/k1.pem" "i1"; "app2", appEntry "2" "/k2.pem" "i2" ]
+    let cfg = A.AuthConfigFile.make "app1" [ "app1", A.ProfileEntry.app "1" "/k1.pem" "i1"; "app2", A.ProfileEntry.app "2" "/k2.pem" "i2" ]
     match switchActive "app2" cfg with
-    | Error e -> Assert.Fail($"Expected Ok: {e}")
+    | Error e    -> Assert.Fail($"Expected Ok: {e}")
     | Ok updated ->
         Assert.Equal(2, updated.Profiles.Count)
         Assert.True(updated.Profiles.ContainsKey("app1"))
@@ -110,12 +89,12 @@ let ``switchActive does not modify other profiles`` () =
 [<Fact>]
 let ``writeConfigTo then readConfigFrom round-trips active and profiles`` () =
     withTempHome (fun home ->
-        let cfg = makeConfig "my-app" [ "my-app", appEntry "123" "/key.pem" "install-1" ]
+        let cfg = A.AuthConfigFile.make "my-app" [ "my-app", A.ProfileEntry.app "123" "/key.pem" "install-1" ]
         match writeConfigTo home cfg with
         | Error e -> Assert.Fail($"writeConfigTo failed: {e}")
         | Ok () ->
             match readConfigFrom home with
-            | Error e -> Assert.Fail($"readConfigFrom failed: {e}")
+            | Error e  -> Assert.Fail($"readConfigFrom failed: {e}")
             | Ok loaded ->
                 Assert.Equal("my-app", loaded.Active)
                 Assert.True(loaded.Profiles.ContainsKey("my-app"))
@@ -134,8 +113,6 @@ let ``readConfigFrom returns error when file does not exist`` () =
 
 [<Fact>]
 let ``removeOldPem deletes app.pem when it exists`` () =
-    // Use a temp directory to simulate HOME, write a fake app.pem, then call
-    // removeOldPem via HOME env var override.
     withTempHome (fun tmpHome ->
         let orcaDir = Path.Combine(tmpHome, ".config", "orcai")
         Directory.CreateDirectory(orcaDir) |> ignore
@@ -156,7 +133,6 @@ let ``removeOldPem is a no-op when app.pem is absent`` () =
         let original = Environment.GetEnvironmentVariable("HOME")
         try
             Environment.SetEnvironmentVariable("HOME", tmpHome)
-            // Should not throw
             removeOldPem ()
         finally
             Environment.SetEnvironmentVariable("HOME", original))

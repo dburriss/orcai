@@ -8,6 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="TestData.fs" />
+    <Compile Include="FakeGhClient.fs" />
     <Compile Include="LockFileTests.fs" />
     <Compile Include="YamlConfigTests.fs" />
     <Compile Include="FileGlobTests.fs" />

@@ -5,48 +5,24 @@ open Xunit
 open Testably.Abstractions.Testing
 open OrcAI.Core.YamlConfig
 open OrcAI.Core.Domain
+open OrcAI.Core.Tests.TestData
 
 // ---------------------------------------------------------------------------
-// Unit tests for YAML config parsing and hash computation.
-// File I/O tests use MockFileSystem (in-memory); pure-function tests need no I/O.
+// File-based parsing tests (MockFileSystem)
 // ---------------------------------------------------------------------------
 
 [<Fact>]
 let ``parseFile returns error for missing file`` () =
-    let fs     = MockFileSystem()
-    let result = parseFile fs "/nonexistent/path/job.yml"
-    Assert.True(Result.isError result)
-
-/// Write an in-memory YAML file plus an issue template and return the YAML path.
-let private writeMockYaml (fs: MockFileSystem) (yaml: string) (templateContent: string) : string =
-    let dir          = "/work"
-    fs.Directory.CreateDirectory(dir) |> ignore
-    let templatePath = dir + "/template.md"
-    fs.File.WriteAllText(templatePath, templateContent)
-    let resolvedYaml = yaml.Replace("TEMPLATE_PLACEHOLDER", "./template.md")
-    let yamlPath     = dir + "/job.yml"
-    fs.File.WriteAllText(yamlPath, resolvedYaml)
-    yamlPath
-
-let private validYaml =
-    "job:\n" +
-    "  title: \"Add AGENTS.md\"\n" +
-    "  org: \"myorg\"\n" +
-    "repos:\n" +
-    "  - \"repo-a\"\n" +
-    "  - \"repo-b\"\n" +
-    "issue:\n" +
-    "  template: \"TEMPLATE_PLACEHOLDER\"\n" +
-    "  labels: [\"documentation\"]\n"
+    let fs = MockFileSystem()
+    Assert.True(Result.isError (parseFile fs "/nonexistent/path/job.yml"))
 
 [<Fact>]
 let ``parseFile parses valid YAML into JobConfig`` () =
-    let fs       = MockFileSystem()
-    let yamlPath = writeMockYaml fs validYaml "# Issue body"
-    let result   = parseFile fs yamlPath
-    match result with
-    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
-    | Ok cfg  ->
+    let fs      = MockFileSystem()
+    let path    = A.Yaml.writeTo fs A.Yaml.valid "# Issue body"
+    match parseFile fs path with
+    | Error e  -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg   ->
         Assert.Equal(OrgName "myorg", cfg.Org)
         Assert.Equal("Add AGENTS.md", cfg.ProjectTitle)
         Assert.Equal("Add AGENTS.md", cfg.IssueTitle)
@@ -57,48 +33,37 @@ let ``parseFile parses valid YAML into JobConfig`` () =
 
 [<Fact>]
 let ``parseFile prefixes repos with org`` () =
-    let fs       = MockFileSystem()
-    let yamlPath = writeMockYaml fs validYaml "body"
-    match parseFile fs yamlPath with
+    let fs   = MockFileSystem()
+    let path = A.Yaml.writeTo fs A.Yaml.valid "body"
+    match parseFile fs path with
     | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
     | Ok cfg  ->
-        for repo in cfg.Repos do
-            let (RepoName r) = repo
+        for (RepoName r) in cfg.Repos do
             Assert.StartsWith("myorg/", r)
 
 [<Fact>]
 let ``parseFile returns error when template file is missing`` () =
-    let fs       = MockFileSystem()
-    let dir      = "/work"
-    fs.Directory.CreateDirectory(dir) |> ignore
-    let yamlPath = dir + "/job.yml"
-    let content =
-        "job:\n" +
-        "  title: \"T\"\n" +
-        "  org: \"o\"\n" +
-        "repos:\n" +
-        "  - \"r\"\n" +
-        "issue:\n" +
-        "  template: \"./missing.md\"\n"
-    fs.File.WriteAllText(yamlPath, content)
-    let result = parseFile fs yamlPath
-    Assert.True(Result.isError result)
+    let fs = MockFileSystem()
+    fs.Directory.CreateDirectory("/work") |> ignore
+    let yaml =
+        "job:\n  title: \"T\"\n  org: \"o\"\n" +
+        "repos:\n  - \"r\"\n" +
+        "issue:\n  template: \"./missing.md\"\n"
+    fs.File.WriteAllText("/work/job.yml", yaml)
+    Assert.True(Result.isError (parseFile fs "/work/job.yml"))
 
 [<Fact>]
 let ``parseFile returns error when job section is missing`` () =
-    let fs       = MockFileSystem()
-    let dir      = "/work"
-    fs.Directory.CreateDirectory(dir) |> ignore
-    let yamlPath = dir + "/job.yml"
-    fs.File.WriteAllText(yamlPath, "repos:\n  - r\n")
-    let result = parseFile fs yamlPath
-    Assert.True(Result.isError result)
+    let fs = MockFileSystem()
+    fs.Directory.CreateDirectory("/work") |> ignore
+    fs.File.WriteAllText("/work/job.yml", "repos:\n  - r\n")
+    Assert.True(Result.isError (parseFile fs "/work/job.yml"))
 
 [<Fact>]
 let ``parseFile parses labels from YAML into JobConfig`` () =
-    let fs       = MockFileSystem()
-    let yamlPath = writeMockYaml fs validYaml "# Issue body"
-    match parseFile fs yamlPath with
+    let fs   = MockFileSystem()
+    let path = A.Yaml.writeTo fs A.Yaml.valid "# Issue body"
+    match parseFile fs path with
     | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
     | Ok cfg  ->
         Assert.Equal(1, cfg.Labels.Length)
@@ -107,49 +72,38 @@ let ``parseFile parses labels from YAML into JobConfig`` () =
 [<Fact>]
 let ``parseFile sets Labels to empty list when not present in YAML`` () =
     let yaml =
-        "job:\n" +
-        "  title: \"No Labels\"\n" +
-        "  org: \"myorg\"\n" +
-        "repos:\n" +
-        "  - \"repo-a\"\n" +
-        "issue:\n" +
-        "  template: \"TEMPLATE_PLACEHOLDER\"\n"
-    let fs       = MockFileSystem()
-    let yamlPath = writeMockYaml fs yaml "body"
-    match parseFile fs yamlPath with
+        "job:\n  title: \"No Labels\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"TEMPLATE_PLACEHOLDER\"\n"
+    let fs   = MockFileSystem()
+    let path = A.Yaml.writeTo fs yaml "body"
+    match parseFile fs path with
     | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
     | Ok cfg  -> Assert.Empty(cfg.Labels)
 
 [<Fact>]
 let ``computeHash returns consistent hex string for same content`` () =
-    let fs       = MockFileSystem()
-    let dir      = "/work"
-    fs.Directory.CreateDirectory(dir) |> ignore
-    let yamlPath = dir + "/job.yml"
-    fs.File.WriteAllText(yamlPath, "content: hello")
-    let hash1 = computeHash fs yamlPath
-    let hash2 = computeHash fs yamlPath
+    let fs = MockFileSystem()
+    fs.Directory.CreateDirectory("/work") |> ignore
+    fs.File.WriteAllText("/work/job.yml", "content: hello")
+    let hash1 = computeHash fs "/work/job.yml"
+    let hash2 = computeHash fs "/work/job.yml"
     Assert.Equal(hash1, hash2)
-    Assert.Equal(64, hash1.Length) // SHA-256 hex = 32 bytes = 64 chars
+    Assert.Equal(64, hash1.Length)
 
 [<Fact>]
 let ``computeHash returns different hashes for different content`` () =
-    let fs  = MockFileSystem()
-    let dir = "/work"
-    fs.Directory.CreateDirectory(dir) |> ignore
-    let p1 = dir + "/a.yml"
-    let p2 = dir + "/b.yml"
-    fs.File.WriteAllText(p1, "content: hello")
-    fs.File.WriteAllText(p2, "content: world")
-    let h1 = computeHash fs p1
-    let h2 = computeHash fs p2
-    Assert.NotEqual<string>(h1, h2)
+    let fs = MockFileSystem()
+    fs.Directory.CreateDirectory("/work") |> ignore
+    fs.File.WriteAllText("/work/a.yml", "content: hello")
+    fs.File.WriteAllText("/work/b.yml", "content: world")
+    Assert.NotEqual<string>(computeHash fs "/work/a.yml", computeHash fs "/work/b.yml")
 
 // ---------------------------------------------------------------------------
-// Pure function tests — no file I/O required
+// Pure parse tests (no file I/O)
 // ---------------------------------------------------------------------------
 
-let private validYamlText =
+let private pureParsYaml =
     "job:\n" +
     "  title: \"My Job\"\n" +
     "  org: \"acme\"\n" +
@@ -162,12 +116,12 @@ let private validYamlText =
 
 [<Fact>]
 let ``parse builds correct JobConfig from raw strings`` () =
-    match parse validYamlText "/any/path/issue.md" "Issue body text" with
+    match parse pureParsYaml "/any/path/issue.md" "Issue body text" with
     | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
     | Ok cfg  ->
         Assert.Equal(OrgName "acme", cfg.Org)
-        Assert.Equal("My Job", cfg.ProjectTitle)
-        Assert.Equal("My Job", cfg.IssueTitle)
+        Assert.Equal("My Job",          cfg.ProjectTitle)
+        Assert.Equal("My Job",          cfg.IssueTitle)
         Assert.Equal("Issue body text", cfg.IssueBody)
         Assert.Equal(2, cfg.Repos.Length)
         Assert.Contains(RepoName "acme/svc-a", cfg.Repos)
@@ -175,7 +129,7 @@ let ``parse builds correct JobConfig from raw strings`` () =
 
 [<Fact>]
 let ``parse prefixes all repos with org name`` () =
-    match parse validYamlText "" "body" with
+    match parse pureParsYaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
     | Ok cfg  ->
         for (RepoName r) in cfg.Repos do
@@ -183,7 +137,7 @@ let ``parse prefixes all repos with org name`` () =
 
 [<Fact>]
 let ``parse returns labels from YAML`` () =
-    match parse validYamlText "" "body" with
+    match parse pureParsYaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
     | Ok cfg  ->
         Assert.Equal(2, cfg.Labels.Length)
@@ -202,8 +156,7 @@ let ``parse returns empty labels when section absent`` () =
 
 [<Fact>]
 let ``parse returns error when job section is missing`` () =
-    let yaml = "repos:\n  - r\n"
-    Assert.True(Result.isError (parse yaml "" ""))
+    Assert.True(Result.isError (parse "repos:\n  - r\n" "" ""))
 
 [<Fact>]
 let ``parse returns error when repos list is empty`` () =
@@ -227,29 +180,27 @@ let ``parse returns error when org is blank`` () =
 
 [<Fact>]
 let ``parse sets SkipCopilot false when not present in YAML`` () =
-    match parse validYamlText "/any/path/issue.md" "body" with
+    match parse pureParsYaml "/any/path/issue.md" "body" with
     | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
     | Ok cfg  -> Assert.False(cfg.SkipCopilot)
 
 [<Fact>]
 let ``parse sets SkipCopilot true when job.skipCopilot is true`` () =
     let yaml =
-        "job:\n" +
-        "  title: \"My Job\"\n" +
-        "  org: \"acme\"\n" +
-        "  skipCopilot: true\n" +
-        "repos:\n" +
-        "  - \"svc-a\"\n" +
-        "issue:\n" +
-        "  template: \"./issue.md\"\n"
+        "job:\n  title: \"My Job\"\n  org: \"acme\"\n  skipCopilot: true\n" +
+        "repos:\n  - \"svc-a\"\n" +
+        "issue:\n  template: \"./issue.md\"\n"
     match parse yaml "/any/path/issue.md" "body" with
     | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
     | Ok cfg  -> Assert.True(cfg.SkipCopilot)
 
+// ---------------------------------------------------------------------------
+// hashBytes — pure
+// ---------------------------------------------------------------------------
+
 [<Fact>]
 let ``hashBytes returns a 64-char lowercase hex string`` () =
-    let bytes  = Encoding.UTF8.GetBytes("hello world")
-    let result = hashBytes bytes
+    let result = hashBytes (Encoding.UTF8.GetBytes("hello world"))
     Assert.Equal(64, result.Length)
     Assert.True(result |> Seq.forall (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')),
                 "Expected lowercase hex characters only")
@@ -261,12 +212,10 @@ let ``hashBytes returns same hash for identical bytes`` () =
 
 [<Fact>]
 let ``hashBytes returns different hash for different bytes`` () =
-    let h1 = hashBytes (Encoding.UTF8.GetBytes("foo"))
-    let h2 = hashBytes (Encoding.UTF8.GetBytes("bar"))
-    Assert.NotEqual<string>(h1, h2)
+    Assert.NotEqual<string>(
+        hashBytes (Encoding.UTF8.GetBytes("foo")),
+        hashBytes (Encoding.UTF8.GetBytes("bar")))
 
 [<Fact>]
 let ``hashBytes known SHA-256 value`` () =
-    // echo -n "" | sha256sum  => e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-    let result = hashBytes [||]
-    Assert.Equal("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", result)
+    Assert.Equal("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", hashBytes [||])

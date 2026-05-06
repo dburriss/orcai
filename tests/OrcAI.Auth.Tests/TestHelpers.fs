@@ -1,10 +1,18 @@
 module OrcAI.Auth.Tests.TestHelpers
 
 open System
+open System.IO
 
 // ---------------------------------------------------------------------------
 // Environment variable helpers shared across test modules.
 // ---------------------------------------------------------------------------
+
+/// Create a temp directory, run `f` with its path, then delete it on exit.
+let withTempHome (f: string -> unit) =
+    let dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+    try f dir
+    finally
+        if Directory.Exists(dir) then Directory.Delete(dir, true)
 
 /// Set an env var for the duration of `f`, then restore the original value.
 let withEnv (name: string) (value: string option) (f: unit -> unit) =

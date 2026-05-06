@@ -1,14 +1,14 @@
 module OrcAI.Core.Tests.RunCommandTests
 
+open System.Collections.Concurrent
 open Xunit
 open Testably.Abstractions.Testing
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
-open OrcAI.Core.Deps
 open OrcAI.Core.RunCommand
+open OrcAI.Core.Tests.TestData
 
 // ---------------------------------------------------------------------------
-// Unit tests for the pure labelsToCreate helper.
+// labelsToCreate — pure helper
 // ---------------------------------------------------------------------------
 
 [<Fact>]
@@ -44,137 +44,42 @@ let ``labelsToCreate returns empty when existing labels list is empty and no lab
     Assert.Empty(labelsToCreate [] [])
 
 // ---------------------------------------------------------------------------
-// Helpers for multi-file execute tests.
-// ---------------------------------------------------------------------------
-
-let private validYaml templatePath =
-    "job:\n" +
-    "  title: \"Add AGENTS.md\"\n" +
-    "  org: \"myorg\"\n" +
-    "repos:\n" +
-    "  - \"repo-a\"\n" +
-    "issue:\n" +
-    "  template: \"" + templatePath + "\"\n" +
-    "  labels: []\n"
-
-/// Write a valid YAML file plus its template to a MockFileSystem and return the yaml path.
-let private writeMockYaml (fs: MockFileSystem) (name: string) : string =
-    let dir          = "/work"
-    fs.Directory.CreateDirectory(dir) |> ignore
-    let templatePath = $"{dir}/template.md"
-    if not (fs.File.Exists(templatePath)) then
-        fs.File.WriteAllText(templatePath, "# body")
-    let yamlPath = $"{dir}/{name}"
-    fs.File.WriteAllText(yamlPath, validYaml "./template.md")
-    yamlPath
-
-/// A fake IGhClient that returns a successful project, issue creation, etc.
-type FakeGhClient(repoErrors: Map<string, string>) =
-    let notImpl name = async { return failwith $"FakeGhClient.{name} not expected" }
-    let fakeProject =
-        { Title    = "My Project"
-          Org      = OrgName "myorg"
-          Number   = 1
-          Url      = "https://github.com/orgs/myorg/projects/1" }
-    let fakeIssue repo num =
-        { Repo      = RepoName repo
-          Number    = IssueNumber num
-          Url       = $"https://github.com/{repo}/issues/{num}"
-          Assignees = [] }
-    interface IGhClient with
-        member _.FindProject _ _       = async { return Some fakeProject }
-        member _.CreateProject _ _     = async { return Ok fakeProject }
-        member _.DeleteProject _       = notImpl "DeleteProject"
-        member _.ListLabels _          = async { return Ok [] }
-        member _.CreateLabel _ _       = async { return Ok () }
-        member _.FindIssue repo _      =
-            let (RepoName r) = repo
-            match Map.tryFind r repoErrors with
-            | Some _ -> async { return None }
-            | None   -> async { return None }   // always create fresh
-        member _.FindClosedIssue _ _   = async { return None }
-        member _.ReopenIssue _ _       = notImpl "ReopenIssue"
-        member _.CreateIssue repo _ _ _ =
-            let (RepoName r) = repo
-            match Map.tryFind r repoErrors with
-            | Some e -> async { return Error e }
-            | None   -> async { return Ok (fakeIssue r 42) }
-        member _.CloseIssue _ _        = notImpl "CloseIssue"
-        member _.AddIssueToProject _ _ = async { return Ok () }
-        member _.AssignIssue _ _ _     = async { return Ok () }
-        member _.FindPrsForIssue _ _   = notImpl "FindPrsForIssue"
-        member _.ClosePr _ _           = notImpl "ClosePr"
-        member _.ListRepos _           = notImpl "ListRepos"
-        member _.RepoExists _          = async { return Ok () }
-
-let private makeDeps (fs: MockFileSystem) (client: IGhClient) : OrcAIDeps =
-    { GhClient      = client
-      CopilotClient = None
-      AuthContext   = { new OrcAI.Core.AuthContext.IAuthContext with
-                           member _.GetToken() = async { return Ok "fake-token" } }
-      FileSystem    = fs :> System.IO.Abstractions.IFileSystem
-      Config        = OrcAI.Core.OrcAIConfig.empty }
-
-let private defaultInput paths =
-    { YamlPath           = ""
-      Verbose            = false
-      AutoCreateLabels   = false
-      SkipCopilot        = true    // skip copilot to avoid AssignIssue calls
-      SkipLock           = true
-      MaxConcurrency     = 4
-      NoParallel         = false
-      ContinueOnError    = false
-      DefaultLabels      = []
-      IsPrimaryAuthApp   = false
-      OnClosedIssue      = None }
-
-// ---------------------------------------------------------------------------
 // Multi-file execute tests
 // ---------------------------------------------------------------------------
 
 [<Fact>]
 let ``execute processes all files in a resolved path list`` () =
-    let fs     = MockFileSystem()
-    let path1  = writeMockYaml fs "job1.yml"
-    let path2  = writeMockYaml fs "job2.yml"
-    let deps   = makeDeps fs (FakeGhClient(Map.empty))
-    let input  = defaultInput [path1; path2]
+    let fs    = MockFileSystem()
+    let path1 = A.Yaml.writeNamedTo fs "job1.yml"
+    let path2 = A.Yaml.writeNamedTo fs "job2.yml"
+    let deps  = Given.deps fs (FakeGhClient.make FakeGhClient.defaults)
 
-    let results =
-        execute deps [path1; path2] input
-        |> Async.RunSynchronously
+    let results = execute deps [path1; path2] (A.RunInput.defaults ()) |> Async.RunSynchronously
 
     Assert.Equal(2, results.Count)
     Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
 
 [<Fact>]
 let ``execute result is always a filename-keyed dictionary`` () =
-    let fs    = MockFileSystem()
-    let path  = writeMockYaml fs "job.yml"
-    let deps  = makeDeps fs (FakeGhClient(Map.empty))
-    let input = defaultInput [path]
+    let fs   = MockFileSystem()
+    let path = A.Yaml.writeNamedTo fs "job.yml"
+    let deps = Given.deps fs (FakeGhClient.make FakeGhClient.defaults)
 
-    let results =
-        execute deps [path] input
-        |> Async.RunSynchronously
+    let results = execute deps [path] (A.RunInput.defaults ()) |> Async.RunSynchronously
 
     Assert.True(results.ContainsKey(path))
 
 [<Fact>]
 let ``execute stops on first failure without ContinueOnError (sequential)`` () =
     let fs    = MockFileSystem()
-    let path1 = writeMockYaml fs "job1.yml"
-    let path2 = writeMockYaml fs "job2.yml"
-    // Make path1 fail by writing invalid yaml
+    let path1 = A.Yaml.writeNamedTo fs "job1.yml"
+    let path2 = A.Yaml.writeNamedTo fs "job2.yml"
     (fs :> System.IO.Abstractions.IFileSystem).File.WriteAllText(path1, "not: valid: yaml: at: all\n!!!")
-    let deps  = makeDeps fs (FakeGhClient(Map.empty))
-    let input = { defaultInput [path1; path2] with NoParallel = true; ContinueOnError = false }
+    let deps  = Given.deps fs (FakeGhClient.make FakeGhClient.defaults)
+    let input = A.RunInput.defaults () |> A.RunInput.withNoParallel true
 
-    let results =
-        execute deps [path1; path2] input
-        |> Async.RunSynchronously
+    let results = execute deps [path1; path2] input |> Async.RunSynchronously
 
-    // path1 should be an error; path2 should not be present (stopped early)
     Assert.True(results.ContainsKey(path1))
     match results.[path1] with
     | Error _ -> ()
@@ -184,16 +89,16 @@ let ``execute stops on first failure without ContinueOnError (sequential)`` () =
 [<Fact>]
 let ``execute continues past failures with ContinueOnError`` () =
     let fs    = MockFileSystem()
-    let path1 = writeMockYaml fs "job1.yml"
-    let path2 = writeMockYaml fs "job2.yml"
-    // Make path1 fail
+    let path1 = A.Yaml.writeNamedTo fs "job1.yml"
+    let path2 = A.Yaml.writeNamedTo fs "job2.yml"
     (fs :> System.IO.Abstractions.IFileSystem).File.WriteAllText(path1, "not: valid: yaml: at: all\n!!!")
-    let deps  = makeDeps fs (FakeGhClient(Map.empty))
-    let input = { defaultInput [path1; path2] with NoParallel = true; ContinueOnError = true }
+    let deps  = Given.deps fs (FakeGhClient.make FakeGhClient.defaults)
+    let input =
+        A.RunInput.defaults ()
+        |> A.RunInput.withNoParallel true
+        |> A.RunInput.withContinueOnError true
 
-    let results =
-        execute deps [path1; path2] input
-        |> Async.RunSynchronously
+    let results = execute deps [path1; path2] input |> Async.RunSynchronously
 
     Assert.True(results.ContainsKey(path1))
     Assert.True(results.ContainsKey(path2))
@@ -207,14 +112,15 @@ let ``execute continues past failures with ContinueOnError`` () =
 [<Fact>]
 let ``execute with NoParallel=true processes files sequentially and returns correct results`` () =
     let fs    = MockFileSystem()
-    let path1 = writeMockYaml fs "job1.yml"
-    let path2 = writeMockYaml fs "job2.yml"
-    let deps  = makeDeps fs (FakeGhClient(Map.empty))
-    let input = { defaultInput [path1; path2] with NoParallel = true; ContinueOnError = true }
+    let path1 = A.Yaml.writeNamedTo fs "job1.yml"
+    let path2 = A.Yaml.writeNamedTo fs "job2.yml"
+    let deps  = Given.deps fs (FakeGhClient.make FakeGhClient.defaults)
+    let input =
+        A.RunInput.defaults ()
+        |> A.RunInput.withNoParallel true
+        |> A.RunInput.withContinueOnError true
 
-    let results =
-        execute deps [path1; path2] input
-        |> Async.RunSynchronously
+    let results = execute deps [path1; path2] input |> Async.RunSynchronously
 
     Assert.Equal(2, results.Count)
     Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
@@ -223,50 +129,15 @@ let ``execute with NoParallel=true processes files sequentially and returns corr
 // Copilot assignment / mixed-auth tests
 // ---------------------------------------------------------------------------
 
-/// A fake IGhClient that records which client label was used for AssignIssue.
-/// `label` is added to `assignCalls` whenever AssignIssue is invoked.
-type TrackingGhClient(label: string, assignCalls: System.Collections.Concurrent.ConcurrentBag<string>) =
-    let fakeProject =
-        { Title  = "My Project"
-          Org    = OrgName "myorg"
-          Number = 1
-          Url    = "https://github.com/orgs/myorg/projects/1" }
-    let fakeIssue repo num =
-        { Repo      = RepoName repo
-          Number    = IssueNumber num
-          Url       = $"https://github.com/{repo}/issues/{num}"
-          Assignees = [] }
-    interface IGhClient with
-        member _.FindProject _ _       = async { return Some fakeProject }
-        member _.CreateProject _ _     = async { return Ok fakeProject }
-        member _.DeleteProject _       = async { return failwith "not expected" }
-        member _.ListLabels _          = async { return Ok [] }
-        member _.CreateLabel _ _       = async { return Ok () }
-        member _.FindIssue _ _         = async { return None }
-        member _.FindClosedIssue _ _   = async { return None }
-        member _.ReopenIssue _ _       = async { return failwith "not expected" }
-        member _.CreateIssue repo _ _ _ =
-            let (RepoName r) = repo
-            async { return Ok (fakeIssue r 42) }
-        member _.CloseIssue _ _        = async { return failwith "not expected" }
-        member _.AddIssueToProject _ _ = async { return Ok () }
-        member _.AssignIssue _ _ _ =
-            assignCalls.Add(label)
-            async { return Ok () }
-        member _.FindPrsForIssue _ _   = async { return failwith "not expected" }
-        member _.ClosePr _ _           = async { return failwith "not expected" }
-        member _.ListRepos _           = async { return failwith "not expected" }
-        member _.RepoExists _          = async { return Ok () }
-
 [<Fact>]
 let ``processRepo uses CopilotClient when Some for AssignIssue`` () =
     let fs          = MockFileSystem()
-    let path        = writeMockYaml fs "job.yml"
-    let assignCalls = System.Collections.Concurrent.ConcurrentBag<string>()
-    let primary     = TrackingGhClient("primary", assignCalls)
-    let copilot     = TrackingGhClient("copilot", assignCalls)
-    let deps        = { makeDeps fs (primary :> IGhClient) with CopilotClient = Some (copilot :> IGhClient) }
-    let input       = { defaultInput [path] with SkipCopilot = false; IsPrimaryAuthApp = true }
+    let path        = A.Yaml.writeNamedTo fs "job.yml"
+    let assignCalls = ConcurrentBag<string>()
+    let primary     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
+    let copilot     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "copilot"  assignCalls }
+    let deps        = { Given.deps fs primary with CopilotClient = Some copilot }
+    let input       = A.RunInput.defaults () |> A.RunInput.withSkipCopilot false |> A.RunInput.withIsPrimaryAuthApp true
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
@@ -277,11 +148,11 @@ let ``processRepo uses CopilotClient when Some for AssignIssue`` () =
 [<Fact>]
 let ``processRepo uses primary client for AssignIssue when CopilotClient is None and IsPrimaryAuthApp=false`` () =
     let fs          = MockFileSystem()
-    let path        = writeMockYaml fs "job.yml"
-    let assignCalls = System.Collections.Concurrent.ConcurrentBag<string>()
-    let primary     = TrackingGhClient("primary", assignCalls)
-    let deps        = { makeDeps fs (primary :> IGhClient) with CopilotClient = None }
-    let input       = { defaultInput [path] with SkipCopilot = false; IsPrimaryAuthApp = false }
+    let path        = A.Yaml.writeNamedTo fs "job.yml"
+    let assignCalls = ConcurrentBag<string>()
+    let primary     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
+    let deps        = Given.deps fs primary
+    let input       = A.RunInput.defaults () |> A.RunInput.withSkipCopilot false
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
@@ -291,11 +162,11 @@ let ``processRepo uses primary client for AssignIssue when CopilotClient is None
 [<Fact>]
 let ``processRepo skips assignment and does not call AssignIssue when CopilotClient=None and IsPrimaryAuthApp=true`` () =
     let fs          = MockFileSystem()
-    let path        = writeMockYaml fs "job.yml"
-    let assignCalls = System.Collections.Concurrent.ConcurrentBag<string>()
-    let primary     = TrackingGhClient("primary", assignCalls)
-    let deps        = { makeDeps fs (primary :> IGhClient) with CopilotClient = None }
-    let input       = { defaultInput [path] with SkipCopilot = false; IsPrimaryAuthApp = true }
+    let path        = A.Yaml.writeNamedTo fs "job.yml"
+    let assignCalls = ConcurrentBag<string>()
+    let primary     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
+    let deps        = Given.deps fs primary
+    let input       = A.RunInput.defaults () |> A.RunInput.withSkipCopilot false |> A.RunInput.withIsPrimaryAuthApp true
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
@@ -305,12 +176,12 @@ let ``processRepo skips assignment and does not call AssignIssue when CopilotCli
 [<Fact>]
 let ``processRepo skips assignment entirely when skipCopilot=true regardless of CopilotClient`` () =
     let fs          = MockFileSystem()
-    let path        = writeMockYaml fs "job.yml"
-    let assignCalls = System.Collections.Concurrent.ConcurrentBag<string>()
-    let primary     = TrackingGhClient("primary", assignCalls)
-    let copilot     = TrackingGhClient("copilot", assignCalls)
-    let deps        = { makeDeps fs (primary :> IGhClient) with CopilotClient = Some (copilot :> IGhClient) }
-    let input       = { defaultInput [path] with SkipCopilot = true; IsPrimaryAuthApp = true }
+    let path        = A.Yaml.writeNamedTo fs "job.yml"
+    let assignCalls = ConcurrentBag<string>()
+    let primary     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
+    let copilot     = FakeGhClient.make { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "copilot"  assignCalls }
+    let deps        = { Given.deps fs primary with CopilotClient = Some copilot }
+    let input       = A.RunInput.defaults () |> A.RunInput.withIsPrimaryAuthApp true
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
@@ -321,98 +192,19 @@ let ``processRepo skips assignment entirely when skipCopilot=true regardless of 
 // ClosedIssueAction tests
 // ---------------------------------------------------------------------------
 
-let private closedIssue repo =
-    { Repo      = RepoName repo
-      Number    = IssueNumber 7
-      Url       = $"https://github.com/{repo}/issues/7"
-      Assignees = [] }
-
-let private reopenedIssue repo =
-    { Repo      = RepoName repo
-      Number    = IssueNumber 7
-      Url       = $"https://github.com/{repo}/issues/7"
-      Assignees = [] }
-
-/// Returns a closed issue; ReopenIssue returns Ok; CreateIssue throws.
-type ReopeningGhClient() =
-    let fakeProject =
-        { Title  = "My Project"; Org = OrgName "myorg"; Number = 1
-          Url    = "https://github.com/orgs/myorg/projects/1" }
-    interface IGhClient with
-        member _.FindProject _ _       = async { return Some fakeProject }
-        member _.CreateProject _ _     = async { return Ok fakeProject }
-        member _.DeleteProject _       = async { return failwith "not expected" }
-        member _.ListLabels _          = async { return Ok [] }
-        member _.CreateLabel _ _       = async { return Ok () }
-        member _.FindIssue _ _         = async { return None }
-        member _.FindClosedIssue repo _= async { return Some (closedIssue (let (RepoName r) = repo in r)) }
-        member _.ReopenIssue repo _    = async { return Ok (reopenedIssue (let (RepoName r) = repo in r)) }
-        member _.CreateIssue _ _ _ _   = async { return failwith "CreateIssue should not be called" }
-        member _.CloseIssue _ _        = async { return failwith "not expected" }
-        member _.AddIssueToProject _ _ = async { return Ok () }
-        member _.AssignIssue _ _ _     = async { return Ok () }
-        member _.FindPrsForIssue _ _   = async { return failwith "not expected" }
-        member _.ClosePr _ _           = async { return failwith "not expected" }
-        member _.ListRepos _           = async { return failwith "not expected" }
-        member _.RepoExists _          = async { return Ok () }
-
-/// Returns a closed issue; tracks whether project/assign methods are called.
-type SkippingGhClient(projectCalls: System.Collections.Concurrent.ConcurrentBag<unit>,
-                      assignCalls:  System.Collections.Concurrent.ConcurrentBag<unit>) =
-    let fakeProject =
-        { Title  = "My Project"; Org = OrgName "myorg"; Number = 1
-          Url    = "https://github.com/orgs/myorg/projects/1" }
-    interface IGhClient with
-        member _.FindProject _ _       = async { return Some fakeProject }
-        member _.CreateProject _ _     = async { return Ok fakeProject }
-        member _.DeleteProject _       = async { return failwith "not expected" }
-        member _.ListLabels _          = async { return Ok [] }
-        member _.CreateLabel _ _       = async { return Ok () }
-        member _.FindIssue _ _         = async { return None }
-        member _.FindClosedIssue repo _= async { return Some (closedIssue (let (RepoName r) = repo in r)) }
-        member _.ReopenIssue _ _       = async { return failwith "not expected" }
-        member _.CreateIssue _ _ _ _   = async { return failwith "not expected" }
-        member _.CloseIssue _ _        = async { return failwith "not expected" }
-        member _.AddIssueToProject _ _ =
-            projectCalls.Add(())
-            async { return Ok () }
-        member _.AssignIssue _ _ _ =
-            assignCalls.Add(())
-            async { return Ok () }
-        member _.FindPrsForIssue _ _   = async { return failwith "not expected" }
-        member _.ClosePr _ _           = async { return failwith "not expected" }
-        member _.ListRepos _           = async { return failwith "not expected" }
-        member _.RepoExists _          = async { return Ok () }
-
-/// Returns a closed issue; for testing fail action.
-type FailingClosedGhClient() =
-    let fakeProject =
-        { Title  = "My Project"; Org = OrgName "myorg"; Number = 1
-          Url    = "https://github.com/orgs/myorg/projects/1" }
-    interface IGhClient with
-        member _.FindProject _ _       = async { return Some fakeProject }
-        member _.CreateProject _ _     = async { return Ok fakeProject }
-        member _.DeleteProject _       = async { return failwith "not expected" }
-        member _.ListLabels _          = async { return Ok [] }
-        member _.CreateLabel _ _       = async { return Ok () }
-        member _.FindIssue _ _         = async { return None }
-        member _.FindClosedIssue repo _= async { return Some (closedIssue (let (RepoName r) = repo in r)) }
-        member _.ReopenIssue _ _       = async { return failwith "not expected" }
-        member _.CreateIssue _ _ _ _   = async { return failwith "not expected" }
-        member _.CloseIssue _ _        = async { return failwith "not expected" }
-        member _.AddIssueToProject _ _ = async { return failwith "not expected" }
-        member _.AssignIssue _ _ _     = async { return failwith "not expected" }
-        member _.FindPrsForIssue _ _   = async { return failwith "not expected" }
-        member _.ClosePr _ _           = async { return failwith "not expected" }
-        member _.ListRepos _           = async { return failwith "not expected" }
-        member _.RepoExists _          = async { return Ok () }
+let private closedIssueClient () =
+    FakeGhClient.make
+        { FakeGhClient.defaults with
+            FindClosedIssue = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
+            ReopenIssue     = fun repo _ -> async { return Ok (FakeGhClient.issueFor repo 7) }
+            CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue should not be called" } }
 
 [<Fact>]
 let ``reopen action reopens closed issue and returns Reopened outcome`` () =
     let fs    = MockFileSystem()
-    let path  = writeMockYaml fs "job.yml"
-    let deps  = makeDeps fs (ReopeningGhClient() :> IGhClient)
-    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Reopen }
+    let path  = A.Yaml.writeNamedTo fs "job.yml"
+    let deps  = Given.deps fs (closedIssueClient ())
+    let input = A.RunInput.defaults () |> A.RunInput.withOnClosedIssue (Some Reopen)
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
@@ -425,11 +217,10 @@ let ``reopen action reopens closed issue and returns Reopened outcome`` () =
 [<Fact>]
 let ``reopen action does not call CreateIssue when closed issue exists`` () =
     let fs    = MockFileSystem()
-    let path  = writeMockYaml fs "job.yml"
-    let deps  = makeDeps fs (ReopeningGhClient() :> IGhClient)
-    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Reopen }
+    let path  = A.Yaml.writeNamedTo fs "job.yml"
+    let deps  = Given.deps fs (closedIssueClient ())
+    let input = A.RunInput.defaults () |> A.RunInput.withOnClosedIssue (Some Reopen)
 
-    // ReopeningGhClient.CreateIssue throws; success means it was not called
     let results = execute deps [path] input |> Async.RunSynchronously
 
     Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
@@ -437,11 +228,18 @@ let ``reopen action does not call CreateIssue when closed issue exists`` () =
 [<Fact>]
 let ``skip action returns Skipped outcome without creating or reopening`` () =
     let fs    = MockFileSystem()
-    let path  = writeMockYaml fs "job.yml"
-    let pc    = System.Collections.Concurrent.ConcurrentBag<unit>()
-    let ac    = System.Collections.Concurrent.ConcurrentBag<unit>()
-    let deps  = makeDeps fs (SkippingGhClient(pc, ac) :> IGhClient)
-    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Skip }
+    let path  = A.Yaml.writeNamedTo fs "job.yml"
+    let pc    = ConcurrentBag<unit>()
+    let ac    = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.make
+            { FakeGhClient.defaults with
+                FindClosedIssue   = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
+                CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
+                AddIssueToProject = FakeGhClient.trackingAddIssue pc
+                AssignIssue       = FakeGhClient.trackingAssignUnit ac }
+    let deps  = Given.deps fs client
+    let input = A.RunInput.defaults () |> A.RunInput.withOnClosedIssue (Some Skip)
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
@@ -454,11 +252,21 @@ let ``skip action returns Skipped outcome without creating or reopening`` () =
 [<Fact>]
 let ``skip action does not add issue to project or assign copilot`` () =
     let fs    = MockFileSystem()
-    let path  = writeMockYaml fs "job.yml"
-    let pc    = System.Collections.Concurrent.ConcurrentBag<unit>()
-    let ac    = System.Collections.Concurrent.ConcurrentBag<unit>()
-    let deps  = makeDeps fs (SkippingGhClient(pc, ac) :> IGhClient)
-    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Skip; SkipCopilot = false }
+    let path  = A.Yaml.writeNamedTo fs "job.yml"
+    let pc    = ConcurrentBag<unit>()
+    let ac    = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.make
+            { FakeGhClient.defaults with
+                FindClosedIssue   = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
+                CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
+                AddIssueToProject = FakeGhClient.trackingAddIssue pc
+                AssignIssue       = FakeGhClient.trackingAssignUnit ac }
+    let deps  = Given.deps fs client
+    let input =
+        A.RunInput.defaults ()
+        |> A.RunInput.withOnClosedIssue (Some Skip)
+        |> A.RunInput.withSkipCopilot false
 
     execute deps [path] input |> Async.RunSynchronously |> ignore
 
@@ -468,51 +276,38 @@ let ``skip action does not add issue to project or assign copilot`` () =
 [<Fact>]
 let ``fail action returns error and does not create or reopen`` () =
     let fs    = MockFileSystem()
-    let path  = writeMockYaml fs "job.yml"
-    let deps  = makeDeps fs (FailingClosedGhClient() :> IGhClient)
-    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Fail }
+    let path  = A.Yaml.writeNamedTo fs "job.yml"
+    let client =
+        FakeGhClient.make
+            { FakeGhClient.defaults with
+                FindClosedIssue   = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
+                CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
+                AddIssueToProject = fun _ _     -> async { return failwith "AddIssueToProject not expected" }
+                AssignIssue       = fun _ _ _   -> async { return failwith "AssignIssue not expected" } }
+    let deps  = Given.deps fs client
+    let input = A.RunInput.defaults () |> A.RunInput.withOnClosedIssue (Some Fail)
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
     Assert.True(results.ContainsKey(path))
     match results.[path] with
-    | Ok result ->
-        // processRepo returns None on error, so Results should be empty (no successes)
-        Assert.Empty(result.Results)
-    | Error _ -> ()   // also acceptable if the whole file errors
+    | Ok result -> Assert.Empty(result.Results)
+    | Error _   -> ()
 
 [<Fact>]
 let ``create action (default) creates new issue even when closed issue exists`` () =
-    let fs    = MockFileSystem()
-    let path  = writeMockYaml fs "job.yml"
-    // FakeGhClient has FindClosedIssue = None, but we need one that returns Some.
-    // Use a small inline fake with Create action.
-    let fakeProject = { Title = "My Project"; Org = OrgName "myorg"; Number = 1; Url = "https://github.com/orgs/myorg/projects/1" }
-    let createCallCount = System.Collections.Concurrent.ConcurrentBag<unit>()
+    let fs              = MockFileSystem()
+    let path            = A.Yaml.writeNamedTo fs "job.yml"
+    let createCallCount = ConcurrentBag<unit>()
     let client =
-        { new IGhClient with
-            member _.FindProject _ _       = async { return Some fakeProject }
-            member _.CreateProject _ _     = async { return Ok fakeProject }
-            member _.DeleteProject _       = async { return failwith "not expected" }
-            member _.ListLabels _          = async { return Ok [] }
-            member _.CreateLabel _ _       = async { return Ok () }
-            member _.FindIssue _ _         = async { return None }
-            member _.FindClosedIssue repo _=
-                async { return Some (closedIssue (let (RepoName r) = repo in r)) }
-            member _.ReopenIssue _ _       = async { return failwith "not expected" }
-            member _.CreateIssue repo _ _ _ =
-                createCallCount.Add(())
-                let (RepoName r) = repo
-                async { return Ok { Repo = RepoName r; Number = IssueNumber 99; Url = $"https://github.com/{r}/issues/99"; Assignees = [] } }
-            member _.CloseIssue _ _        = async { return failwith "not expected" }
-            member _.AddIssueToProject _ _ = async { return Ok () }
-            member _.AssignIssue _ _ _     = async { return Ok () }
-            member _.FindPrsForIssue _ _   = async { return failwith "not expected" }
-            member _.ClosePr _ _           = async { return failwith "not expected" }
-            member _.ListRepos _           = async { return failwith "not expected" }
-            member _.RepoExists _          = async { return Ok () } }
-    let deps  = makeDeps fs client
-    let input = { defaultInput [path] with OnClosedIssue = Some OrcAI.Core.Domain.Create }
+        FakeGhClient.make
+            { FakeGhClient.defaults with
+                FindClosedIssue = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
+                CreateIssue     = fun repo _ _ _ ->
+                    createCallCount.Add(())
+                    async { return Ok (FakeGhClient.issueFor repo 99) } }
+    let deps  = Given.deps fs client
+    let input = A.RunInput.defaults () |> A.RunInput.withOnClosedIssue (Some Create)
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
