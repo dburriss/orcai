@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-07
+
 ### Added
 
 - Brace expansion in glob patterns — `"jobs/**/*.{yml,yaml}"` now matches both `.yml` and `.yaml` files in a single invocation, for `orcai run` and `orcai validate`.
