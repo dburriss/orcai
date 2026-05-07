@@ -57,6 +57,6 @@ orcai run "jobs/*.yml" --max-concurrency 2
 | `orcai info` | Display the current state of a job |
 | `orcai cleanup` | Tear down everything created by `run` |
 
-For full flag details, output formats, lock file schema, and advanced usage see [docs/cli-reference.md](docs/cli-reference.md).
+For full flag details, output formats, lock file schema, and advanced usage see [docs/cli-reference.md](docs/cli-reference.md). For config file settings see [docs/config.md](docs/config.md).
 
 The original Nushell scripts (`orca.nu`, `cleanup.nu`) are documented in [docs/nushell-scripts.md](docs/nushell-scripts.md).
