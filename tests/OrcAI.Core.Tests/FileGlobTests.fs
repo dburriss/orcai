@@ -81,6 +81,33 @@ let ``expand with double star pattern matches files in subdirectories`` () =
             Assert.True(paths.Length >= 2, $"Expected at least 2 matches but got {paths.Length}"))
 
 // ---------------------------------------------------------------------------
+// expand — brace expansion
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``expand matches both extensions with brace expansion`` () =
+    withTempDir ["a.yml"; "b.yaml"; "notes.txt"] (fun dir ->
+        match expand dir "*.{yml,yaml}" with
+        | Error e  -> Assert.Fail($"Expected Ok but got Error: {e}")
+        | Ok paths ->
+            Assert.Equal(2, paths.Length)
+            Assert.All(paths, fun p -> Assert.True(p.EndsWith(".yml") || p.EndsWith(".yaml"))))
+
+[<Fact>]
+let ``expand with brace expansion returns Error when nothing matches`` () =
+    withTempDir ["notes.txt"] (fun dir ->
+        match expand dir "*.{yml,yaml}" with
+        | Ok _    -> Assert.Fail("Expected Error but got Ok")
+        | Error e -> Assert.Contains("No files matched", e))
+
+[<Fact>]
+let ``expand with brace expansion works in subdirectory patterns`` () =
+    withTempDir ["configs/a.yml"; "configs/b.yaml"] (fun dir ->
+        match expand dir "configs/*.{yml,yaml}" with
+        | Error e  -> Assert.Fail($"Expected Ok but got Error: {e}")
+        | Ok paths -> Assert.Equal(2, paths.Length))
+
+// ---------------------------------------------------------------------------
 // expandWith — fake DirectoryInfoBase
 // ---------------------------------------------------------------------------
 

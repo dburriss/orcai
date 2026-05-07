@@ -19,19 +19,36 @@ open Microsoft.Extensions.FileSystemGlobbing.Abstractions
 
 /// Glob characters that indicate a pattern (not a plain path).
 let private isGlobPattern (s: string) =
-    s.Contains('*') || s.Contains('?') || s.Contains('[')
+    s.Contains('*') || s.Contains('?') || s.Contains('[') || s.Contains('{')
+
+/// Expand the first {a,b,...} brace group in a pattern into multiple patterns.
+let rec private expandBraces (pattern: string) : string list =
+    let openIdx = pattern.IndexOf('{')
+    if openIdx < 0 then
+        [ pattern ]
+    else
+        let closeIdx = pattern.IndexOf('}', openIdx)
+        if closeIdx < 0 then
+            [ pattern ]
+        else
+            let prefix       = pattern.[..openIdx - 1]
+            let suffix       = pattern.[closeIdx + 1..]
+            let alternatives = pattern.[openIdx + 1..closeIdx - 1].Split(',') |> Array.toList
+            alternatives |> List.collect (fun alt -> expandBraces (prefix + alt + suffix))
 
 /// Expand a glob pattern against the given DirectoryInfoBase.
 /// Returns Ok of a sorted list of full paths, or Error if nothing matched.
 let expandWith (dir: DirectoryInfoBase) (pattern: string) : Result<string list, string> =
-    let matcher = Matcher()
-    matcher.AddInclude(pattern) |> ignore
-    let results = matcher.Execute(dir)
     let files =
-        results.Files
-        |> Seq.map (fun f -> Path.GetFullPath(Path.Combine(dir.FullName, f.Path)))
-        |> Seq.sort
-        |> Seq.toList
+        expandBraces pattern
+        |> List.collect (fun p ->
+            let matcher = Matcher()
+            matcher.AddInclude(p) |> ignore
+            matcher.Execute(dir).Files
+            |> Seq.map (fun f -> Path.GetFullPath(Path.Combine(dir.FullName, f.Path)))
+            |> Seq.toList)
+        |> List.distinct
+        |> List.sort
     if files.IsEmpty then
         Error $"No files matched pattern: {pattern}"
     else

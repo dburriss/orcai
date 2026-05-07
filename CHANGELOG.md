@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Brace expansion in glob patterns — `"jobs/**/*.{yml,yaml}"` now matches both `.yml` and `.yaml` files in a single invocation, for `orcai run` and `orcai validate`.
+- `onClosedIssue` field in YAML job config and `--on-closed-issue` flag on `orcai run` — controls behaviour when a matching closed issue already exists. Valid values: `create` (default, creates a new issue), `reopen` (reopens the closed issue), `skip` (leaves the repo untouched), `fail` (exits with an error).
+- Run summary and `--json` output now include `reopened` and `skipped` counts when `--on-closed-issue` is `reopen` or `skip`.
+- GitHub write calls are now rate-limited with a token-bucket (default 60 writes/min) and automatically retried with exponential backoff on rate-limit errors (up to 3 retries, starting at 60s, doubling each time, capped at 5 min).
+- `writesPerMinute` and `rateLimitRetries` config keys — override the rate-limit defaults in `~/.config/orcai/config.json` or `.orcai/config.json`.
+
 ## [0.5.1] - 2026-03-17
 
 ### Fixed
