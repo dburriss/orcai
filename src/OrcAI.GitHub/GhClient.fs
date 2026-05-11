@@ -150,7 +150,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int) =
     member private _.FindIssueImpl(repo: RepoName) (title: string) : Async<IssueRef option> =
         async {
             let (RepoName repoStr) = repo
-            match! runGh ghToken $"issue list --repo {repoStr} --state open --json title,number,url,assignees" with
+            match! runGh ghToken $"issue list --repo {repoStr} --state open --search \"{title} in:title\" --json title,number,url,assignees" with
             | Error _ -> return None
             | Ok json ->
                 let arr = JsonDocument.Parse(json).RootElement
@@ -179,7 +179,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int) =
     member private _.FindClosedIssueImpl(repo: RepoName) (title: string) : Async<IssueRef option> =
         async {
             let (RepoName repoStr) = repo
-            match! runGh ghToken $"issue list --repo {repoStr} --state closed --json title,number,url,assignees" with
+            match! runGh ghToken $"issue list --repo {repoStr} --state closed --search \"{title} in:title\" --json title,number,url,assignees" with
             | Error _ -> return None
             | Ok json ->
                 let arr = JsonDocument.Parse(json).RootElement
