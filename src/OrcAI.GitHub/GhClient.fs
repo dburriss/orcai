@@ -237,36 +237,51 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int) =
     // Pull requests
     // ------------------------------------------------------------------
 
-    /// `gh pr list --repo <org/repo> --state all --json number,url,closingIssuesReferences`
-    /// Filters PRs whose closingIssuesReferences contains the given issue number.
+    /// GraphQL query against Issue.closingPullRequests so we never hit a PR-list cap.
     member private _.FindPrsForIssueImpl(repo: RepoName) (issue: IssueNumber) : Async<PullRequestRef list> =
         async {
-            let (RepoName repoStr)  = repo
+            let (RepoName repoStr)   = repo
             let (IssueNumber issueN) = issue
-            match! runGh ghToken $"pr list --repo {repoStr} --state all --limit 100 --json number,url,closingIssuesReferences" with
-            | Error _ -> return []
-            | Ok json ->
-                let arr = JsonDocument.Parse(json).RootElement
-                return
-                    arr.EnumerateArray()
-                    |> Seq.choose (fun el ->
-                        let closingIssues =
-                            match el.TryGetProperty("closingIssuesReferences") with
-                            | true, refs ->
-                                refs.EnumerateArray()
-                                |> Seq.choose (fun r -> intProp r "number")
-                                |> List.ofSeq
+            let parts     = repoStr.Split('/', 2)
+            let owner     = parts.[0]
+            let repoName  = parts.[1]
+            let tmpFile   = System.IO.Path.GetTempFileName()
+            try
+                let query =
+                    $"""{{ repository(owner: "{owner}", name: "{repoName}") {{ issue(number: {issueN}) {{ closingPullRequests(first: 25) {{ nodes {{ number url }} }} }} }} }}"""
+                System.IO.File.WriteAllText(tmpFile, query)
+                match! runGh ghToken $"api graphql -f query=@{tmpFile}" with
+                | Error _ -> return []
+                | Ok json ->
+                    let doc = JsonDocument.Parse(json).RootElement
+                    let nodes =
+                        match doc.TryGetProperty("data") with
+                        | true, data ->
+                            match data.TryGetProperty("repository") with
+                            | true, repoEl ->
+                                match repoEl.TryGetProperty("issue") with
+                                | true, issueEl when issueEl.ValueKind <> JsonValueKind.Null ->
+                                    match issueEl.TryGetProperty("closingPullRequests") with
+                                    | true, prs ->
+                                        match prs.TryGetProperty("nodes") with
+                                        | true, ns -> ns.EnumerateArray() |> Seq.toList
+                                        | _        -> []
+                                    | _ -> []
+                                | _ -> []
                             | _ -> []
-                        if List.contains issueN closingIssues then
+                        | _ -> []
+                    return
+                        nodes
+                        |> List.choose (fun el ->
                             match intProp el "number", strProp el "url" with
                             | Some n, Some url ->
                                 Some { Repo        = repo
                                        Number      = PrNumber n
                                        Url         = url
                                        ClosesIssue = issue }
-                            | _ -> None
-                        else None)
-                    |> List.ofSeq
+                            | _ -> None)
+            finally
+                System.IO.File.Delete(tmpFile)
         }
 
     // ------------------------------------------------------------------
