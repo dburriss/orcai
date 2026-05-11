@@ -72,7 +72,7 @@ let private cleanupIssue
         if dryRun then
             return Ok (prResources @ [CleanedIssue(repoStr, issueN)])
         else
-            match! client.CloseIssue issue.Repo issue.Number with
+            match! client.DeleteIssue issue.Repo issue.Number with
             | Error e -> return Error $"Failed to delete issue #{issueN} in {repoStr}: {e}"
             | Ok ()   -> return Ok (prResources @ [CleanedIssue(repoStr, issueN)])
     }

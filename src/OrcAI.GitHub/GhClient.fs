@@ -355,7 +355,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int) =
                     System.IO.File.Delete(tmpFile)
             }
 
-        member _.CloseIssue repo issue =
+        member _.DeleteIssue repo issue =
             async {
                 let (RepoName repoStr)   = repo
                 let (IssueNumber issueN) = issue

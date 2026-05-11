@@ -16,7 +16,7 @@ type Handlers =
       FindClosedIssue  : RepoName    -> string      -> Async<IssueRef option>
       ReopenIssue      : RepoName    -> IssueNumber -> Async<Result<IssueRef, string>>
       CreateIssue      : RepoName    -> string -> string -> string list -> Async<Result<IssueRef, string>>
-      CloseIssue       : RepoName    -> IssueNumber -> Async<Result<unit, string>>
+      DeleteIssue      : RepoName    -> IssueNumber -> Async<Result<unit, string>>
       AddIssueToProject: ProjectInfo -> IssueRef    -> Async<Result<unit, string>>
       AssignIssue      : RepoName    -> IssueNumber -> string -> Async<Result<unit, string>>
       FindPrsForIssue  : RepoName    -> IssueNumber -> Async<PullRequestRef list>
@@ -46,7 +46,7 @@ let defaults : Handlers =
       FindClosedIssue   = fun _ _        -> async { return None }
       ReopenIssue       = fun _ _        -> async { return failwith "ReopenIssue not expected" }
       CreateIssue       = fun repo _ _ _ -> async { return Ok (issueFor repo 42) }
-      CloseIssue        = fun _ _        -> async { return failwith "CloseIssue not expected" }
+      DeleteIssue       = fun _ _        -> async { return failwith "DeleteIssue not expected" }
       AddIssueToProject = fun _ _        -> async { return Ok () }
       AssignIssue       = fun _ _ _      -> async { return Ok () }
       FindPrsForIssue   = fun _ _        -> async { return failwith "FindPrsForIssue not expected" }
@@ -80,7 +80,7 @@ let from (h: Handlers) : IGhClient =
         member _.FindClosedIssue repo title = h.FindClosedIssue repo title
         member _.ReopenIssue repo issue     = h.ReopenIssue repo issue
         member _.CreateIssue repo t b ls    = h.CreateIssue repo t b ls
-        member _.CloseIssue repo issue      = h.CloseIssue repo issue
+        member _.DeleteIssue repo issue      = h.DeleteIssue repo issue
         member _.AddIssueToProject proj iss = h.AddIssueToProject proj iss
         member _.AssignIssue repo iss asgn  = h.AssignIssue repo iss asgn
         member _.FindPrsForIssue repo iss   = h.FindPrsForIssue repo iss
