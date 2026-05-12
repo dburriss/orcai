@@ -58,3 +58,25 @@ With both files present, the effective config merges them with local values winn
 2. Local config (`.orcai/config.json`)
 3. Global config (`~/.config/orcai/config.json`)
 4. Built-in defaults
+
+---
+
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORCAI_LOG_LEVEL` | `Warning` | Minimum log level for diagnostic output. Accepts any [`LogLevel`](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.logging.loglevel) name: `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`. |
+
+### Examples
+
+Suppress "already deleted" warnings during cleanup:
+
+```sh
+ORCAI_LOG_LEVEL=Error orcai cleanup job.yml --force
+```
+
+Enable verbose diagnostic output:
+
+```sh
+ORCAI_LOG_LEVEL=Debug orcai cleanup job.yml --force
+```

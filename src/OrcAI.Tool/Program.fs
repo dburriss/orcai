@@ -3,6 +3,7 @@ module OrcAI.Tool.Program
 open System
 open System.Text.Json
 open Argu
+open Microsoft.Extensions.Logging
 open SimpleExec
 open Spectre.Console
 open OrcAI.Tool.Args
@@ -63,6 +64,14 @@ let resolveAuthContextWith (getEnv: string -> string option) : Result<OrcAI.Core
 let private resolveAuthContext () =
     resolveAuthContextWith (Environment.GetEnvironmentVariable >> Option.ofObj)
 
+let private resolveLogLevel () =
+    match Environment.GetEnvironmentVariable("ORCAI_LOG_LEVEL") with
+    | null | "" -> LogLevel.Warning
+    | s ->
+        match Enum.TryParse<LogLevel>(s, ignoreCase = true) with
+        | true, level -> level
+        | _           -> LogLevel.Warning
+
 /// Resolve auth, obtain a token, create the gh client, and invoke `f`.
 /// Returns 1 on any auth failure, otherwise returns the result of `f`.
 let private withClient (f: OrcAIDeps -> bool -> int) : int =
@@ -86,16 +95,19 @@ let private withClient (f: OrcAIDeps -> bool -> int) : int =
             let cfg  = OrcAI.Core.OrcAIConfig.resolve fs home cwd
             let writesPerMinute  = cfg.WritesPerMinute  |> Option.defaultValue 60
             let rateLimitRetries = cfg.RateLimitRetries |> Option.defaultValue 3
+            let logLevel    = resolveLogLevel ()
+            let logFactory  = LoggerFactory.Create(fun b -> b.AddConsole().SetMinimumLevel(logLevel) |> ignore)
+            let ghLogger    = logFactory.CreateLogger("OrcAI.GitHub.GhCliClient")
             // When the primary auth is a GitHub App, attempt to resolve a secondary
             // PAT for use exclusively in @copilot assignment (Apps cannot assign copilot).
             let copilotClient : OrcAI.Core.GhClient.IGhClient option =
                 if isPrimaryAuthApp then
                     match loadToken () with
-                    | Ok pat -> Some (OrcAI.GitHub.GhClient.GhCliClient(pat, writesPerMinute, rateLimitRetries) :> OrcAI.Core.GhClient.IGhClient)
+                    | Ok pat -> Some (OrcAI.GitHub.GhClient.GhCliClient(pat, writesPerMinute, rateLimitRetries, ghLogger) :> OrcAI.Core.GhClient.IGhClient)
                     | Error _ -> None
                 else
                     None
-            let client = OrcAI.GitHub.GhClient.GhCliClient(ghToken, writesPerMinute, rateLimitRetries)
+            let client = OrcAI.GitHub.GhClient.GhCliClient(ghToken, writesPerMinute, rateLimitRetries, ghLogger)
             let deps : OrcAIDeps =
                 { GhClient      = client :> OrcAI.Core.GhClient.IGhClient
                   CopilotClient = copilotClient

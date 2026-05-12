@@ -10,6 +10,7 @@ module OrcAI.GitHub.GhClient
 
 open System
 open System.Text.Json
+open Microsoft.Extensions.Logging
 open SimpleExec
 open OrcAI.Core.Domain
 open OrcAI.Core.GhClient
@@ -107,7 +108,7 @@ let private intProp (el: JsonElement) (name: string) =
 // ------------------------------------------------------------------
 
 /// Production implementation that shells out to `gh` via SimpleExec.
-type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int) =
+type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, logger: ILogger) =
     let bucket  = WriteBucket(writesPerMinute)
     let retries = rateLimitRetries
 
@@ -329,7 +330,12 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int) =
             async {
                 let (OrgName orgStr) = project.Org
                 match! runGhWrite bucket retries ghToken $"project delete {project.Number} --owner {orgStr}" with
-                | Error e -> return Error e
+                | Error e ->
+                    if e.Contains("Could not resolve to a ProjectV2") then
+                        logger.LogWarning("Project #{ProjectNumber} in org '{Org}' not found — already deleted.", project.Number, orgStr)
+                        return Ok ()
+                    else
+                        return Error e
                 | Ok _    -> return Ok ()
             }
 
@@ -371,8 +377,8 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int) =
                 match! runGhWrite bucket retries ghToken $"issue delete {issueN} --repo {repoStr} --yes" with
                 | Ok _    -> return Ok ()
                 | Error e ->
-                    // Treat "not found" as success — the issue is already gone.
                     if e.Contains("Could not resolve to an issue or pull request") then
+                        logger.LogWarning("Issue #{IssueNumber} in repo '{Repo}' not found — already deleted.", issueN, repoStr)
                         return Ok ()
                     else
                         return Error e
@@ -401,7 +407,12 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int) =
                 let (RepoName repoStr) = repo
                 let (PrNumber prN)     = pr
                 match! runGhWrite bucket retries ghToken $"pr close {prN} --repo {repoStr}" with
-                | Error e -> return Error e
+                | Error e ->
+                    if e.Contains("Could not resolve to a PullRequest") then
+                        logger.LogWarning("PR #{PrNumber} in repo '{Repo}' not found — already closed/deleted.", prN, repoStr)
+                        return Ok ()
+                    else
+                        return Error e
                 | Ok _    -> return Ok ()
             }
 

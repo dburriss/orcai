@@ -48,6 +48,8 @@ GitHub write calls are now rate-limited with a token-bucket (default 60 writes/m
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Argu" Version="6.2.4" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
     <PackageReference Include="SimpleExec" Version="12.0.0" />
     <PackageReference Include="Spectre.Console" Version="0.49.1" />
     <PackageReference Include="Testably.Abstractions" Version="10.1.0" />
