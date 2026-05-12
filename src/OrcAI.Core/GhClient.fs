@@ -30,6 +30,7 @@ type IGhClient =
     abstract AddIssueToProject: project:ProjectInfo -> issue:IssueRef        -> Async<Result<unit, string>>
     abstract AssignIssue      : repo:RepoName -> issue:IssueNumber -> assignee:string -> Async<Result<unit, string>>
     abstract UnassignIssue    : repo:RepoName -> issue:IssueNumber -> assignee:string -> Async<Result<unit, string>>
+    abstract PostComment      : repo:RepoName -> issue:IssueNumber -> body:string    -> Async<Result<unit, string>>
 
     // Pull requests
     abstract FindPrsForIssue  : repo:RepoName -> issue:IssueNumber -> Async<PullRequestRef list>

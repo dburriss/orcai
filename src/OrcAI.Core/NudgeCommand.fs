@@ -34,7 +34,7 @@ type NudgeResult =
 let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, string> =
     match YamlConfig.parseFile deps.FileSystem input.YamlPath with
     | Error e -> Error e
-    | Ok _ ->
+    | Ok jobConfig ->
 
     match LockFile.tryRead deps.FileSystem input.YamlPath with
     | None -> Error "No lock file found — run 'orcai run' first."
@@ -45,6 +45,17 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
         match deps.CopilotClient, input.IsPrimaryAuthApp with
         | Some c, true -> c
         | _            -> client
+
+    // Resolve effective assign/nudge config: YAML wins, then global/local config, then defaults.
+    let pickAssign f =
+        jobConfig.Assign |> Option.bind f
+        |> Option.orElse (deps.Config.Assign |> Option.bind f)
+    let pickNudge f =
+        jobConfig.Nudge |> Option.bind f
+        |> Option.orElse (deps.Config.Nudge |> Option.bind f)
+    let assignTo     = pickAssign (fun a -> a.To)      |> Option.defaultValue "@copilot"
+    let nudgeMode    = pickNudge  (fun n -> n.Mode)    |> Option.defaultValue "reassign"
+    let nudgeComment = pickNudge  (fun n -> n.Comment)
 
     let results =
         lock.Issues
@@ -66,16 +77,30 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                         return { Repo = issue.Repo; Issue = issue.Number; Outcome = PrFoundLive; LivePrs = prs }
                     else
                         if input.DryRun then
-                            if input.Verbose then eprintfn "[%s] DRY RUN: would nudge @copilot" repoStr
+                            if input.Verbose then eprintfn "[%s] DRY RUN: would nudge %s" repoStr assignTo
                             return { Repo = issue.Repo; Issue = issue.Number; Outcome = DryRunWouldNudge; LivePrs = [] }
                         else
-                            if input.Verbose then eprintfn "[%s] Nudging @copilot (unassign + reassign)" repoStr
-                            match! assignClient.UnassignIssue issue.Repo issue.Number "@copilot" with
-                            | Error e -> eprintfn "[%s] Warning: failed to unassign @copilot: %s" repoStr e
-                            | Ok ()   -> ()
-                            match! assignClient.AssignIssue issue.Repo issue.Number "@copilot" with
-                            | Error e -> eprintfn "[%s] Warning: failed to reassign @copilot: %s" repoStr e
-                            | Ok ()   -> ()
+                            // Post nudge comment when mode includes comment
+                            if nudgeMode = "comment-only" || nudgeMode = "comment-and-reassign" then
+                                match nudgeComment with
+                                | Some tmpl ->
+                                    let body = tmpl.Replace("{assignee}", assignTo)
+                                    if input.Verbose then eprintfn "[%s] Posting nudge comment" repoStr
+                                    match! client.PostComment issue.Repo issue.Number body with
+                                    | Error e -> eprintfn "[%s] Warning: failed to post nudge comment: %s" repoStr e
+                                    | Ok ()   -> ()
+                                | None -> ()
+
+                            // Unassign + reassign when mode includes reassign
+                            if nudgeMode = "reassign" || nudgeMode = "comment-and-reassign" then
+                                if input.Verbose then eprintfn "[%s] Nudging %s (unassign + reassign)" repoStr assignTo
+                                match! assignClient.UnassignIssue issue.Repo issue.Number assignTo with
+                                | Error e -> eprintfn "[%s] Warning: failed to unassign %s: %s" repoStr assignTo e
+                                | Ok ()   -> ()
+                                match! assignClient.AssignIssue issue.Repo issue.Number assignTo with
+                                | Error e -> eprintfn "[%s] Warning: failed to reassign %s: %s" repoStr assignTo e
+                                | Ok ()   -> ()
+
                             return { Repo = issue.Repo; Issue = issue.Number; Outcome = NudgeSent; LivePrs = [] }
             })
         |> Async.Parallel

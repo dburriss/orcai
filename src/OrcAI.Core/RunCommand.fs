@@ -57,10 +57,11 @@ type RunResult =
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// True if the issue already has copilot assigned (case-insensitive).
-let private hasCopilot (issue: IssueRef) =
+/// True if the issue already has the given assignee (case-insensitive, strips leading @).
+let private hasAssignee (assignee: string) (issue: IssueRef) =
+    let handle = assignee.TrimStart('@')
     issue.Assignees
-    |> List.exists (fun a -> a.Equals("copilot", StringComparison.OrdinalIgnoreCase))
+    |> List.exists (fun a -> a.Equals(handle, StringComparison.OrdinalIgnoreCase))
 
 /// Given the labels that already exist in a repo, return those from the requested
 /// list that are missing (case-insensitive comparison).
@@ -103,7 +104,7 @@ let private ensureLabelsExist
                     | None   -> return Ok ()
     }
 
-/// Process a single repo: find/create issue, add to project, assign copilot.
+/// Process a single repo: find/create issue, add to project, trigger assignee.
 /// Returns Some RepoResult on success (with outcome Created or AlreadyExisted),
 /// None on any error (error is printed to stderr).
 let private processRepo
@@ -115,6 +116,9 @@ let private processRepo
     (skipCopilot      : bool)
     (isPrimaryAuthApp : bool)
     (closedIssueAction: ClosedIssueAction)
+    (assignTo         : string)
+    (assignVia        : string)
+    (assignComment    : string option)
     (repo             : RepoName)
     : Async<RepoResult option> =
     async {
@@ -175,34 +179,48 @@ let private processRepo
         if verbose then eprintfn "[%s] Adding issue to project" repoStr
         let! _ = client.AddIssueToProject project issue
 
-        // 3. Assign @copilot only if not already assigned and not disabled.
+        // 3. Trigger assignee: post comment and/or assign, controlled by assignVia.
         //    When the primary auth is a GitHub App, use the CopilotClient (PAT-based)
-        //    instead — GitHub Apps cannot assign @copilot.
-        //    If no CopilotClient is available and primary auth is App-based, warn and skip.
+        //    for assignment — GitHub Apps cannot assign users directly.
+        //    If no CopilotClient is available and primary auth is App-based, warn and skip assignment.
         let! finalIssue =
             if skipCopilot then
-                if verbose then eprintfn "[%s] Skipping @copilot assignment (--skip-copilot)" repoStr
-                async { return issue }
-            elif hasCopilot issue then
-                if verbose then eprintfn "[%s] Copilot already assigned, skipping" repoStr
+                if verbose then eprintfn "[%s] Skipping assignment (--skip-copilot)" repoStr
                 async { return issue }
             else
-                match deps.CopilotClient, isPrimaryAuthApp with
-                | None, true ->
-                    eprintfn "[%s] Warning: primary auth is a GitHub App which cannot assign @copilot. Set ORCAI_PAT or add a 'pat' profile to auth.json to enable Copilot assignment." repoStr
-                    async { return issue }
-                | clientOpt, _ ->
-                    let assignClient = clientOpt |> Option.defaultValue client
-                    async {
-                        if verbose then eprintfn "[%s] Assigning @copilot" repoStr
-                        match! assignClient.AssignIssue repo issue.Number "@copilot" with
-                        | Error e ->
-                            eprintfn "[%s] Warning: failed to assign @copilot: %s" repoStr e
+                async {
+                    // Post trigger comment when via includes "comment"
+                    if assignVia = "comment" || assignVia = "comment-and-assign" then
+                        match assignComment with
+                        | Some tmpl ->
+                            let body = tmpl.Replace("{assignee}", assignTo)
+                            if verbose then eprintfn "[%s] Posting trigger comment" repoStr
+                            match! client.PostComment repo issue.Number body with
+                            | Error e -> eprintfn "[%s] Warning: failed to post trigger comment: %s" repoStr e
+                            | Ok ()   -> ()
+                        | None -> ()
+
+                    // Assign when via includes "assign" and not already assigned
+                    let shouldAssign =
+                        (assignVia = "assign" || assignVia = "comment-and-assign")
+                        && not (hasAssignee assignTo issue)
+                    if shouldAssign then
+                        match deps.CopilotClient, isPrimaryAuthApp with
+                        | None, true ->
+                            eprintfn "[%s] Warning: primary auth is a GitHub App which cannot assign users. Set ORCAI_PAT or add a 'pat' profile to auth.json." repoStr
                             return issue
-                        | Ok () ->
-                            // Return issue with copilot added to assignees list
-                            return { issue with Assignees = issue.Assignees @ ["copilot"] }
-                    }
+                        | clientOpt, _ ->
+                            let assignClient = clientOpt |> Option.defaultValue client
+                            if verbose then eprintfn "[%s] Assigning %s" repoStr assignTo
+                            match! assignClient.AssignIssue repo issue.Number assignTo with
+                            | Error e ->
+                                eprintfn "[%s] Warning: failed to assign %s: %s" repoStr assignTo e
+                                return issue
+                            | Ok () ->
+                                return { issue with Assignees = issue.Assignees @ [assignTo.TrimStart('@')] }
+                    else
+                        return issue
+                }
 
         return Some { Issue = finalIssue; Outcome = outcome }
     }
@@ -247,9 +265,15 @@ let private runFull
     // 2. Process all repos in parallel
     let skipCopilot       = input.SkipCopilot || config.SkipCopilot
     let closedIssueAction = input.OnClosedIssue |> Option.defaultValue config.OnClosedIssue
+    let pickAssign f =
+        config.Assign |> Option.bind f
+        |> Option.orElse (deps.Config.Assign |> Option.bind f)
+    let assignTo      = pickAssign (fun a -> a.To)      |> Option.defaultValue "@copilot"
+    let assignVia     = pickAssign (fun a -> a.Via)     |> Option.defaultValue "assign"
+    let assignComment = pickAssign (fun a -> a.Comment)
     let repoResults =
         config.Repos
-        |> List.map (processRepo deps config project input.Verbose input.AutoCreateLabels skipCopilot input.IsPrimaryAuthApp closedIssueAction)
+        |> List.map (processRepo deps config project input.Verbose input.AutoCreateLabels skipCopilot input.IsPrimaryAuthApp closedIssueAction assignTo assignVia assignComment)
         |> Async.Parallel
         |> Async.RunSynchronously
 

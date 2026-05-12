@@ -411,6 +411,20 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                 | Ok _    -> return Ok ()
             }
 
+        member _.PostComment repo issue body =
+            async {
+                let (RepoName repoStr)   = repo
+                let (IssueNumber issueN) = issue
+                let tmpFile = System.IO.Path.GetTempFileName()
+                try
+                    System.IO.File.WriteAllText(tmpFile, body)
+                    match! runGhWrite bucket retries ghToken $"issue comment {issueN} --repo {repoStr} --body-file \"{tmpFile}\"" with
+                    | Error e -> return Error e
+                    | Ok _    -> return Ok ()
+                finally
+                    System.IO.File.Delete(tmpFile)
+            }
+
         member _.ClosePr repo pr =
             async {
                 let (RepoName repoStr) = repo

@@ -37,10 +37,23 @@ type YamlIssue =
       labels:   System.Collections.Generic.List<string> }
 
 [<CLIMutable>]
+type YamlAssign =
+    { ``to``  : string
+      via     : string
+      comment : string }
+
+[<CLIMutable>]
+type YamlNudge =
+    { mode    : string
+      comment : string }
+
+[<CLIMutable>]
 type YamlRoot =
-    { job:   YamlJob
-      repos: System.Collections.Generic.List<string>
-      issue: YamlIssue }
+    { job:    YamlJob
+      repos:  System.Collections.Generic.List<string>
+      issue:  YamlIssue
+      assign: YamlAssign
+      nudge:  YamlNudge }
 
 let private deserializer =
     DeserializerBuilder()
@@ -79,6 +92,16 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                 | "skip"               -> Skip
                 | "fail"               -> Fail
                 | other                -> failwith $"Unknown onClosedIssue value: '{other}'. Valid values: create, reopen, skip, fail."
+            let nullStr (s: string) = match box s with | null -> None | _ -> Some s
+            let assignConfig =
+                if isNull (box root.assign) then None
+                else Some { To      = nullStr root.assign.``to``
+                            Via     = nullStr root.assign.via
+                            Comment = nullStr root.assign.comment }
+            let nudgeConfig =
+                if isNull (box root.nudge) then None
+                else Some { Mode    = nullStr root.nudge.mode
+                            Comment = nullStr root.nudge.comment }
             Ok { Org           = OrgName root.job.org
                  ProjectTitle  = root.job.title
                  Repos         = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
@@ -86,7 +109,9 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                  IssueBody     = templateContent
                  Labels        = labels
                  SkipCopilot   = root.job.skipCopilot
-                 OnClosedIssue = closedIssueAction }
+                 OnClosedIssue = closedIssueAction
+                 Assign        = assignConfig
+                 Nudge         = nudgeConfig }
     with ex ->
         Error $"Failed to parse YAML: {ex.Message}"
 

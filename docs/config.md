@@ -13,7 +13,7 @@ Local values take precedence over global values. Any key can be omitted; CLI fla
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `skipCopilot` | bool | `false` | Skip assigning `@copilot` to new issues. Equivalent to `--skip-copilot`. |
+| `skipCopilot` | bool | `false` | Skip assignment entirely. Equivalent to `--skip-copilot`. Superseded by `assign.via`. |
 | `defaultLabels` | string[] | `[]` | Labels applied to every issue in addition to any labels in the YAML job config. |
 | `autoCreateLabels` | bool | `false` | Create missing labels in each repo before applying them. Equivalent to `--auto-create-labels`. |
 | `maxConcurrency` | int | `4` | Maximum number of config files processed concurrently. Equivalent to `--max-concurrency`. |
@@ -21,6 +21,25 @@ Local values take precedence over global values. Any key can be omitted; CLI fla
 | `defaultOrg` | string | — | Default GitHub org used by `orcai generate` when `--org` is not supplied. |
 | `writesPerMinute` | int | `60` | Token-bucket capacity for GitHub write calls per minute. Reduce if you hit secondary rate limits. |
 | `rateLimitRetries` | int | `3` | Maximum number of automatic retries when a GitHub rate-limit error is encountered. |
+
+### `assign` block
+
+Controls how `orcai run` (and the re-trigger in `orcai nudge`) reaches the assignee. All fields are optional; omitting the block keeps the existing `@copilot` assign behaviour.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `assign.to` | string | `"@copilot"` | Assignee handle (e.g. `"@copilot"`, `"devon.burriss"`, `"opencode-agent[bot]"`). Not required when `via` is `"comment"`. |
+| `assign.via` | string | `"assign"` | How to trigger the assignee. `"assign"` — assign the issue. `"comment"` — post a comment only (no assignment). `"comment-and-assign"` — post a comment and assign. |
+| `assign.comment` | string | — | Comment body posted when `via` includes `"comment"`. Supports `{assignee}` placeholder. |
+
+### `nudge` block
+
+Controls how `orcai nudge` re-triggers the assignee on stale issues (those without a linked PR).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `nudge.mode` | string | `"reassign"` | `"reassign"` — unassign then reassign (default). `"comment-only"` — post a comment only. `"comment-and-reassign"` — post a comment and reassign. |
+| `nudge.comment` | string | — | Comment body posted by nudge. Supports `{assignee}` placeholder. |
 
 ---
 
@@ -30,7 +49,6 @@ Local values take precedence over global values. Any key can be omitted; CLI fla
 
 ```json
 {
-  "skipCopilot": false,
   "defaultLabels": ["orcai"],
   "maxConcurrency": 4,
   "writesPerMinute": 60,
@@ -38,17 +56,40 @@ Local values take precedence over global values. Any key can be omitted; CLI fla
 }
 ```
 
-**Local config** (`.orcai/config.json`) — project-specific overrides:
+**Local config with OpenCode** (`.orcai/config.json`):
 
 ```json
 {
   "defaultOrg": "my-github-org",
-  "autoCreateLabels": true,
-  "maxConcurrency": 2
+  "assign": {
+    "to": "opencode-agent[bot]",
+    "via": "comment",
+    "comment": "/opencode please work on this issue"
+  },
+  "nudge": {
+    "mode": "comment-only",
+    "comment": "/opencode this issue seems stuck, please continue"
+  }
 }
 ```
 
-With both files present, the effective config merges them with local values winning on any key that appears in both.
+**Local config with a human assignee** (`.orcai/config.json`):
+
+```json
+{
+  "assign": {
+    "to": "devon.burriss",
+    "via": "assign",
+    "comment": "Hey, this issue is ready for you"
+  },
+  "nudge": {
+    "mode": "comment-and-reassign",
+    "comment": "Hey {assignee}, any update on this one?"
+  }
+}
+```
+
+With both files present, the effective config merges them with local values winning on any key that appears in both. Within the `assign` and `nudge` blocks, merging is also field-level — a local `assign.to` overrides a global `assign.to` without discarding the global `assign.via`.
 
 ---
 

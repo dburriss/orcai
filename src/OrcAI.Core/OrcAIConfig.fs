@@ -3,6 +3,7 @@ module OrcAI.Core.OrcAIConfig
 open System.IO.Abstractions
 open System.Text.Json
 open System.Text.Json.Serialization
+open OrcAI.Core.Domain
 
 // ---------------------------------------------------------------------------
 // Config type
@@ -19,7 +20,9 @@ type OrcAIConfig =
       ContinueOnError  : bool option
       DefaultOrg       : string option
       WritesPerMinute  : int option
-      RateLimitRetries : int option }
+      RateLimitRetries : int option
+      Assign           : AssignConfig option
+      Nudge            : NudgeConfig option }
 
 /// All-None config — represents "no config loaded".
 let empty : OrcAIConfig =
@@ -30,7 +33,9 @@ let empty : OrcAIConfig =
       ContinueOnError  = None
       DefaultOrg       = None
       WritesPerMinute  = None
-      RateLimitRetries = None }
+      RateLimitRetries = None
+      Assign           = None
+      Nudge            = None }
 
 // ---------------------------------------------------------------------------
 // Merge: local wins per field when Some; falls back to global otherwise.
@@ -39,6 +44,21 @@ let empty : OrcAIConfig =
 /// Merge a global and a local config.  Local wins when a field is Some.
 let merge (globalCfg: OrcAIConfig) (localCfg: OrcAIConfig) : OrcAIConfig =
     let pick l g = match l with Some _ -> l | None -> g
+    let mergeAssign (l: AssignConfig option) (g: AssignConfig option) =
+        match l, g with
+        | None,   _       -> g
+        | Some la, None   -> Some la
+        | Some la, Some ga ->
+            Some { To      = la.To      |> Option.orElse ga.To
+                   Via     = la.Via     |> Option.orElse ga.Via
+                   Comment = la.Comment |> Option.orElse ga.Comment }
+    let mergeNudge (l: NudgeConfig option) (g: NudgeConfig option) =
+        match l, g with
+        | None,   _       -> g
+        | Some ln, None   -> Some ln
+        | Some ln, Some gn ->
+            Some { Mode    = ln.Mode    |> Option.orElse gn.Mode
+                   Comment = ln.Comment |> Option.orElse gn.Comment }
     { SkipCopilot      = pick localCfg.SkipCopilot      globalCfg.SkipCopilot
       DefaultLabels    = pick localCfg.DefaultLabels     globalCfg.DefaultLabels
       AutoCreateLabels = pick localCfg.AutoCreateLabels  globalCfg.AutoCreateLabels
@@ -46,7 +66,9 @@ let merge (globalCfg: OrcAIConfig) (localCfg: OrcAIConfig) : OrcAIConfig =
       ContinueOnError  = pick localCfg.ContinueOnError   globalCfg.ContinueOnError
       DefaultOrg       = pick localCfg.DefaultOrg        globalCfg.DefaultOrg
       WritesPerMinute  = pick localCfg.WritesPerMinute   globalCfg.WritesPerMinute
-      RateLimitRetries = pick localCfg.RateLimitRetries  globalCfg.RateLimitRetries }
+      RateLimitRetries = pick localCfg.RateLimitRetries  globalCfg.RateLimitRetries
+      Assign           = mergeAssign localCfg.Assign     globalCfg.Assign
+      Nudge            = mergeNudge  localCfg.Nudge      globalCfg.Nudge }
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -67,6 +89,22 @@ let localConfigPath (cwd: string) : string =
 // ---------------------------------------------------------------------------
 
 [<CLIMutable>]
+type AssignConfigDto =
+    { [<JsonPropertyName("to")>]
+      To      : string option
+      [<JsonPropertyName("via")>]
+      Via     : string option
+      [<JsonPropertyName("comment")>]
+      Comment : string option }
+
+[<CLIMutable>]
+type NudgeConfigDto =
+    { [<JsonPropertyName("mode")>]
+      Mode    : string option
+      [<JsonPropertyName("comment")>]
+      Comment : string option }
+
+[<CLIMutable>]
 type OrcAIConfigDto =
     { [<JsonPropertyName("skipCopilot")>]
       SkipCopilot      : System.Nullable<bool>
@@ -83,7 +121,11 @@ type OrcAIConfigDto =
       [<JsonPropertyName("writesPerMinute")>]
       WritesPerMinute  : System.Nullable<int>
       [<JsonPropertyName("rateLimitRetries")>]
-      RateLimitRetries : System.Nullable<int> }
+      RateLimitRetries : System.Nullable<int>
+      [<JsonPropertyName("assign")>]
+      Assign           : AssignConfigDto option
+      [<JsonPropertyName("nudge")>]
+      Nudge            : NudgeConfigDto option }
 
 let private jsonOptions =
     let opts = JsonSerializerOptions()
@@ -92,6 +134,10 @@ let private jsonOptions =
     opts
 
 let private ofDto (dto: OrcAIConfigDto) : OrcAIConfig =
+    let ofAssignDto (d: AssignConfigDto) : AssignConfig =
+        { To = d.To; Via = d.Via; Comment = d.Comment }
+    let ofNudgeDto (d: NudgeConfigDto) : NudgeConfig =
+        { Mode = d.Mode; Comment = d.Comment }
     { SkipCopilot      = if dto.SkipCopilot.HasValue     then Some dto.SkipCopilot.Value     else None
       DefaultLabels    = dto.DefaultLabels |> Option.map Array.toList
       AutoCreateLabels = if dto.AutoCreateLabels.HasValue then Some dto.AutoCreateLabels.Value else None
@@ -99,7 +145,9 @@ let private ofDto (dto: OrcAIConfigDto) : OrcAIConfig =
       ContinueOnError  = if dto.ContinueOnError.HasValue  then Some dto.ContinueOnError.Value  else None
       DefaultOrg       = dto.DefaultOrg
       WritesPerMinute  = if dto.WritesPerMinute.HasValue  then Some dto.WritesPerMinute.Value  else None
-      RateLimitRetries = if dto.RateLimitRetries.HasValue then Some dto.RateLimitRetries.Value else None }
+      RateLimitRetries = if dto.RateLimitRetries.HasValue then Some dto.RateLimitRetries.Value else None
+      Assign           = dto.Assign |> Option.map ofAssignDto
+      Nudge            = dto.Nudge  |> Option.map ofNudgeDto }
 
 // ---------------------------------------------------------------------------
 // File I/O

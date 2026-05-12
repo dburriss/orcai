@@ -4,6 +4,21 @@
 
 ### Added
 
+- `assign` block in YAML job config and global/local JSON config — configures who receives the issue and how they are triggered. Applies to both `orcai run` and `orcai nudge`.
+  - `assign.to` — assignee handle (default: `@copilot`). Works for bots, GitHub Apps, and human users.
+  - `assign.via` — trigger method: `assign` (default), `comment`, or `comment-and-assign`. Use `comment` for agents triggered by slash commands (e.g. OpenCode's `/opencode`).
+  - `assign.comment` — comment body posted when `via` includes `comment`. Supports `{assignee}` placeholder.
+- `nudge` block in YAML job config and global/local JSON config — configures how `orcai nudge` re-triggers the assignee on stale issues.
+  - `nudge.mode` — `reassign` (default), `comment-only`, or `comment-and-reassign`.
+  - `nudge.comment` — comment body posted on nudge. Supports `{assignee}` placeholder.
+- `orcai nudge` command now documented in the CLI reference.
+- Generated YAML scaffold now includes commented-out `assign:` and `nudge:` example blocks instead of the unused `copilot:` block.
+
+### Changed
+
+- The `copilot:` block previously scaffolded by `orcai generate` has been removed. It was never parsed and is superseded by the `assign:` block.
+- `--skip-copilot` is superseded by `assign.via: comment` (skips assignment while still allowing a trigger comment). The flag remains supported for backwards compatibility.
+
 - `ORCAI_LOG_LEVEL` environment variable — controls log verbosity. Accepts any `Microsoft.Extensions.Logging.LogLevel` name (`Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`). Defaults to `Warning`.
 
 ### Fixed

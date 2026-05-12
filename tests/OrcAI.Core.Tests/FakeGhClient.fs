@@ -20,6 +20,7 @@ type Handlers =
       AddIssueToProject: ProjectInfo -> IssueRef    -> Async<Result<unit, string>>
       AssignIssue      : RepoName    -> IssueNumber -> string -> Async<Result<unit, string>>
       UnassignIssue    : RepoName    -> IssueNumber -> string -> Async<Result<unit, string>>
+      PostComment      : RepoName    -> IssueNumber -> string -> Async<Result<unit, string>>
       FindPrsForIssue  : RepoName    -> IssueNumber -> Async<PullRequestRef list>
       ClosePr          : RepoName    -> PrNumber    -> Async<Result<unit, string>>
       ListRepos        : OrgName                   -> Async<Result<string list, string>>
@@ -51,6 +52,7 @@ let defaults : Handlers =
       AddIssueToProject = fun _ _        -> async { return Ok () }
       AssignIssue       = fun _ _ _      -> async { return Ok () }
       UnassignIssue     = fun _ _ _      -> async { return Ok () }
+      PostComment       = fun _ _ _      -> async { return Ok () }
       FindPrsForIssue   = fun _ _        -> async { return failwith "FindPrsForIssue not expected" }
       ClosePr           = fun _ _        -> async { return failwith "ClosePr not expected" }
       ListRepos         = fun _          -> async { return failwith "ListRepos not expected" }
@@ -69,6 +71,7 @@ let neverCalledHandlers : Handlers =
         AddIssueToProject = fun _ _        -> async { return failwith "GhClient should not be called" }
         AssignIssue       = fun _ _ _      -> async { return failwith "GhClient should not be called" }
         UnassignIssue     = fun _ _ _      -> async { return failwith "GhClient should not be called" }
+        PostComment       = fun _ _ _      -> async { return failwith "GhClient should not be called" }
         RepoExists        = fun _          -> async { return failwith "GhClient should not be called" } }
 
 /// Wraps a Handlers record in an IGhClient interface.
@@ -87,6 +90,7 @@ let from (h: Handlers) : IGhClient =
         member _.AddIssueToProject proj iss = h.AddIssueToProject proj iss
         member _.AssignIssue repo iss asgn   = h.AssignIssue repo iss asgn
         member _.UnassignIssue repo iss asgn = h.UnassignIssue repo iss asgn
+        member _.PostComment repo iss body   = h.PostComment repo iss body
         member _.FindPrsForIssue repo iss    = h.FindPrsForIssue repo iss
         member _.ClosePr repo pr            = h.ClosePr repo pr
         member _.ListRepos org              = h.ListRepos org

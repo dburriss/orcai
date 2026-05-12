@@ -38,6 +38,19 @@ type PullRequestRef =
 
 type ClosedIssueAction = | Create | Reopen | Skip | Fail
 
+/// How the assignee is triggered on a new issue.
+/// "assign" (default) | "comment" | "comment-and-assign"
+type AssignConfig =
+    { To      : string option
+      Via     : string option
+      Comment : string option }
+
+/// How the nudge command re-triggers the assignee on a stale issue.
+/// mode: "reassign" (default) | "comment-only" | "comment-and-reassign"
+type NudgeConfig =
+    { Mode    : string option
+      Comment : string option }
+
 /// Top-level job configuration parsed from the YAML file.
 type JobConfig =
     { Org           : OrgName
@@ -47,7 +60,9 @@ type JobConfig =
       IssueBody     : string
       Labels        : string list
       SkipCopilot   : bool
-      OnClosedIssue : ClosedIssueAction }
+      OnClosedIssue : ClosedIssueAction
+      Assign        : AssignConfig option
+      Nudge         : NudgeConfig option }
 
 /// Snapshot of a completed job, persisted as a lock file.
 type LockFile =

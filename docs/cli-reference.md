@@ -14,6 +14,7 @@ Complete reference for all `orcai` commands, flags, configuration, and output fo
   - [auth create-app](#auth-create-app)
   - [auth switch](#auth-switch)
 - [run](#run)
+- [nudge](#nudge)
 - [validate](#validate)
 - [info](#info)
 - [cleanup](#cleanup)
@@ -33,6 +34,7 @@ Complete reference for all `orcai` commands, flags, configuration, and output fo
 | `orcai generate` | Scaffold a YAML job config and a stub issue template |
 | `orcai auth pat/app/create-app/switch` | Manage stored auth profiles and active credentials |
 | `orcai run` | Execute a bulk upgrade job (supports globs, concurrency control, JSON output) |
+| `orcai nudge` | Re-trigger the assignee on stale issues (no linked PR yet) |
 | `orcai validate` | Validate YAML configs and verify repository access |
 | `orcai info` | Display the current state of a job |
 | `orcai cleanup` | Tear down everything created by `run` |
@@ -195,7 +197,7 @@ orcai run <yaml_file_or_glob> [--verbose] [--auto-create-labels] [--skip-copilot
 | `<yaml_file_or_glob>` | positional | Yes | — | YAML job file path or quoted glob (e.g. `"jobs/*.yml"`). |
 | `--verbose` | flag | No | false | Emit per-repo status messages to stderr. |
 | `--auto-create-labels` | flag | No | false | Create missing labels in each repo before applying them. |
-| `--skip-copilot` | flag | No | false | Skip assigning `@copilot`. Honored even if the flag is set in `job.skipCopilot`. |
+| `--skip-copilot` | flag | No | false | Skip the assignment step entirely. Honored even if `job.skipCopilot` is set. |
 | `--skip-lock` | flag | No | false | Always fetch live state from GitHub instead of using the lock file. |
 | `--max-concurrency` | int | No | `4` | Maximum number of config files processed concurrently. High values may hit GitHub rate limits. |
 | `--no-parallel` | flag | No | false | Disable all parallelism — files and repo checks run sequentially. Overrides `--max-concurrency`. |
@@ -209,7 +211,7 @@ For each repository listed in every config file (processed concurrently by defau
 1. Finds or creates the GitHub Project (idempotent).
 2. Finds or creates an issue using `job.title` and the issue template. Open issues are matched by title.
 3. Adds the issue to the project.
-4. Assigns `@copilot` if the issue has no assignees, unless skipped.
+4. Triggers the assignee according to the `assign` config block (defaults to assigning `@copilot`). See [YAML configuration](#yaml-configuration) and [Layered configuration](#layered-configuration).
 
 When processing multiple files, the human-readable output prints `--- <filename> ---` before each file's summary.
 
@@ -245,6 +247,56 @@ orcai run jobs/my-upgrade.yml --auto-create-labels --skip-copilot
 orcai run "jobs/*.yml" --continue-on-error --json
 orcai run "jobs/*.yml" --max-concurrency 2
 orcai run "jobs/*.yml" --no-parallel
+```
+
+---
+
+## nudge
+
+Re-trigger the assignee on stale issues — those with no linked pull request yet. Reads the lock file written by `orcai run` to find issues, then checks GitHub live for any PRs that have been opened since the last run.
+
+```
+orcai nudge <yaml_file> [--dry-run] [--save-lock] [--verbose]
+```
+
+### Flags
+
+| Flag | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `<yaml_file>` | positional | Yes | — | YAML job config path. A lock file must exist next to it (run `orcai run` first). |
+| `--dry-run` | flag | No | false | Show what would be nudged without making any changes. |
+| `--save-lock` | flag | No | false | If live PR checks discover new PRs, write them to the lock file. |
+| `--verbose` | flag | No | false | Emit per-issue status messages to stderr. |
+
+### Behavior
+
+For each issue in the lock file:
+
+1. If a PR is already recorded in the lock file, the issue is **skipped** (no network call).
+2. Otherwise, checks GitHub live via `Issue.closingPullRequests`.
+3. If a PR is found, the issue is marked **PR found live** (optionally saved to the lock with `--save-lock`).
+4. If no PR exists, re-triggers the assignee according to the `nudge` config block:
+   - `mode: reassign` (default) — unassigns then reassigns.
+   - `mode: comment-only` — posts the configured comment only.
+   - `mode: comment-and-reassign` — posts a comment and reassigns.
+
+### Output
+
+A table with Repo / Issue / Status columns:
+
+```
+ Repo                     Issue  Status
+ my-org/repo-one          #7     nudge sent
+ my-org/repo-two          #12    skipped (pr exists)
+ my-org/repo-three        #5     pr found live
+```
+
+### Examples
+
+```sh
+orcai nudge jobs/my-upgrade.yml
+orcai nudge jobs/my-upgrade.yml --dry-run
+orcai nudge jobs/my-upgrade.yml --save-lock --verbose
 ```
 
 ---
@@ -392,7 +444,7 @@ Dry run complete. No changes were made.
 job:
   title: "My Project Title"
   org:   "my-github-org"
-  skipCopilot: false
+  # skipCopilot: true  # superseded by assign.via
 
 repos:
   - "repo-one"
@@ -403,9 +455,46 @@ issue:
   labels:
     - "migration"
     - "automated"
+
+# assign:
+#   to: "@copilot"          # assignee handle (default: @copilot)
+#   via: assign             # assign | comment | comment-and-assign
+#   comment: ""             # trigger comment; supports {assignee} placeholder
+
+# nudge:
+#   mode: reassign          # reassign | comment-only | comment-and-reassign
+#   comment: ""             # nudge comment; supports {assignee} placeholder
 ```
 
 `job.title` and `job.org` are required. `repos` must be a non-empty list. `issue.template` must point to a real Markdown file relative to the YAML. Missing labels will cause an error during `run` unless `--auto-create-labels` is supplied.
+
+The `assign` and `nudge` blocks are optional — omitting them keeps the default behaviour (assign `@copilot`, nudge by reassignment). Per-job YAML values take precedence over the global/local JSON config. See [Layered configuration](#layered-configuration).
+
+**OpenCode example:**
+
+```yaml
+assign:
+  to: opencode-agent[bot]
+  via: comment
+  comment: "/opencode please work on this issue"
+
+nudge:
+  mode: comment-only
+  comment: "/opencode this issue seems stuck, please continue"
+```
+
+**Human assignee example:**
+
+```yaml
+assign:
+  to: my-github-username
+  via: assign
+  comment: "Hey, this issue is ready for you"
+
+nudge:
+  mode: comment-and-reassign
+  comment: "Hey {assignee}, any update on this one?"
+```
 
 ---
 
@@ -420,22 +509,33 @@ Each file can contain these optional fields:
 
 | Field | Description |
 |-------|-------------|
-| `skipCopilot` | Set default `--skip-copilot`. |
+| `skipCopilot` | Set default `--skip-copilot`. Superseded by `assign.via`. |
 | `defaultLabels` | List of labels applied to every issue. |
 | `autoCreateLabels` | Default for `--auto-create-labels`. |
 | `maxConcurrency` | Default for `--max-concurrency`. |
 | `continueOnError` | Default for `--continue-on-error`. |
-| `defaultOrg` | Default GitHub org for `generate`.
+| `defaultOrg` | Default GitHub org for `generate`. |
+| `assign.to` | Default assignee handle. |
+| `assign.via` | Default trigger mode: `assign`, `comment`, or `comment-and-assign`. |
+| `assign.comment` | Default trigger comment body. Supports `{assignee}` placeholder. |
+| `nudge.mode` | Default nudge mode: `reassign`, `comment-only`, or `comment-and-reassign`. |
+| `nudge.comment` | Default nudge comment body. Supports `{assignee}` placeholder. |
 
-Values from the local config override the global config when present.
+Values from the local config override the global config when present. Within the `assign` and `nudge` blocks, merging is field-level. The per-job YAML always wins over both config files.
 
 Example `~/.config/orcai/config.json`:
 
 ```json
 {
-  "skipCopilot": true,
   "defaultLabels": ["migration", "orcai"],
-  "maxConcurrency": 3
+  "maxConcurrency": 3,
+  "assign": {
+    "to": "@copilot",
+    "via": "assign"
+  },
+  "nudge": {
+    "mode": "reassign"
+  }
 }
 ```
 

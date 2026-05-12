@@ -46,7 +46,7 @@ let private buildYaml (name: string) (org: string) (repos: string list) (slug: s
 
     let skipCopilotLine =
         if skipCopilot then "  skipCopilot: true\n"
-        else "  # skipCopilot: true  # uncomment to disable @copilot assignment\n"
+        else "  # skipCopilot: true  # uncomment to disable assignment\n"
 
     $"""job:
   title: "{name}"
@@ -61,10 +61,14 @@ issue:
   labels: []
   # TODO: add label names, e.g. ["automated", "migration"]
 
-copilot:
-  agent: "default"
-  run_args: []
-  max_runs: 1
+# assign:
+#   to: "@copilot"       # assignee handle (default: @copilot)
+#   via: assign          # assign | comment | comment-and-assign
+#   comment: ""          # trigger comment body; supports {{assignee}} placeholder
+
+# nudge:
+#   mode: reassign       # reassign | comment-only | comment-and-reassign
+#   comment: ""          # nudge comment body; supports {{assignee}} placeholder
 """
 
 /// Build the stub Markdown issue template.
