@@ -242,46 +242,40 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int) =
         async {
             let (RepoName repoStr)   = repo
             let (IssueNumber issueN) = issue
-            let parts     = repoStr.Split('/', 2)
-            let owner     = parts.[0]
-            let repoName  = parts.[1]
-            let tmpFile   = System.IO.Path.GetTempFileName()
-            try
-                let query =
-                    $"""{{ repository(owner: "{owner}", name: "{repoName}") {{ issue(number: {issueN}) {{ closingPullRequests(first: 25) {{ nodes {{ number url }} }} }} }} }}"""
-                System.IO.File.WriteAllText(tmpFile, query)
-                match! runGh ghToken $"api graphql -f query=@{tmpFile}" with
-                | Error _ -> return []
-                | Ok json ->
-                    let doc = JsonDocument.Parse(json).RootElement
-                    let nodes =
-                        match doc.TryGetProperty("data") with
-                        | true, data ->
-                            match data.TryGetProperty("repository") with
-                            | true, repoEl ->
-                                match repoEl.TryGetProperty("issue") with
-                                | true, issueEl when issueEl.ValueKind <> JsonValueKind.Null ->
-                                    match issueEl.TryGetProperty("closingPullRequests") with
-                                    | true, prs ->
-                                        match prs.TryGetProperty("nodes") with
-                                        | true, ns -> ns.EnumerateArray() |> Seq.toList
-                                        | _        -> []
-                                    | _ -> []
+            let parts    = repoStr.Split('/', 2)
+            let owner    = parts.[0]
+            let repoName = parts.[1]
+            let query    = "query($owner:String!,$repo:String!,$issue:Int!){repository(owner:$owner,name:$repo){issue(number:$issue){closingPullRequests(first:25){nodes{number url}}}}}"
+            match! runGh ghToken $"api graphql -f \"query={query}\" -f owner={owner} -f repo={repoName} -F issue={issueN}" with
+            | Error _ -> return []
+            | Ok json ->
+                let doc = JsonDocument.Parse(json).RootElement
+                let nodes =
+                    match doc.TryGetProperty("data") with
+                    | true, data ->
+                        match data.TryGetProperty("repository") with
+                        | true, repoEl ->
+                            match repoEl.TryGetProperty("issue") with
+                            | true, issueEl when issueEl.ValueKind <> JsonValueKind.Null ->
+                                match issueEl.TryGetProperty("closingPullRequests") with
+                                | true, prs ->
+                                    match prs.TryGetProperty("nodes") with
+                                    | true, ns -> ns.EnumerateArray() |> Seq.toList
+                                    | _        -> []
                                 | _ -> []
                             | _ -> []
                         | _ -> []
-                    return
-                        nodes
-                        |> List.choose (fun el ->
-                            match intProp el "number", strProp el "url" with
-                            | Some n, Some url ->
-                                Some { Repo        = repo
-                                       Number      = PrNumber n
-                                       Url         = url
-                                       ClosesIssue = issue }
-                            | _ -> None)
-            finally
-                System.IO.File.Delete(tmpFile)
+                    | _ -> []
+                return
+                    nodes
+                    |> List.choose (fun el ->
+                        match intProp el "number", strProp el "url" with
+                        | Some n, Some url ->
+                            Some { Repo        = repo
+                                   Number      = PrNumber n
+                                   Url         = url
+                                   ClosesIssue = issue }
+                        | _ -> None)
         }
 
     // ------------------------------------------------------------------
