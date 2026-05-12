@@ -448,6 +448,55 @@ let main argv =
                     if json then printInfoJson result
                     else printInfoResult result
                     0)
+        | Nudge args ->
+            let yamlFile = args.GetResult(NudgeArgs.Yaml_File)
+            let dryRun   = args.Contains(NudgeArgs.Dry_Run)
+            let saveLock = args.Contains(NudgeArgs.Save_Lock)
+            let verbose  = args.Contains(NudgeArgs.Verbose)
+            withClient (fun deps isPrimaryAuthApp ->
+                let input : OrcAI.Core.NudgeCommand.NudgeInput =
+                    { YamlPath         = yamlFile
+                      DryRun           = dryRun
+                      Verbose          = verbose
+                      SaveLock         = saveLock
+                      IsPrimaryAuthApp = isPrimaryAuthApp }
+                match OrcAI.Core.NudgeCommand.execute deps input with
+                | Error e ->
+                    eprintfn "Error: %s" e
+                    1
+                | Ok results ->
+                    let nudged     = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.NudgeSent)        |> List.length
+                    let prFound    = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.PrFoundLive)      |> List.length
+                    let skipped    = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.Skipped)          |> List.length
+                    let wouldNudge = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.DryRunWouldNudge) |> List.length
+                    if not results.IsEmpty then
+                        AnsiConsole.WriteLine()
+                        let table = Table()
+                        table.Border <- TableBorder.Rounded
+                        table.AddColumn(TableColumn("[bold]Repo[/]"))             |> ignore
+                        table.AddColumn(TableColumn("[bold]Issue[/]").Centered()) |> ignore
+                        table.AddColumn(TableColumn("[bold]Status[/]"))           |> ignore
+                        for r in results do
+                            let (RepoName repo)   = r.Repo
+                            let (IssueNumber num) = r.Issue
+                            let repoUrl           = $"https://github.com/{repo}"
+                            let statusMarkup =
+                                match r.Outcome with
+                                | OrcAI.Core.NudgeCommand.Skipped          -> "[grey]skipped (PR in lock)[/]"
+                                | OrcAI.Core.NudgeCommand.PrFoundLive      -> "[green]PR found live[/]"
+                                | OrcAI.Core.NudgeCommand.NudgeSent        -> "[yellow]nudged[/]"
+                                | OrcAI.Core.NudgeCommand.DryRunWouldNudge -> "[dim]would nudge (dry run)[/]"
+                            table.AddRow(
+                                [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repo)}[/][/]") :> Rendering.IRenderable
+                                   Markup($"[yellow]#{num}[/]")
+                                   Markup(statusMarkup) |]) |> ignore
+                        AnsiConsole.Write(table)
+                        AnsiConsole.WriteLine()
+                    if dryRun then
+                        printfn "Dry run: %d issue(s) would be nudged." wouldNudge
+                    else
+                        printfn "Done. %d nudged, %d already have PRs, %d skipped." nudged prFound skipped
+                    0)
         | Auth args ->
             match args.GetSubCommand() with
             | Pat patArgs ->

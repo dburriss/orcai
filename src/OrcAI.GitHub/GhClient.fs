@@ -402,6 +402,15 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                 | Ok _    -> return Ok ()
             }
 
+        member _.UnassignIssue repo issue assignee =
+            async {
+                let (RepoName repoStr)   = repo
+                let (IssueNumber issueN) = issue
+                match! runGhWrite bucket retries ghToken $"issue edit {issueN} --repo {repoStr} --remove-assignee {assignee}" with
+                | Error e -> return Error e
+                | Ok _    -> return Ok ()
+            }
+
         member _.ClosePr repo pr =
             async {
                 let (RepoName repoStr) = repo

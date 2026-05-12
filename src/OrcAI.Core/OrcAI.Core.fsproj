@@ -19,6 +19,7 @@
     <Compile Include="RunCommand.fs" />
     <Compile Include="CleanupCommand.fs" />
     <Compile Include="InfoCommand.fs" />
+    <Compile Include="NudgeCommand.fs" />
     <Compile Include="GenerateCommand.fs" />
   </ItemGroup>
 

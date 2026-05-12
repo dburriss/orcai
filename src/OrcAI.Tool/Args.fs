@@ -134,6 +134,20 @@ type GenerateArgs =
             | Interactive   -> "Prompt for any missing values and select repos via an interactive TUI."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
+type NudgeArgs =
+    | [<MainCommand; Mandatory>] Yaml_File of path: string
+    | Dry_Run
+    | Save_Lock
+    | Verbose
+    interface IArgParserTemplate with
+        member a.Usage =
+            match a with
+            | Yaml_File _ -> "Path to the YAML job configuration file."
+            | Dry_Run     -> "Preview which issues would be nudged without making any changes."
+            | Save_Lock   -> "Write discovered PRs back to the lock file."
+            | Verbose     -> "Enable verbose output."
+
+[<CliPrefix(CliPrefix.DoubleDash)>]
 type ValidateArgs =
     | [<MainCommand; Mandatory>] Yaml_File of path: string
     | No_Parallel
@@ -154,6 +168,7 @@ type OrcAIArgs =
     | [<SubCommand>] Run      of ParseResults<RunArgs>
     | [<SubCommand>] Cleanup  of ParseResults<CleanupArgs>
     | [<SubCommand>] Info     of ParseResults<InfoArgs>
+    | [<SubCommand>] Nudge    of ParseResults<NudgeArgs>
     | [<SubCommand>] Auth     of ParseResults<AuthArgs>
     | [<SubCommand>] Generate of ParseResults<GenerateArgs>
     | [<SubCommand>] Validate of ParseResults<ValidateArgs>
@@ -163,6 +178,7 @@ type OrcAIArgs =
             | Run _      -> "Execute a job defined in a YAML configuration file."
             | Cleanup _  -> "Tear down everything created by a run command."
             | Info _     -> "Display the current state of a job."
+            | Nudge _    -> "Re-trigger @copilot on issues that have no pull request yet."
             | Auth _     -> "Configure authentication for OrcAI."
             | Generate _ -> "Generate a YAML job config from a name, org, and optional repo list."
             | Validate _ -> "Validate a YAML job config and verify all repos are accessible."
