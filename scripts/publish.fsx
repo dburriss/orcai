@@ -114,8 +114,13 @@ let propertyGroup =
 let versionElement = requireElement propertyGroup (ns + "Version")
 let releaseNotesElement = requireElement propertyGroup (ns + "PackageReleaseNotes")
 
-let currentVersion = Version.Parse(versionElement.Value)
-printfn "Current Version: %O" currentVersion
+let versionString = versionElement.Value
+let numericPart, currentSuffix =
+    match versionString.IndexOf('-') with
+    | -1 -> versionString, None
+    | idx -> versionString.[..idx-1], Some versionString.[idx+1..]
+let currentNumericVersion = Version.Parse(numericPart)
+printfn "Current Version: %s" versionString
 
 let changelogLines = File.ReadAllLines(changelogPath) |> Array.toList
 
@@ -166,14 +171,14 @@ if unreleasedContent.IsEmpty then
     printfn "Latest commit: %s" headInfo
     printfn ""
 
-    if not (promptYesNo (sprintf "Do you want to retag this commit as v%O? (y/n): " currentVersion)) then
+    if not (promptYesNo (sprintf "Do you want to retag this commit as v%s? (y/n): " versionString)) then
         printfn "Nothing to do."
         exit 0
 
-    printf "Type the current version to confirm (%O): " currentVersion
+    printf "Type the current version to confirm (%s): " versionString
     let typed = Console.ReadLine()
-    if typed <> string currentVersion then
-        eprintfn "Version mismatch — expected '%O', got '%s'. Aborting." currentVersion typed
+    if typed <> versionString then
+        eprintfn "Version mismatch — expected '%s', got '%s'. Aborting." versionString typed
         exit 1
 
     if isDryRun then
@@ -183,7 +188,7 @@ if unreleasedContent.IsEmpty then
         runReleaseBuild ()
         runReleaseTests ()
 
-    let tagName = sprintf "v%O" currentVersion
+    let tagName = sprintf "v%s" versionString
     printfn ""
     printfn "Warning: this will delete and recreate tag %s locally." tagName
     printfn "If you choose to push, it will force-push the tag to the remote,"
@@ -229,25 +234,44 @@ else
     runReleaseBuild ()
     runReleaseTests ()
 
-printfn "Select increment type:"
-let nextMajor = Version(currentVersion.Major + 1, 0, 0)
-let nextMinor = Version(currentVersion.Major, currentVersion.Minor + 1, 0)
-let nextPatch = Version(currentVersion.Major, currentVersion.Minor, currentVersion.Build + 1)
+let newVersionString =
+    match currentSuffix with
+    | Some _ when promptYesNo (sprintf "Current version is %s. Promote to stable %s? (y/n): " versionString numericPart) ->
+        numericPart
+    | _ ->
+        let prereleaseSuffix =
+            if promptYesNo "Is this a prerelease? (y/n): " then
+                printf "Prerelease suffix (e.g. beta1, rc1): "
+                let suffix = (Console.ReadLine() |> Option.ofObj |> Option.defaultValue "").Trim()
+                if suffix.Length = 0 || suffix.Contains(" ") || suffix.Contains("-") then
+                    failwith "Invalid prerelease suffix: must be non-empty with no spaces or hyphens"
+                Some suffix
+            else
+                None
 
-printfn "1) Major (%O -> %O)" currentVersion nextMajor
-printfn "2) Minor (%O -> %O)" currentVersion nextMinor
-printfn "3) Patch (%O -> %O)" currentVersion nextPatch
+        let nextMajor = Version(currentNumericVersion.Major + 1, 0, 0)
+        let nextMinor = Version(currentNumericVersion.Major, currentNumericVersion.Minor + 1, 0)
+        let nextPatch = Version(currentNumericVersion.Major, currentNumericVersion.Minor, currentNumericVersion.Build + 1)
 
-printf "Choice (1-3): "
-let choice = Console.ReadLine()
-let newVersion =
-    match choice with
-    | "1" -> nextMajor
-    | "2" -> nextMinor
-    | "3" -> nextPatch
-    | _ -> failwith "Invalid selection"
+        printfn "Select increment type:"
+        printfn "1) Major (%O -> %O)" currentNumericVersion nextMajor
+        printfn "2) Minor (%O -> %O)" currentNumericVersion nextMinor
+        printfn "3) Patch (%O -> %O)" currentNumericVersion nextPatch
 
-printfn "New Version: %O" newVersion
+        printf "Choice (1-3): "
+        let choice = Console.ReadLine()
+        let baseVersion =
+            match choice with
+            | "1" -> nextMajor
+            | "2" -> nextMinor
+            | "3" -> nextPatch
+            | _ -> failwith "Invalid selection"
+
+        match prereleaseSuffix with
+        | Some s -> sprintf "%O-%s" baseVersion s
+        | None -> sprintf "%O" baseVersion
+
+printfn "New Version: %s" newVersionString
 
 let releaseNotes =
     unreleasedContent
@@ -258,10 +282,10 @@ let releaseNotes =
 printfn "Updating fsproj..."
 if isDryRun then
     printfn "\n[Dry Run] Would update fsproj:"
-    printfn "  Version: %O" newVersion
+    printfn "  Version: %s" newVersionString
     printfn "  ReleaseNotes: %s" releaseNotes
 else
-    versionElement.Value <- string newVersion
+    versionElement.Value <- newVersionString
     releaseNotesElement.Value <- releaseNotes
     projectDoc.Save(fsprojPath)
 
@@ -275,7 +299,7 @@ let newChangelogSection =
     [
         "## [Unreleased]"
         ""
-        sprintf "## [%O] - %s" newVersion today
+        sprintf "## [%s] - %s" newVersionString today
     ]
 
 let newChangelogLines =
@@ -298,36 +322,36 @@ else
 if isDryRun then
     printfn "\n[Dry Run] Git operations skipped. Would execute:"
     printfn "1. git add \"%s\" \"%s\"" fsprojPath changelogPath
-    printfn "2. git commit -m \"release: prepare v%O\"" newVersion
-    printfn "3. git tag v%O" newVersion
+    printfn "2. git commit -m \"release: prepare v%s\"" newVersionString
+    printfn "3. git tag v%s" newVersionString
     printfn "4. git push origin main"
-    printfn "5. git push origin v%O" newVersion
+    printfn "5. git push origin v%s" newVersionString
     exit 0
 
 printfn "\nFiles updated. Ready to commit."
 printfn "Commands to be executed:"
 printfn "1. git add \"%s\" \"%s\"" fsprojPath changelogPath
-printfn "2. git commit -m \"release: prepare v%O\"" newVersion
-printfn "3. git tag v%O" newVersion
+printfn "2. git commit -m \"release: prepare v%s\"" newVersionString
+printfn "3. git tag v%s" newVersionString
 printfn "4. git push origin main"
-printfn "5. git push origin v%O" newVersion
+printfn "5. git push origin v%s" newVersionString
 
 if promptYesNo "Proceed with git operations? (y/n): " then
     printfn "Executing git add..."
     runProcess "git" ["add"; fsprojPath; changelogPath] rootPath |> ignore
 
     printfn "Executing git commit..."
-    runProcess "git" ["commit"; "-m"; sprintf "release: prepare v%O" newVersion] rootPath |> ignore
+    runProcess "git" ["commit"; "-m"; sprintf "release: prepare v%s" newVersionString] rootPath |> ignore
 
     printfn "Executing git tag..."
-    runProcess "git" ["tag"; sprintf "v%O" newVersion] rootPath |> ignore
+    runProcess "git" ["tag"; sprintf "v%s" newVersionString] rootPath |> ignore
 
     if promptYesNo "Push to remote? (y/n): " then
         printfn "Pushing main..."
         try
             runProcess "git" ["push"; "origin"; "main"] rootPath |> printfn "%s"
             printfn "Pushing tag..."
-            runProcess "git" ["push"; "origin"; sprintf "v%O" newVersion] rootPath |> printfn "%s"
+            runProcess "git" ["push"; "origin"; sprintf "v%s" newVersionString] rootPath |> printfn "%s"
             printfn "Done!"
         with ex ->
             printfn "Error pushing: %s" ex.Message
