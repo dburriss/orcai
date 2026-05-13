@@ -150,3 +150,23 @@ let parseFile (fs: IFileSystem) (path: string) : Result<JobConfig, string> =
 /// Used to populate the yamlHash field in the lock file.
 let computeHash (fs: IFileSystem) (path: string) : string =
     hashBytes (fs.File.ReadAllBytes(path))
+
+/// Resolve the absolute path of the issue template referenced in a YAML job config.
+/// Returns None if the file does not exist or the template path cannot be resolved.
+let resolveTemplatePath (fs: IFileSystem) (path: string) : string option =
+    if not (fs.File.Exists(path)) then None
+    else
+        try
+            let yaml = fs.File.ReadAllText(path)
+            let root = deserializer.Deserialize<YamlRoot>(yaml)
+            if isNull (box root) || isNull (box root.issue) || String.IsNullOrWhiteSpace(root.issue.template) then None
+            else
+                let yamlDir      = Path.GetDirectoryName(Path.GetFullPath(path)) |> Option.ofObj |> Option.defaultValue "."
+                let templatePath = Path.GetFullPath(Path.Combine(yamlDir, root.issue.template))
+                if fs.File.Exists(templatePath) then Some templatePath else None
+        with _ -> None
+
+/// Compute the SHA-256 hash of the raw template file content.
+/// Used to populate the templateHash field in the lock file.
+let computeTemplateHash (fs: IFileSystem) (path: string) : string =
+    hashBytes (fs.File.ReadAllBytes(path))

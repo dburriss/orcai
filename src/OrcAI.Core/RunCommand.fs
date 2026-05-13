@@ -37,7 +37,7 @@ type RunInput =
       OnClosedIssue      : ClosedIssueAction option }
 
 /// Whether an issue was freshly created or already existed in GitHub.
-type IssueOutcome = | Created | AlreadyExisted | Reopened | Skipped
+type IssueOutcome = | Created | AlreadyExisted | Reopened | Skipped | Updated | UpdateFailed of string
 
 /// The result for a single repo processed during the run.
 type RepoResult =
@@ -232,10 +232,11 @@ let private processRepo
 /// Perform the full run: find/create project, process all repos, write lock.
 /// Only writes the lock file if all repos succeeded.
 let private runFull
-    (deps     : OrcAIDeps)
-    (input    : RunInput)
-    (config   : JobConfig)
-    (yamlHash : string)
+    (deps         : OrcAIDeps)
+    (input        : RunInput)
+    (config       : JobConfig)
+    (yamlHash     : string)
+    (templateHash : string)
     : Result<RunResult, string> =
 
     let tokenResult =
@@ -283,6 +284,7 @@ let private runFull
     let lock : LockFile =
         { LockedAt     = DateTimeOffset.UtcNow
           YamlHash     = yamlHash
+          TemplateHash = templateHash
           Project      = project
           Repos        = config.Repos
           Issues       = successes |> List.map (fun r -> r.Issue)
@@ -294,16 +296,51 @@ let private runFull
 
     Ok { Lock = lock; Results = successes; Source = FullRun }
 
+/// Update issue bodies for a list of existing issues using the current template.
+/// Returns one RepoResult per issue (Updated or UpdateFailed).
+let private applyBodyUpdates
+    (deps   : OrcAIDeps)
+    (config : JobConfig)
+    (issues : IssueRef list)
+    : RepoResult list =
+    issues
+    |> List.map (fun issue ->
+        async {
+            let (RepoName repoStr) = issue.Repo
+            match! deps.GhClient.UpdateIssue issue.Repo issue.Number config.IssueTitle config.IssueBody with
+            | Ok ()   -> return { Issue = issue; Outcome = Updated }
+            | Error e ->
+                eprintfn "[%s] Error updating issue body: %s" repoStr e
+                return { Issue = issue; Outcome = UpdateFailed e }
+        })
+    |> Async.Parallel
+    |> Async.RunSynchronously
+    |> Array.toList
+
+/// Update issue bodies for all issues in the lock file, then write an updated lock.
+/// Called when only the template hash has changed (no structural changes needed).
+let private updateBodies
+    (deps         : OrcAIDeps)
+    (input        : RunInput)
+    (config       : JobConfig)
+    (yamlHash     : string)
+    (templateHash : string)
+    (lock         : LockFile)
+    : Result<RunResult, string> =
+    let results = applyBodyUpdates deps config lock.Issues
+    let newLock = { lock with YamlHash = yamlHash; TemplateHash = templateHash; LockedAt = DateTimeOffset.UtcNow }
+    LockFile.write deps.FileSystem input.YamlPath newLock
+    Ok { Lock = newLock; Results = results; Source = FullRun }
+
 /// Execute the run command for a single YAML path.
 /// Returns a RunResult on success, or an error string.
 ///
-/// Fast path: if a lock file exists, its YAML hash matches, and --skip-lock is
-/// not set, returns immediately with zero network calls — everything already ran
-/// successfully. All issues are reported as AlreadyExisted.
-///
-/// If --skip-lock is set, or the hash differs, or no lock file exists, performs
-/// a full run. processRepo tracks whether each issue was Created or AlreadyExisted.
-/// The lock file is only written when all repos succeed.
+/// Dispatch logic (checked in order, --skip-lock bypasses all):
+///   Both hashes match   → fast path, zero network calls (AlreadyExisted for all)
+///   Only YAML changed   → runFull (structural changes; body unchanged)
+///   Only template changed → updateBodies only (UpdateIssue per repo in lock)
+///   Both changed        → runFull, then UpdateIssue for any AlreadyExisted repos
+///   No lock file        → runFull (creates everything fresh)
 let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string> =
     match YamlConfig.parseFile deps.FileSystem input.YamlPath with
     | Error e -> Error e
@@ -318,29 +355,55 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
             let extraLabels   = input.DefaultLabels |> List.filter (fun l -> not (Set.contains (l.ToLowerInvariant()) existingLower))
             { config with Labels = config.Labels @ extraLabels }
 
-    let yamlHash = YamlConfig.computeHash deps.FileSystem input.YamlPath
+    let yamlHash     = YamlConfig.computeHash deps.FileSystem input.YamlPath
+    let templateHash =
+        match YamlConfig.resolveTemplatePath deps.FileSystem input.YamlPath with
+        | Some p -> YamlConfig.computeTemplateHash deps.FileSystem p
+        | None   -> ""
 
     if input.SkipLock then
-        // Bypass lock entirely — always do a full run
-        if input.Verbose then
-            eprintfn "--skip-lock set, bypassing lock file."
-        runFull deps input mergedConfig yamlHash
+        if input.Verbose then eprintfn "--skip-lock set, bypassing lock file."
+        runFull deps input mergedConfig yamlHash templateHash
     else
 
     match LockFile.tryRead deps.FileSystem input.YamlPath with
-    | Some lock when lock.YamlHash = yamlHash ->
-        // Lock file is current — nothing to do, report all issues as already existing
-        if input.Verbose then
-            eprintfn "Lock file found and hash matches — nothing to do."
-        let results =
-            lock.Issues |> List.map (fun i -> { Issue = i; Outcome = AlreadyExisted })
+    | Some lock when lock.YamlHash = yamlHash && lock.TemplateHash = templateHash ->
+        if input.Verbose then eprintfn "Lock file found and hashes match — nothing to do."
+        let results = lock.Issues |> List.map (fun i -> { Issue = i; Outcome = AlreadyExisted })
         Ok { Lock = lock; Results = results; Source = FromLockFile }
-    | Some _ ->
-        if input.Verbose then
-            eprintfn "Lock file found but YAML hash has changed — re-running."
-        runFull deps input mergedConfig yamlHash
+
+    | Some lock when lock.YamlHash = yamlHash ->
+        if input.Verbose then eprintfn "Lock file found, template changed — updating issue bodies."
+        updateBodies deps input mergedConfig yamlHash templateHash lock
+
+    | Some lock when lock.TemplateHash = templateHash ->
+        if input.Verbose then eprintfn "Lock file found but YAML hash changed — re-running."
+        runFull deps input mergedConfig yamlHash templateHash
+
+    | Some lock ->
+        // Both changed: structural runFull, then update bodies for existing issues.
+        if input.Verbose then eprintfn "Lock file found but YAML and template hashes changed — re-running and updating issue bodies."
+        match runFull deps input mergedConfig yamlHash templateHash with
+        | Error e -> Error e
+        | Ok fullResult ->
+            let toUpdate =
+                fullResult.Results
+                |> List.filter (fun r -> r.Outcome = AlreadyExisted)
+                |> List.map (fun r -> r.Issue)
+            if List.isEmpty toUpdate then
+                Ok fullResult
+            else
+                let updated = applyBodyUpdates deps mergedConfig toUpdate
+                let updatedByRepo =
+                    updated |> List.map (fun r -> r.Issue.Repo, r) |> Map.ofList
+                let finalResults =
+                    fullResult.Results |> List.map (fun r ->
+                        if r.Outcome <> AlreadyExisted then r
+                        else updatedByRepo |> Map.tryFind r.Issue.Repo |> Option.defaultValue r)
+                Ok { fullResult with Results = finalResults }
+
     | None ->
-        runFull deps input mergedConfig yamlHash
+        runFull deps input mergedConfig yamlHash templateHash
 
 /// Execute the run command over a list of resolved file paths.
 /// Returns a Map from file path to Result<RunResult, string>.

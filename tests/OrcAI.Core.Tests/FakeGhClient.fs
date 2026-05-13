@@ -16,6 +16,7 @@ type Handlers =
       FindClosedIssue  : RepoName    -> string      -> Async<IssueRef option>
       ReopenIssue      : RepoName    -> IssueNumber -> Async<Result<IssueRef, string>>
       CreateIssue      : RepoName    -> string -> string -> string list -> Async<Result<IssueRef, string>>
+      UpdateIssue      : RepoName    -> IssueNumber -> string -> string -> Async<Result<unit, string>>
       DeleteIssue      : RepoName    -> IssueNumber -> Async<Result<unit, string>>
       AddIssueToProject: ProjectInfo -> IssueRef    -> Async<Result<unit, string>>
       AssignIssue      : RepoName    -> IssueNumber -> string -> Async<Result<unit, string>>
@@ -48,6 +49,7 @@ let defaults : Handlers =
       FindClosedIssue   = fun _ _        -> async { return None }
       ReopenIssue       = fun _ _        -> async { return failwith "ReopenIssue not expected" }
       CreateIssue       = fun repo _ _ _ -> async { return Ok (issueFor repo 42) }
+      UpdateIssue       = fun _ _ _ _    -> async { return Ok () }
       DeleteIssue       = fun _ _        -> async { return failwith "DeleteIssue not expected" }
       AddIssueToProject = fun _ _        -> async { return Ok () }
       AssignIssue       = fun _ _ _      -> async { return Ok () }
@@ -68,6 +70,7 @@ let neverCalledHandlers : Handlers =
         FindIssue         = fun _ _        -> async { return failwith "GhClient should not be called" }
         FindClosedIssue   = fun _ _        -> async { return failwith "GhClient should not be called" }
         CreateIssue       = fun _ _ _ _    -> async { return failwith "GhClient should not be called" }
+        UpdateIssue       = fun _ _ _ _    -> async { return failwith "GhClient should not be called" }
         AddIssueToProject = fun _ _        -> async { return failwith "GhClient should not be called" }
         AssignIssue       = fun _ _ _      -> async { return failwith "GhClient should not be called" }
         UnassignIssue     = fun _ _ _      -> async { return failwith "GhClient should not be called" }
@@ -86,6 +89,7 @@ let from (h: Handlers) : IGhClient =
         member _.FindClosedIssue repo title = h.FindClosedIssue repo title
         member _.ReopenIssue repo issue     = h.ReopenIssue repo issue
         member _.CreateIssue repo t b ls    = h.CreateIssue repo t b ls
+        member _.UpdateIssue repo iss t b   = h.UpdateIssue repo iss t b
         member _.DeleteIssue repo issue      = h.DeleteIssue repo issue
         member _.AddIssueToProject proj iss = h.AddIssueToProject proj iss
         member _.AssignIssue repo iss asgn   = h.AssignIssue repo iss asgn

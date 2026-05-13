@@ -45,6 +45,7 @@ module A =
         let defaults () : LockFile =
             { LockedAt     = DateTimeOffset(2026, 3, 2, 10, 0, 0, TimeSpan.Zero)
               YamlHash     = "abc123"
+              TemplateHash = "def456"
               Project      = ProjectInfo.defaults ()
               Repos        = [ repoA; RepoName "myorg/repo-b" ]
               Issues       = [ IssueRef.defaults repoA 7 |> IssueRef.withAssignees [ "copilot" ] ]

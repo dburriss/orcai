@@ -4,6 +4,13 @@
 
 ### Added
 
+- `orcai run` now automatically updates issue bodies when the Markdown template changes. A `templateHash` field is stored in the lock file alongside the existing `yamlHash`, allowing the tool to detect which changed:
+  - Only `.md` changed → updates issue bodies only (`gh issue edit` per repo); no project, label, or assignment calls made.
+  - Only `.yml` changed → structural re-run as before; no redundant body edits.
+  - Both changed → structural re-run, then issue bodies updated for any repos that already had issues.
+  - Neither changed → fast path, zero network calls (unchanged from before).
+  - Old lock files without `templateHash` are treated as changed, triggering a one-time body sync on next run.
+
 - `assign` block in YAML job config and global/local JSON config — configures who receives the issue and how they are triggered. Applies to both `orcai run` and `orcai nudge`.
   - `assign.to` — assignee handle (default: `@copilot`). Works for bots, GitHub Apps, and human users.
   - `assign.via` — trigger method: `assign` (default), `comment`, or `comment-and-assign`. Use `comment` for agents triggered by slash commands (e.g. OpenCode's `/opencode`).

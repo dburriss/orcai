@@ -41,12 +41,13 @@ type PullRequestRefDto =
 
 [<CLIMutable>]
 type LockFileDto =
-    { [<JsonPropertyName("lockedAt")>]     lockedAt:     string
-      [<JsonPropertyName("yamlHash")>]     yamlHash:     string
-      [<JsonPropertyName("project")>]      project:      ProjectInfoDto
-      [<JsonPropertyName("repos")>]        repos:        string[]
-      [<JsonPropertyName("issues")>]       issues:       IssueRefDto[]
-      [<JsonPropertyName("pullRequests")>] pullRequests: PullRequestRefDto[] }
+    { [<JsonPropertyName("lockedAt")>]      lockedAt:     string
+      [<JsonPropertyName("yamlHash")>]      yamlHash:     string
+      [<JsonPropertyName("templateHash")>]  templateHash: string
+      [<JsonPropertyName("project")>]       project:      ProjectInfoDto
+      [<JsonPropertyName("repos")>]         repos:        string[]
+      [<JsonPropertyName("issues")>]        issues:       IssueRefDto[]
+      [<JsonPropertyName("pullRequests")>]  pullRequests: PullRequestRefDto[] }
 
 // ------------------------------------------------------------------
 // JSON serialiser options
@@ -63,8 +64,9 @@ let private jsonOptions =
 
 let private toDto (lock: LockFile) : LockFileDto =
     let (OrgName orgStr) = lock.Project.Org
-    { lockedAt = lock.LockedAt.ToString("o")
-      yamlHash = lock.YamlHash
+    { lockedAt    = lock.LockedAt.ToString("o")
+      yamlHash    = lock.YamlHash
+      templateHash = lock.TemplateHash
       project  =
           { org    = orgStr
             number = lock.Project.Number
@@ -97,9 +99,10 @@ let private toDto (lock: LockFile) : LockFileDto =
           |> Array.ofList }
 
 let private ofDto (dto: LockFileDto) : LockFile =
-    { LockedAt = DateTimeOffset.Parse(dto.lockedAt)
-      YamlHash = dto.yamlHash
-      Project  =
+    { LockedAt     = DateTimeOffset.Parse(dto.lockedAt)
+      YamlHash     = dto.yamlHash
+      TemplateHash = if isNull dto.templateHash then "" else dto.templateHash
+      Project      =
           { Org    = OrgName dto.project.org
             Number = dto.project.number
             Title  = dto.project.title

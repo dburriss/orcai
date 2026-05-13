@@ -231,18 +231,21 @@ let private printRunJsonMulti (results: Map<string, Result<OrcAI.Core.RunCommand
                     let existing = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.AlreadyExisted) |> List.length
                     let reopened = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Reopened)       |> List.length
                     let skipped  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Skipped)        |> List.length
+                    let updated  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Updated)        |> List.length
                     let issues =
                         result.Results |> List.map (fun r ->
                             let (RepoName repo)   = r.Issue.Repo
                             let (IssueNumber num) = r.Issue.Number
                             let status =
                                 match r.Outcome with
-                                | OrcAI.Core.RunCommand.Created        -> "created"
-                                | OrcAI.Core.RunCommand.AlreadyExisted -> "alreadyExisted"
-                                | OrcAI.Core.RunCommand.Reopened       -> "reopened"
-                                | OrcAI.Core.RunCommand.Skipped        -> "skipped"
+                                | OrcAI.Core.RunCommand.Created          -> "created"
+                                | OrcAI.Core.RunCommand.AlreadyExisted   -> "alreadyExisted"
+                                | OrcAI.Core.RunCommand.Reopened         -> "reopened"
+                                | OrcAI.Core.RunCommand.Skipped          -> "skipped"
+                                | OrcAI.Core.RunCommand.Updated          -> "updated"
+                                | OrcAI.Core.RunCommand.UpdateFailed _   -> "updateFailed"
                             {| repo = repo; issueNumber = num; status = status |})
-                    box {| created = created; alreadyExisted = existing; reopened = reopened; skipped = skipped; repos = issues |}
+                    box {| created = created; alreadyExisted = existing; reopened = reopened; skipped = skipped; updated = updated; repos = issues |}
             path, value)
         |> dict
     printfn "%s" (JsonSerializer.Serialize(entries, jsonOptions))
@@ -360,9 +363,11 @@ let main argv =
                                 let existing = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.AlreadyExisted) |> List.length
                                 let reopened = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Reopened)       |> List.length
                                 let skipped  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Skipped)        |> List.length
+                                let updated  = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Updated)        |> List.length
                                 let extras =
                                     [ if reopened > 0 then $", {reopened} reopened"
-                                      if skipped  > 0 then $", {skipped} skipped" ]
+                                      if skipped  > 0 then $", {skipped} skipped"
+                                      if updated  > 0 then $", {updated} updated" ]
                                     |> String.concat ""
                                 printfn "  Run complete. %d issue(s) created, %d already existed%s across %d repo(s). Lock file written."
                                     created existing extras result.Lock.Repos.Length
@@ -379,10 +384,12 @@ let main argv =
                                     let repoUrl            = $"https://github.com/{repo}"
                                     let statusMarkup =
                                         match r.Outcome with
-                                        | OrcAI.Core.RunCommand.Created        -> "[green]created[/]"
-                                        | OrcAI.Core.RunCommand.AlreadyExisted -> "[grey]already existed[/]"
-                                        | OrcAI.Core.RunCommand.Reopened       -> "[yellow]reopened[/]"
-                                        | OrcAI.Core.RunCommand.Skipped        -> "[grey]skipped[/]"
+                                        | OrcAI.Core.RunCommand.Created          -> "[green]created[/]"
+                                        | OrcAI.Core.RunCommand.AlreadyExisted   -> "[grey]already existed[/]"
+                                        | OrcAI.Core.RunCommand.Reopened         -> "[yellow]reopened[/]"
+                                        | OrcAI.Core.RunCommand.Skipped          -> "[grey]skipped[/]"
+                                        | OrcAI.Core.RunCommand.Updated          -> "[green]updated[/]"
+                                        | OrcAI.Core.RunCommand.UpdateFailed _   -> "[red]update failed[/]"
                                     table.AddRow(
                                         [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repo)}[/][/]") :> Rendering.IRenderable
                                            Markup($"[yellow]#{num}[/]")

@@ -66,9 +66,10 @@ type JobConfig =
 
 /// Snapshot of a completed job, persisted as a lock file.
 type LockFile =
-    { LockedAt    : DateTimeOffset
-      YamlHash    : string
-      Project     : ProjectInfo
-      Repos       : RepoName list
-      Issues      : IssueRef list
-      PullRequests: PullRequestRef list }
+    { LockedAt     : DateTimeOffset
+      YamlHash     : string
+      TemplateHash : string
+      Project      : ProjectInfo
+      Repos        : RepoName list
+      Issues       : IssueRef list
+      PullRequests : PullRequestRef list }

@@ -26,6 +26,7 @@ type IGhClient =
     abstract FindClosedIssue  : repo:RepoName -> title:string -> Async<IssueRef option>
     abstract ReopenIssue      : repo:RepoName -> issue:IssueNumber -> Async<Result<IssueRef, string>>
     abstract CreateIssue      : repo:RepoName -> title:string -> body:string -> labels:string list -> Async<Result<IssueRef, string>>
+    abstract UpdateIssue      : repo:RepoName -> issue:IssueNumber -> title:string -> body:string  -> Async<Result<unit, string>>
     abstract DeleteIssue      : repo:RepoName -> issue:IssueNumber           -> Async<Result<unit, string>>
     abstract AddIssueToProject: project:ProjectInfo -> issue:IssueRef        -> Async<Result<unit, string>>
     abstract AssignIssue      : repo:RepoName -> issue:IssueNumber -> assignee:string -> Async<Result<unit, string>>

@@ -33,9 +33,10 @@ and InfoSource = | FromLockFile | FromGitHub
 
 /// Fetch the current state of a job from GitHub, assembling a LockFile snapshot.
 let private fetchFromGitHub
-    (client   : IGhClient)
-    (config   : JobConfig)
-    (yamlHash : string)
+    (client       : IGhClient)
+    (config       : JobConfig)
+    (yamlHash     : string)
+    (templateHash : string)
     : Async<Result<LockFile, string>> =
     async {
         let (OrgName orgStr) = config.Org
@@ -66,6 +67,7 @@ let private fetchFromGitHub
         let lock : LockFile =
             { LockedAt     = DateTimeOffset.UtcNow
               YamlHash     = yamlHash
+              TemplateHash = templateHash
               Project      = project
               Repos        = config.Repos
               Issues       = issues
@@ -97,9 +99,13 @@ let execute (deps: OrcAIDeps) (input: InfoInput) : Result<InfoResult, string> =
 
     | None ->
         // Fetch live state from GitHub
-        let yamlHash = YamlConfig.computeHash deps.FileSystem input.YamlPath
+        let yamlHash     = YamlConfig.computeHash deps.FileSystem input.YamlPath
+        let templateHash =
+            match YamlConfig.resolveTemplatePath deps.FileSystem input.YamlPath with
+            | Some p -> YamlConfig.computeTemplateHash deps.FileSystem p
+            | None   -> ""
         let result   =
-            fetchFromGitHub deps.GhClient config yamlHash
+            fetchFromGitHub deps.GhClient config yamlHash templateHash
             |> Async.RunSynchronously
 
         match result with
