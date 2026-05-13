@@ -208,17 +208,21 @@ let private processRepo
                             | Ok ()   -> ()
                         | None -> ()
 
-                    // Assign when via includes "assign" and not already assigned
+                    // Assign when via includes "assign" and not already assigned.
+                    // @copilot specifically requires a PAT (user-level token) to assign;
+                    // all other assignees work with GitHub App auth directly.
                     let shouldAssign =
                         (assignVia = "assign" || assignVia = "comment-and-assign")
                         && not (hasAssignee assignTo issue)
                     if shouldAssign then
-                        match deps.CopilotClient, isPrimaryAuthApp with
-                        | None, true ->
-                            eprintfn "[%s] Warning: primary auth is a GitHub App which cannot assign users. Set ORCAI_PAT or add a 'pat' profile to auth.json." repoStr
+                        let isCopilot = assignTo.TrimStart('@').Equals("copilot", StringComparison.OrdinalIgnoreCase)
+                        let assignClient =
+                            if isCopilot then deps.CopilotClient |> Option.defaultValue client
+                            else client
+                        if isCopilot && deps.CopilotClient.IsNone && isPrimaryAuthApp then
+                            eprintfn "[%s] Warning: assigning @copilot requires a PAT. Set ORCAI_PAT or add a 'pat' profile to auth.json." repoStr
                             return issue
-                        | clientOpt, _ ->
-                            let assignClient = clientOpt |> Option.defaultValue client
+                        else
                             if verbose then eprintfn "[%s] Assigning %s" repoStr assignTo
                             match! assignClient.AssignIssue repo issue.Number assignTo with
                             | Error e ->
