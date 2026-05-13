@@ -62,7 +62,13 @@ type JobConfig =
       SkipCopilot   : bool
       OnClosedIssue : ClosedIssueAction
       Assign        : AssignConfig option
-      Nudge         : NudgeConfig option }
+      Nudge         : NudgeConfig option
+      JobOwner      : string option }
+
+/// Replace {key} placeholders in a template string.
+/// Tokens not present in vars are left unreplaced.
+let renderTemplate (vars: Map<string, string>) (tmpl: string) =
+    vars |> Map.fold (fun (s: string) k v -> s.Replace("{" + k + "}", v)) tmpl
 
 /// Snapshot of a completed job, persisted as a lock file.
 type LockFile =

@@ -56,6 +56,11 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
     let assignTo     = pickAssign (fun a -> a.To)      |> Option.defaultValue "@copilot"
     let nudgeMode    = pickNudge  (fun n -> n.Mode)    |> Option.defaultValue "reassign"
     let nudgeComment = pickNudge  (fun n -> n.Comment)
+    let jobOwner =
+        jobConfig.JobOwner
+        |> Option.orElseWith (fun () ->
+            let dir = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(input.YamlPath)) |> Option.ofObj |> Option.defaultValue "."
+            Codeowners.tryReadLocal deps.FileSystem dir)
 
     let results =
         lock.Issues
@@ -84,7 +89,14 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                             if nudgeMode = "comment-only" || nudgeMode = "comment-and-reassign" then
                                 match nudgeComment with
                                 | Some tmpl ->
-                                    let body = tmpl.Replace("{assignee}", assignTo)
+                                    let! codeownersContent = client.FetchCodeowners issue.Repo
+                                    let repoOwners = codeownersContent |> Option.bind Codeowners.parseCatchAll
+                                    let vars =
+                                        [ "assignee",       assignTo
+                                          yield! jobOwner   |> Option.map (fun v -> "job.owner",       v) |> Option.toList
+                                          yield! repoOwners |> Option.map (fun v -> "repo.codeowners", v) |> Option.toList ]
+                                        |> Map.ofList
+                                    let body = renderTemplate vars tmpl
                                     if input.Verbose then eprintfn "[%s] Posting nudge comment" repoStr
                                     match! client.PostComment issue.Repo issue.Number body with
                                     | Error e -> eprintfn "[%s] Warning: failed to post nudge comment: %s" repoStr e

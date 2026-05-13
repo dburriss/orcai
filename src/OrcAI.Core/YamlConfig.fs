@@ -28,6 +28,7 @@ open OrcAI.Core.Domain
 type YamlJob =
     { title:         string
       org:           string
+      owner:         string
       skipCopilot:   bool
       onClosedIssue: string }
 
@@ -111,7 +112,8 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                  SkipCopilot   = root.job.skipCopilot
                  OnClosedIssue = closedIssueAction
                  Assign        = assignConfig
-                 Nudge         = nudgeConfig }
+                 Nudge         = nudgeConfig
+                 JobOwner      = nullStr root.job.owner }
     with ex ->
         Error $"Failed to parse YAML: {ex.Message}"
 

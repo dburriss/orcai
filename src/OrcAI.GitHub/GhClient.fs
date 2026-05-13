@@ -474,3 +474,25 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                 | Ok _    -> return Ok ()
                 | Error e -> return Error e
             }
+
+        member _.FetchCodeowners repo =
+            async {
+                let (RepoName r) = repo
+                let paths = [ "CODEOWNERS"; ".github/CODEOWNERS"; "docs/CODEOWNERS" ]
+                let rec tryPaths = function
+                    | [] -> async { return None }
+                    | (p: string) :: rest ->
+                        async {
+                            match! runGh ghToken $"api repos/{r}/contents/{p}" with
+                            | Error _ -> return! tryPaths rest
+                            | Ok json ->
+                                let el = JsonDocument.Parse(json).RootElement
+                                match strProp el "content", strProp el "encoding" with
+                                | Some b64, Some "base64" ->
+                                    let cleaned = b64.Replace("\n", "").Replace("\r", "")
+                                    let bytes = Convert.FromBase64String(cleaned)
+                                    return Some (Text.Encoding.UTF8.GetString(bytes))
+                                | _ -> return! tryPaths rest
+                        }
+                return! tryPaths paths
+            }

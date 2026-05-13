@@ -119,6 +119,7 @@ let private processRepo
     (assignTo         : string)
     (assignVia        : string)
     (assignComment    : string option)
+    (jobOwner         : string option)
     (repo             : RepoName)
     : Async<RepoResult option> =
     async {
@@ -193,7 +194,14 @@ let private processRepo
                     if assignVia = "comment" || assignVia = "comment-and-assign" then
                         match assignComment with
                         | Some tmpl ->
-                            let body = tmpl.Replace("{assignee}", assignTo)
+                            let! codeownersContent = client.FetchCodeowners repo
+                            let repoOwners = codeownersContent |> Option.bind Codeowners.parseCatchAll
+                            let vars =
+                                [ "assignee",       assignTo
+                                  yield! jobOwner   |> Option.map (fun v -> "job.owner",       v) |> Option.toList
+                                  yield! repoOwners |> Option.map (fun v -> "repo.codeowners", v) |> Option.toList ]
+                                |> Map.ofList
+                            let body = renderTemplate vars tmpl
                             if verbose then eprintfn "[%s] Posting trigger comment" repoStr
                             match! client.PostComment repo issue.Number body with
                             | Error e -> eprintfn "[%s] Warning: failed to post trigger comment: %s" repoStr e
@@ -272,9 +280,14 @@ let private runFull
     let assignTo      = pickAssign (fun a -> a.To)      |> Option.defaultValue "@copilot"
     let assignVia     = pickAssign (fun a -> a.Via)     |> Option.defaultValue "assign"
     let assignComment = pickAssign (fun a -> a.Comment)
+    let jobOwner =
+        config.JobOwner
+        |> Option.orElseWith (fun () ->
+            let dir = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(input.YamlPath)) |> Option.ofObj |> Option.defaultValue "."
+            Codeowners.tryReadLocal deps.FileSystem dir)
     let repoResults =
         config.Repos
-        |> List.map (processRepo deps config project input.Verbose input.AutoCreateLabels skipCopilot input.IsPrimaryAuthApp closedIssueAction assignTo assignVia assignComment)
+        |> List.map (processRepo deps config project input.Verbose input.AutoCreateLabels skipCopilot input.IsPrimaryAuthApp closedIssueAction assignTo assignVia assignComment jobOwner)
         |> Async.Parallel
         |> Async.RunSynchronously
 

@@ -25,7 +25,8 @@ type Handlers =
       FindPrsForIssue  : RepoName    -> IssueNumber -> Async<PullRequestRef list>
       ClosePr          : RepoName    -> PrNumber    -> Async<Result<unit, string>>
       ListRepos        : OrgName                   -> Async<Result<string list, string>>
-      RepoExists       : RepoName                  -> Async<Result<unit, string>> }
+      RepoExists       : RepoName                  -> Async<Result<unit, string>>
+      FetchCodeowners  : RepoName                  -> Async<string option> }
 
 /// Returns a default-shaped IssueRef for repo + issue number.
 let issueFor (repo: RepoName) num : IssueRef =
@@ -58,7 +59,8 @@ let defaults : Handlers =
       FindPrsForIssue   = fun _ _        -> async { return failwith "FindPrsForIssue not expected" }
       ClosePr           = fun _ _        -> async { return failwith "ClosePr not expected" }
       ListRepos         = fun _          -> async { return failwith "ListRepos not expected" }
-      RepoExists        = fun _          -> async { return Ok () } }
+      RepoExists        = fun _          -> async { return Ok () }
+      FetchCodeowners   = fun _          -> async { return None } }
 
 /// Handlers where every method throws — use for tests that assert GitHub is never called.
 let neverCalledHandlers : Handlers =
@@ -75,7 +77,8 @@ let neverCalledHandlers : Handlers =
         AssignIssue       = fun _ _ _      -> async { return failwith "GhClient should not be called" }
         UnassignIssue     = fun _ _ _      -> async { return failwith "GhClient should not be called" }
         PostComment       = fun _ _ _      -> async { return failwith "GhClient should not be called" }
-        RepoExists        = fun _          -> async { return failwith "GhClient should not be called" } }
+        RepoExists        = fun _          -> async { return failwith "GhClient should not be called" }
+        FetchCodeowners   = fun _          -> async { return failwith "GhClient should not be called" } }
 
 /// Wraps a Handlers record in an IGhClient interface.
 let from (h: Handlers) : IGhClient =
@@ -98,7 +101,8 @@ let from (h: Handlers) : IGhClient =
         member _.FindPrsForIssue repo iss    = h.FindPrsForIssue repo iss
         member _.ClosePr repo pr            = h.ClosePr repo pr
         member _.ListRepos org              = h.ListRepos org
-        member _.RepoExists repo            = h.RepoExists repo }
+        member _.RepoExists repo            = h.RepoExists repo
+        member _.FetchCodeowners repo       = h.FetchCodeowners repo }
 
 /// Returns a handler for AssignIssue that records calls by `label`.
 let trackingAssign (label: string) (calls: ConcurrentBag<string>) =

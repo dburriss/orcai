@@ -12,12 +12,17 @@
   - Old lock files without `templateHash` are treated as changed, triggering a one-time body sync on next run.
 
 - `assign` block in YAML job config and global/local JSON config — configures who receives the issue and how they are triggered. Applies to both `orcai run` and `orcai nudge`.
-  - `assign.to` — assignee handle (default: `@copilot`). Works for bots, GitHub Apps, and human users.
+  - `assign.to` — assignee handle (default: `@copilot`). Accepts any GitHub user, bot, or GitHub App bot handle. Note: assigning `@copilot` requires a PAT (`ORCAI_PAT`) regardless of primary auth method, as GitHub Copilot can only be assigned via a user-level token.
   - `assign.via` — trigger method: `assign` (default), `comment`, or `comment-and-assign`. Use `comment` for agents triggered by slash commands (e.g. OpenCode's `/opencode`).
-  - `assign.comment` — comment body posted when `via` includes `comment`. Supports `{assignee}` placeholder.
+  - `assign.comment` — comment body posted when `via` includes `comment`. Supports template tokens (see below).
 - `nudge` block in YAML job config and global/local JSON config — configures how `orcai nudge` re-triggers the assignee on stale issues.
   - `nudge.mode` — `reassign` (default), `comment-only`, or `comment-and-reassign`.
-  - `nudge.comment` — comment body posted on nudge. Supports `{assignee}` placeholder.
+  - `nudge.comment` — comment body posted on nudge. Supports template tokens (see below).
+- Dynamic template tokens in `assign.comment` and `nudge.comment` — placeholders resolved at runtime:
+  - `{assignee}` — the configured `assign.to` handle.
+  - `{job.owner}` — who owns the orcai job. Resolved from `job.owner` in the YAML (highest priority), then the catch-all `*` owner from a `CODEOWNERS` file in the current repository (checked at `CODEOWNERS`, `.github/CODEOWNERS`, `docs/CODEOWNERS`). Left unreplaced if neither is found.
+  - `{repo.codeowners}` — the catch-all `*` owner from the target repository's `CODEOWNERS` file (fetched from GitHub). Left unreplaced if no `CODEOWNERS` is present or it has no `*` rule.
+- `job.owner` field in the YAML `job` block — statically sets the job owner for use in comment templates via `{job.owner}`. Overrides any CODEOWNERS-based discovery.
 - `orcai nudge` command now documented in the CLI reference.
 - Generated YAML scaffold now includes commented-out `assign:` and `nudge:` example blocks instead of the unused `copilot:` block.
 
