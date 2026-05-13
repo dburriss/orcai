@@ -10,7 +10,7 @@
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
     <!-- Binary identity -->
-    <Version>0.6.0</Version>
+    <Version>0.7.0-beta1</Version>
     <Authors>Devon Burriss</Authors>
     <Description>A CLI tool for managing GitHub Projects and Copilot-assigned issues in bulk. Define your project in a YAML file and let orcai create issues, assign them to Copilot, and clean up when done.</Description>
     <Title>orcai</Title>
@@ -25,11 +25,44 @@
     <!-- Discoverability -->
     <PackageTags>github copilot cli project-management automation</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Brace expansion in glob patterns — `"jobs/**/*.{yml,yaml}"` now matches both `.yml` and `.yaml` files in a single invocation, for `orcai run` and `orcai validate`.
-`onClosedIssue` field in YAML job config and `--on-closed-issue` flag on `orcai run` — controls behaviour when a matching closed issue already exists. Valid values: `create` (default, creates a new issue), `reopen` (reopens the closed issue), `skip` (leaves the repo untouched), `fail` (exits with an error).
-Run summary and `--json` output now include `reopened` and `skipped` counts when `--on-closed-issue` is `reopen` or `skip`.
-GitHub write calls are now rate-limited with a token-bucket (default 60 writes/min) and automatically retried with exponential backoff on rate-limit errors (up to 3 retries, starting at 60s, doubling each time, capped at 5 min).
-`writesPerMinute` and `rateLimitRetries` config keys — override the rate-limit defaults in `~/.config/orcai/config.json` or `.orcai/config.json`.</PackageReleaseNotes>
+    <PackageReleaseNotes>`orcai notify` command — posts a templated comment to issues and/or PRs recorded in the lock file. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` template tokens as `nudge.comment`.
+`--target issues|prs|both` — which lock file items to notify (default: `issues`).
+`--state open|closed|all` — filter by current GitHub state before commenting (default: `open`); `closed` matches both closed and merged PRs; `all` skips the live state check entirely.
+`--dry-run` — preview which items would be notified without posting any comments.
+`--verbose` — print per-item progress to stderr.
+`--template &lt;string&gt;` — inline comment template supplied directly on the CLI; overrides `notify.comment` from YAML/config.
+`--data key=value` — inject an extra template variable (repeatable). E.g. `--data sprint=42`.
+`--json-data &lt;json&gt;` — inject extra template variables as a JSON object string. Merged with `--data`; `--data` takes precedence on key conflicts. User-supplied values override built-in tokens (`{assignee}` etc.) when the same key is used.
+`notify` block in YAML job config and global/local JSON config — configures the comment template for `orcai notify`.
+`notify.comment` — comment body template. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` tokens as `nudge.comment`.
+Comment-building logic (template variable resolution + `PostComment`) extracted from `RunCommand` and `NudgeCommand` into a shared internal `Comments` module, used by all three comment-posting paths.
+`orcai run` now automatically updates issue bodies when the Markdown template changes. A `templateHash` field is stored in the lock file alongside the existing `yamlHash`, allowing the tool to detect which changed:
+Only `.md` changed → updates issue bodies only (`gh issue edit` per repo); no project, label, or assignment calls made.
+Only `.yml` changed → structural re-run as before; no redundant body edits.
+Both changed → structural re-run, then issue bodies updated for any repos that already had issues.
+Neither changed → fast path, zero network calls (unchanged from before).
+Old lock files without `templateHash` are treated as changed, triggering a one-time body sync on next run.
+`assign` block in YAML job config and global/local JSON config — configures who receives the issue and how they are triggered. Applies to both `orcai run` and `orcai nudge`.
+`assign.to` — assignee handle (default: `@copilot`). Accepts any GitHub user, bot, or GitHub App bot handle. Note: assigning `@copilot` requires a PAT (`ORCAI_PAT`) regardless of primary auth method, as GitHub Copilot can only be assigned via a user-level token.
+`assign.via` — trigger method: `assign` (default), `comment`, or `comment-and-assign`. Use `comment` for agents triggered by slash commands (e.g. OpenCode's `/opencode`).
+`assign.comment` — comment body posted when `via` includes `comment`. Supports template tokens (see below).
+`nudge` block in YAML job config and global/local JSON config — configures how `orcai nudge` re-triggers the assignee on stale issues.
+`nudge.mode` — `reassign` (default), `comment-only`, or `comment-and-reassign`.
+`nudge.comment` — comment body posted on nudge. Supports template tokens (see below).
+Dynamic template tokens in `assign.comment` and `nudge.comment` — placeholders resolved at runtime:
+`{assignee}` — the configured `assign.to` handle.
+`{job.owner}` — who owns the orcai job. Resolved from `job.owner` in the YAML (highest priority), then the catch-all `*` owner from a `CODEOWNERS` file in the current repository (checked at `CODEOWNERS`, `.github/CODEOWNERS`, `docs/CODEOWNERS`). Left unreplaced if neither is found.
+`{repo.codeowners}` — the catch-all `*` owner from the target repository's `CODEOWNERS` file (fetched from GitHub). Left unreplaced if no `CODEOWNERS` is present or it has no `*` rule.
+`job.owner` field in the YAML `job` block — statically sets the job owner for use in comment templates via `{job.owner}`. Overrides any CODEOWNERS-based discovery.
+`orcai nudge` command now documented in the CLI reference.
+Generated YAML scaffold now includes commented-out `assign:` and `nudge:` example blocks instead of the unused `copilot:` block.
+The `copilot:` block previously scaffolded by `orcai generate` has been removed. It was never parsed and is superseded by the `assign:` block.
+`--skip-copilot` is superseded by `assign.via: comment` (skips assignment while still allowing a trigger comment). The flag remains supported for backwards compatibility.
+`ORCAI_LOG_LEVEL` environment variable — controls log verbosity. Accepts any `Microsoft.Extensions.Logging.LogLevel` name (`Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`). Defaults to `Warning`.
+Assignment via GitHub App auth now only requires a PAT (`ORCAI_PAT`) when the assignee is `@copilot`. Assigning human users or other bots with a GitHub App (which has `issues: write` permission) no longer warns or skips — the PAT constraint was previously applied to all assignees, not just Copilot.
+`orcai cleanup` no longer fails when a project, issue, or PR has already been deleted — the operation is treated as success and a warning is emitted instead.
+Issue lookup now uses GitHub's title search (`in:title`) with a 100-result limit, preventing missed matches on repos with more than 30 open or closed issues.
+PR lookup for an issue now queries GitHub's GraphQL API (`Issue.closingPullRequests`) instead of listing all PRs in the repo and filtering in memory — fixes silent data loss on repos with more than 30 PRs.</PackageReleaseNotes>
     <!-- SourceLink / reproducible builds -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>

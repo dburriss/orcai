@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.0-beta1] - 2026-05-13
+
 ### Added
 
 - `orcai notify` command — posts a templated comment to issues and/or PRs recorded in the lock file. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` template tokens as `nudge.comment`.
