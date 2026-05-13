@@ -4,6 +4,18 @@
 
 ### Added
 
+- `orcai notify` command — posts a templated comment to issues and/or PRs recorded in the lock file. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` template tokens as `nudge.comment`.
+  - `--target issues|prs|both` — which lock file items to notify (default: `issues`).
+  - `--state open|closed|all` — filter by current GitHub state before commenting (default: `open`); `closed` matches both closed and merged PRs; `all` skips the live state check entirely.
+  - `--dry-run` — preview which items would be notified without posting any comments.
+  - `--verbose` — print per-item progress to stderr.
+- `notify` block in YAML job config and global/local JSON config — configures the comment template for `orcai notify`.
+  - `notify.comment` — comment body template. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` tokens as `nudge.comment`.
+
+### Changed
+
+- Comment-building logic (template variable resolution + `PostComment`) extracted from `RunCommand` and `NudgeCommand` into a shared internal `Comments` module, used by all three comment-posting paths.
+
 - `orcai run` now automatically updates issue bodies when the Markdown template changes. A `templateHash` field is stored in the lock file alongside the existing `yamlHash`, allowing the tool to detect which changed:
   - Only `.md` changed → updates issue bodies only (`gh issue edit` per repo); no project, label, or assignment calls made.
   - Only `.yml` changed → structural re-run as before; no redundant body edits.
