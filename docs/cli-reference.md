@@ -444,7 +444,8 @@ Dry run complete. No changes were made.
 job:
   title: "My Project Title"
   org:   "my-github-org"
-  # skipCopilot: true  # superseded by assign.via
+  # owner: "@platform-team"  # optional: used as {job.owner} in comment templates
+  # skipCopilot: true        # superseded by assign.via
 
 repos:
   - "repo-one"
@@ -459,14 +460,14 @@ issue:
 # assign:
 #   to: "@copilot"          # assignee handle (default: @copilot)
 #   via: assign             # assign | comment | comment-and-assign
-#   comment: ""             # trigger comment; supports {assignee} placeholder
+#   comment: ""             # trigger comment; supports {assignee}, {job.owner}, {repo.codeowners}
 
 # nudge:
 #   mode: reassign          # reassign | comment-only | comment-and-reassign
-#   comment: ""             # nudge comment; supports {assignee} placeholder
+#   comment: ""             # nudge comment; supports {assignee}, {job.owner}, {repo.codeowners}
 ```
 
-`job.title` and `job.org` are required. `repos` must be a non-empty list. `issue.template` must point to a real Markdown file relative to the YAML. Missing labels will cause an error during `run` unless `--auto-create-labels` is supplied.
+`job.title` and `job.org` are required. `repos` must be a non-empty list. `issue.template` must point to a real Markdown file relative to the YAML. Missing labels will cause an error during `run` unless `--auto-create-labels` is supplied. `job.owner` is optional — it sets the `{job.owner}` token in comment templates; if omitted, OrcAI falls back to the catch-all owner in the local CODEOWNERS file.
 
 The `assign` and `nudge` blocks are optional — omitting them keeps the default behaviour (assign `@copilot`, nudge by reassignment). Per-job YAML values take precedence over the global/local JSON config. See [Layered configuration](#layered-configuration).
 
@@ -517,9 +518,9 @@ Each file can contain these optional fields:
 | `defaultOrg` | Default GitHub org for `generate`. |
 | `assign.to` | Default assignee handle. |
 | `assign.via` | Default trigger mode: `assign`, `comment`, or `comment-and-assign`. |
-| `assign.comment` | Default trigger comment body. Supports `{assignee}` placeholder. |
+| `assign.comment` | Default trigger comment body. Supports `{assignee}`, `{job.owner}`, `{repo.codeowners}` tokens. |
 | `nudge.mode` | Default nudge mode: `reassign`, `comment-only`, or `comment-and-reassign`. |
-| `nudge.comment` | Default nudge comment body. Supports `{assignee}` placeholder. |
+| `nudge.comment` | Default nudge comment body. Supports `{assignee}`, `{job.owner}`, `{repo.codeowners}` tokens. |
 
 Values from the local config override the global config when present. Within the `assign` and `nudge` blocks, merging is field-level. The per-job YAML always wins over both config files.
 

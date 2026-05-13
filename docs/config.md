@@ -28,9 +28,9 @@ Controls how `orcai run` (and the re-trigger in `orcai nudge`) reaches the assig
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `assign.to` | string | `"@copilot"` | Assignee handle (e.g. `"@copilot"`, `"devon.burriss"`, `"opencode-agent[bot]"`). Not required when `via` is `"comment"`. |
+| `assign.to` | string | `"@copilot"` | Assignee handle (e.g. `"@copilot"`, `"devon.burriss"`, `"opencode-agent[bot]"`). Not required when `via` is `"comment"`. Note: assigning `@copilot` requires a PAT (`ORCAI_PAT`); all other handles work with GitHub App auth directly. |
 | `assign.via` | string | `"assign"` | How to trigger the assignee. `"assign"` — assign the issue. `"comment"` — post a comment only (no assignment). `"comment-and-assign"` — post a comment and assign. |
-| `assign.comment` | string | — | Comment body posted when `via` includes `"comment"`. Supports `{assignee}` placeholder. |
+| `assign.comment` | string | — | Comment body posted when `via` includes `"comment"`. Supports template tokens: `{assignee}`, `{job.owner}`, `{repo.codeowners}`. |
 
 ### `nudge` block
 
@@ -39,7 +39,17 @@ Controls how `orcai nudge` re-triggers the assignee on stale issues (those witho
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `nudge.mode` | string | `"reassign"` | `"reassign"` — unassign then reassign (default). `"comment-only"` — post a comment only. `"comment-and-reassign"` — post a comment and reassign. |
-| `nudge.comment` | string | — | Comment body posted by nudge. Supports `{assignee}` placeholder. |
+| `nudge.comment` | string | — | Comment body posted by nudge. Supports template tokens: `{assignee}`, `{job.owner}`, `{repo.codeowners}`. |
+
+### Template tokens
+
+`assign.comment` and `nudge.comment` support the following `{token}` placeholders:
+
+| Token | Resolved from |
+|-------|--------------|
+| `{assignee}` | The `assign.to` handle. |
+| `{job.owner}` | `job.owner` in the YAML (if set), otherwise the catch-all `*` owner from a `CODEOWNERS` file in the current repo (`CODEOWNERS`, `.github/CODEOWNERS`, or `docs/CODEOWNERS`). Left unreplaced if neither is found. |
+| `{repo.codeowners}` | The catch-all `*` owner from the target repository's `CODEOWNERS` file (fetched from GitHub). Left unreplaced if absent or no `*` rule exists. |
 
 ---
 

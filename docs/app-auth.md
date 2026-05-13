@@ -185,8 +185,7 @@ Or use all env vars with no file config:
 If `ORCAI_PAT` is not set, OrcAI skips `@copilot` assignment and prints:
 
 ```
-Warning: primary auth is a GitHub App which cannot assign @copilot.
-Set ORCAI_PAT or add a 'pat' profile to auth.json to enable Copilot assignment.
+Warning: assigning @copilot requires a PAT. Set ORCAI_PAT or add a 'pat' profile to auth.json.
 ```
 
 To suppress the warning and intentionally skip Copilot assignment, pass `--skip-copilot` or set `skipCopilot: true` in your job config.
