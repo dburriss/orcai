@@ -51,6 +51,10 @@ type NudgeConfig =
     { Mode    : string option
       Comment : string option }
 
+/// Configuration for the notify command — posts a templated comment to lock file items.
+type NotifyConfig =
+    { Comment : string option }
+
 /// Top-level job configuration parsed from the YAML file.
 type JobConfig =
     { Org           : OrgName
@@ -63,6 +67,7 @@ type JobConfig =
       OnClosedIssue : ClosedIssueAction
       Assign        : AssignConfig option
       Nudge         : NudgeConfig option
+      Notify        : NotifyConfig option
       JobOwner      : string option }
 
 /// Replace {key} placeholders in a template string.

@@ -24,6 +24,8 @@ type Handlers =
       PostComment      : RepoName    -> IssueNumber -> string -> Async<Result<unit, string>>
       FindPrsForIssue  : RepoName    -> IssueNumber -> Async<PullRequestRef list>
       ClosePr          : RepoName    -> PrNumber    -> Async<Result<unit, string>>
+      GetPrState       : RepoName    -> PrNumber    -> Async<string option>
+      GetIssueState    : RepoName    -> IssueNumber -> Async<string option>
       ListRepos        : OrgName                   -> Async<Result<string list, string>>
       RepoExists       : RepoName                  -> Async<Result<unit, string>>
       FetchCodeowners  : RepoName                  -> Async<string option> }
@@ -58,6 +60,8 @@ let defaults : Handlers =
       PostComment       = fun _ _ _      -> async { return Ok () }
       FindPrsForIssue   = fun _ _        -> async { return failwith "FindPrsForIssue not expected" }
       ClosePr           = fun _ _        -> async { return failwith "ClosePr not expected" }
+      GetPrState        = fun _ _        -> async { return Some "OPEN" }
+      GetIssueState     = fun _ _        -> async { return Some "OPEN" }
       ListRepos         = fun _          -> async { return failwith "ListRepos not expected" }
       RepoExists        = fun _          -> async { return Ok () }
       FetchCodeowners   = fun _          -> async { return None } }
@@ -77,6 +81,8 @@ let neverCalledHandlers : Handlers =
         AssignIssue       = fun _ _ _      -> async { return failwith "GhClient should not be called" }
         UnassignIssue     = fun _ _ _      -> async { return failwith "GhClient should not be called" }
         PostComment       = fun _ _ _      -> async { return failwith "GhClient should not be called" }
+        GetPrState        = fun _ _        -> async { return failwith "GhClient should not be called" }
+        GetIssueState     = fun _ _        -> async { return failwith "GhClient should not be called" }
         RepoExists        = fun _          -> async { return failwith "GhClient should not be called" }
         FetchCodeowners   = fun _          -> async { return failwith "GhClient should not be called" } }
 
@@ -100,6 +106,8 @@ let from (h: Handlers) : IGhClient =
         member _.PostComment repo iss body   = h.PostComment repo iss body
         member _.FindPrsForIssue repo iss    = h.FindPrsForIssue repo iss
         member _.ClosePr repo pr            = h.ClosePr repo pr
+        member _.GetPrState repo pr         = h.GetPrState repo pr
+        member _.GetIssueState repo iss     = h.GetIssueState repo iss
         member _.ListRepos org              = h.ListRepos org
         member _.RepoExists repo            = h.RepoExists repo
         member _.FetchCodeowners repo       = h.FetchCodeowners repo }

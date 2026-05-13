@@ -194,18 +194,7 @@ let private processRepo
                     if assignVia = "comment" || assignVia = "comment-and-assign" then
                         match assignComment with
                         | Some tmpl ->
-                            let! codeownersContent = client.FetchCodeowners repo
-                            let repoOwners = codeownersContent |> Option.bind Codeowners.parseCatchAll
-                            let vars =
-                                [ "assignee",       assignTo
-                                  yield! jobOwner   |> Option.map (fun v -> "job.owner",       v) |> Option.toList
-                                  yield! repoOwners |> Option.map (fun v -> "repo.codeowners", v) |> Option.toList ]
-                                |> Map.ofList
-                            let body = renderTemplate vars tmpl
-                            if verbose then eprintfn "[%s] Posting trigger comment" repoStr
-                            match! client.PostComment repo issue.Number body with
-                            | Error e -> eprintfn "[%s] Warning: failed to post trigger comment: %s" repoStr e
-                            | Ok ()   -> ()
+                            do! Comments.postTemplatedComment client repo issue.Number assignTo jobOwner tmpl verbose "trigger"
                         | None -> ()
 
                     // Assign when via includes "assign" and not already assigned.

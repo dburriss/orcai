@@ -504,6 +504,55 @@ let main argv =
                     else
                         printfn "Done. %d nudged, %d already have PRs, %d skipped." nudged prFound skipped
                     0)
+        | Notify args ->
+            let yamlFile = args.GetResult(NotifyArgs.Yaml_File)
+            let dryRun   = args.Contains(NotifyArgs.Dry_Run)
+            let verbose  = args.Contains(NotifyArgs.Verbose)
+            let target   = args.TryGetResult(NotifyArgs.Target) |> Option.defaultValue "issues"
+            let state    = args.TryGetResult(NotifyArgs.State)  |> Option.defaultValue "open"
+            withClient (fun deps _ ->
+                let input : OrcAI.Core.NotifyCommand.NotifyInput =
+                    { YamlPath = yamlFile
+                      DryRun   = dryRun
+                      Verbose  = verbose
+                      Target   = target
+                      State    = state }
+                match OrcAI.Core.NotifyCommand.execute deps input with
+                | Error e ->
+                    eprintfn "Error: %s" e
+                    1
+                | Ok results ->
+                    let notified    = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NotifyCommand.Notified)          |> List.length
+                    let skipped     = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NotifyCommand.Skipped)           |> List.length
+                    let wouldNotify = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NotifyCommand.DryRunWouldNotify) |> List.length
+                    if not results.IsEmpty then
+                        AnsiConsole.WriteLine()
+                        let table = Table()
+                        table.Border <- TableBorder.Rounded
+                        table.AddColumn(TableColumn("[bold]Repo[/]"))              |> ignore
+                        table.AddColumn(TableColumn("[bold]#[/]").Centered())     |> ignore
+                        table.AddColumn(TableColumn("[bold]Kind[/]"))              |> ignore
+                        table.AddColumn(TableColumn("[bold]Status[/]"))            |> ignore
+                        for r in results do
+                            let (RepoName repo) = r.Repo
+                            let repoUrl         = $"https://github.com/{repo}"
+                            let statusMarkup =
+                                match r.Outcome with
+                                | OrcAI.Core.NotifyCommand.Skipped          -> "[grey]skipped[/]"
+                                | OrcAI.Core.NotifyCommand.Notified         -> "[green]notified[/]"
+                                | OrcAI.Core.NotifyCommand.DryRunWouldNotify -> "[dim]would notify (dry run)[/]"
+                            table.AddRow(
+                                [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repo)}[/][/]") :> Rendering.IRenderable
+                                   Markup($"[yellow]#{r.Number}[/]")
+                                   Markup(r.Kind)
+                                   Markup(statusMarkup) |]) |> ignore
+                        AnsiConsole.Write(table)
+                        AnsiConsole.WriteLine()
+                    if dryRun then
+                        printfn "Dry run: %d item(s) would be notified." wouldNotify
+                    else
+                        printfn "Done. %d notified, %d skipped." notified skipped
+                    0)
         | Auth args ->
             match args.GetSubCommand() with
             | Pat patArgs ->

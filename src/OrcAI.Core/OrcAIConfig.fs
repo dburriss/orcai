@@ -22,7 +22,8 @@ type OrcAIConfig =
       WritesPerMinute  : int option
       RateLimitRetries : int option
       Assign           : AssignConfig option
-      Nudge            : NudgeConfig option }
+      Nudge            : NudgeConfig option
+      Notify           : NotifyConfig option }
 
 /// All-None config — represents "no config loaded".
 let empty : OrcAIConfig =
@@ -35,7 +36,8 @@ let empty : OrcAIConfig =
       WritesPerMinute  = None
       RateLimitRetries = None
       Assign           = None
-      Nudge            = None }
+      Nudge            = None
+      Notify           = None }
 
 // ---------------------------------------------------------------------------
 // Merge: local wins per field when Some; falls back to global otherwise.
@@ -59,6 +61,12 @@ let merge (globalCfg: OrcAIConfig) (localCfg: OrcAIConfig) : OrcAIConfig =
         | Some ln, Some gn ->
             Some { Mode    = ln.Mode    |> Option.orElse gn.Mode
                    Comment = ln.Comment |> Option.orElse gn.Comment }
+    let mergeNotify (l: NotifyConfig option) (g: NotifyConfig option) =
+        match l, g with
+        | None,   _       -> g
+        | Some ln, None   -> Some ln
+        | Some ln, Some gn ->
+            Some { Comment = ln.Comment |> Option.orElse gn.Comment }
     { SkipCopilot      = pick localCfg.SkipCopilot      globalCfg.SkipCopilot
       DefaultLabels    = pick localCfg.DefaultLabels     globalCfg.DefaultLabels
       AutoCreateLabels = pick localCfg.AutoCreateLabels  globalCfg.AutoCreateLabels
@@ -68,7 +76,8 @@ let merge (globalCfg: OrcAIConfig) (localCfg: OrcAIConfig) : OrcAIConfig =
       WritesPerMinute  = pick localCfg.WritesPerMinute   globalCfg.WritesPerMinute
       RateLimitRetries = pick localCfg.RateLimitRetries  globalCfg.RateLimitRetries
       Assign           = mergeAssign localCfg.Assign     globalCfg.Assign
-      Nudge            = mergeNudge  localCfg.Nudge      globalCfg.Nudge }
+      Nudge            = mergeNudge  localCfg.Nudge      globalCfg.Nudge
+      Notify           = mergeNotify localCfg.Notify     globalCfg.Notify }
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -105,6 +114,11 @@ type NudgeConfigDto =
       Comment : string option }
 
 [<CLIMutable>]
+type NotifyConfigDto =
+    { [<JsonPropertyName("comment")>]
+      Comment : string option }
+
+[<CLIMutable>]
 type OrcAIConfigDto =
     { [<JsonPropertyName("skipCopilot")>]
       SkipCopilot      : System.Nullable<bool>
@@ -125,7 +139,9 @@ type OrcAIConfigDto =
       [<JsonPropertyName("assign")>]
       Assign           : AssignConfigDto option
       [<JsonPropertyName("nudge")>]
-      Nudge            : NudgeConfigDto option }
+      Nudge            : NudgeConfigDto option
+      [<JsonPropertyName("notify")>]
+      Notify           : NotifyConfigDto option }
 
 let private jsonOptions =
     let opts = JsonSerializerOptions()
@@ -136,8 +152,8 @@ let private jsonOptions =
 let private ofDto (dto: OrcAIConfigDto) : OrcAIConfig =
     let ofAssignDto (d: AssignConfigDto) : AssignConfig =
         { To = d.To; Via = d.Via; Comment = d.Comment }
-    let ofNudgeDto (d: NudgeConfigDto) : NudgeConfig =
-        { Mode = d.Mode; Comment = d.Comment }
+    let ofNudgeDto  (d: NudgeConfigDto)  : NudgeConfig  = { Mode = d.Mode; Comment = d.Comment }
+    let ofNotifyDto (d: NotifyConfigDto) : NotifyConfig = { Comment = d.Comment }
     { SkipCopilot      = if dto.SkipCopilot.HasValue     then Some dto.SkipCopilot.Value     else None
       DefaultLabels    = dto.DefaultLabels |> Option.map Array.toList
       AutoCreateLabels = if dto.AutoCreateLabels.HasValue then Some dto.AutoCreateLabels.Value else None
@@ -146,8 +162,9 @@ let private ofDto (dto: OrcAIConfigDto) : OrcAIConfig =
       DefaultOrg       = dto.DefaultOrg
       WritesPerMinute  = if dto.WritesPerMinute.HasValue  then Some dto.WritesPerMinute.Value  else None
       RateLimitRetries = if dto.RateLimitRetries.HasValue then Some dto.RateLimitRetries.Value else None
-      Assign           = dto.Assign |> Option.map ofAssignDto
-      Nudge            = dto.Nudge  |> Option.map ofNudgeDto }
+      Assign           = dto.Assign  |> Option.map ofAssignDto
+      Nudge            = dto.Nudge   |> Option.map ofNudgeDto
+      Notify           = dto.Notify  |> Option.map ofNotifyDto }
 
 // ---------------------------------------------------------------------------
 // File I/O

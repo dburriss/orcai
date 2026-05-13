@@ -15,6 +15,7 @@
     <Compile Include="FileGlobTests.fs" />
     <Compile Include="OrcAIConfigTests.fs" />
     <Compile Include="RunCommandTests.fs" />
+    <Compile Include="NotifyCommandTests.fs" />
     <Compile Include="ValidateCommandTests.fs" />
   </ItemGroup>
 

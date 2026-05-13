@@ -49,12 +49,17 @@ type YamlNudge =
       comment : string }
 
 [<CLIMutable>]
+type YamlNotify =
+    { comment : string }
+
+[<CLIMutable>]
 type YamlRoot =
     { job:    YamlJob
       repos:  System.Collections.Generic.List<string>
       issue:  YamlIssue
       assign: YamlAssign
-      nudge:  YamlNudge }
+      nudge:  YamlNudge
+      notify: YamlNotify }
 
 let private deserializer =
     DeserializerBuilder()
@@ -103,6 +108,9 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                 if isNull (box root.nudge) then None
                 else Some { Mode    = nullStr root.nudge.mode
                             Comment = nullStr root.nudge.comment }
+            let notifyConfig =
+                if isNull (box root.notify) then None
+                else Some { Comment = nullStr root.notify.comment }
             Ok { Org           = OrgName root.job.org
                  ProjectTitle  = root.job.title
                  Repos         = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
@@ -113,6 +121,7 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                  OnClosedIssue = closedIssueAction
                  Assign        = assignConfig
                  Nudge         = nudgeConfig
+                 Notify        = notifyConfig
                  JobOwner      = nullStr root.job.owner }
     with ex ->
         Error $"Failed to parse YAML: {ex.Message}"

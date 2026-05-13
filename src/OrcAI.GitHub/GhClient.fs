@@ -496,3 +496,25 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                         }
                 return! tryPaths paths
             }
+
+        member _.GetIssueState repo issue =
+            async {
+                let (RepoName repoStr)   = repo
+                let (IssueNumber issueN) = issue
+                match! runGh ghToken $"issue view {issueN} --repo {repoStr} --json state" with
+                | Error _ -> return None
+                | Ok json ->
+                    let el = JsonDocument.Parse(json).RootElement
+                    return strProp el "state"
+            }
+
+        member _.GetPrState repo pr =
+            async {
+                let (RepoName repoStr) = repo
+                let (PrNumber prN)     = pr
+                match! runGh ghToken $"pr view {prN} --repo {repoStr} --json state" with
+                | Error _ -> return None
+                | Ok json ->
+                    let el = JsonDocument.Parse(json).RootElement
+                    return strProp el "state"
+            }

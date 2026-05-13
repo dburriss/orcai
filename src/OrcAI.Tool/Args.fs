@@ -148,6 +148,22 @@ type NudgeArgs =
             | Verbose     -> "Enable verbose output."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
+type NotifyArgs =
+    | [<MainCommand; Mandatory>] Yaml_File of path: string
+    | Dry_Run
+    | Verbose
+    | Target of target: string
+    | State  of state:  string
+    interface IArgParserTemplate with
+        member a.Usage =
+            match a with
+            | Yaml_File _ -> "Path to the YAML job configuration file."
+            | Dry_Run     -> "Preview which items would be notified without posting any comments."
+            | Verbose     -> "Enable verbose output."
+            | Target _    -> "Which lock file items to notify: issues (default), prs, or both."
+            | State _     -> "Filter by current GitHub state: open (default), closed, or all."
+
+[<CliPrefix(CliPrefix.DoubleDash)>]
 type ValidateArgs =
     | [<MainCommand; Mandatory>] Yaml_File of path: string
     | No_Parallel
@@ -169,6 +185,7 @@ type OrcAIArgs =
     | [<SubCommand>] Cleanup  of ParseResults<CleanupArgs>
     | [<SubCommand>] Info     of ParseResults<InfoArgs>
     | [<SubCommand>] Nudge    of ParseResults<NudgeArgs>
+    | [<SubCommand>] Notify   of ParseResults<NotifyArgs>
     | [<SubCommand>] Auth     of ParseResults<AuthArgs>
     | [<SubCommand>] Generate of ParseResults<GenerateArgs>
     | [<SubCommand>] Validate of ParseResults<ValidateArgs>
@@ -179,6 +196,7 @@ type OrcAIArgs =
             | Cleanup _  -> "Tear down everything created by a run command."
             | Info _     -> "Display the current state of a job."
             | Nudge _    -> "Re-trigger @copilot on issues that have no pull request yet."
+            | Notify _   -> "Post a comment to issues and/or PRs in the lock file."
             | Auth _     -> "Configure authentication for OrcAI."
             | Generate _ -> "Generate a YAML job config from a name, org, and optional repo list."
             | Validate _ -> "Validate a YAML job config and verify all repos are accessible."

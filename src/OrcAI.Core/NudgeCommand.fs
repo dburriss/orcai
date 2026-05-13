@@ -89,18 +89,7 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                             if nudgeMode = "comment-only" || nudgeMode = "comment-and-reassign" then
                                 match nudgeComment with
                                 | Some tmpl ->
-                                    let! codeownersContent = client.FetchCodeowners issue.Repo
-                                    let repoOwners = codeownersContent |> Option.bind Codeowners.parseCatchAll
-                                    let vars =
-                                        [ "assignee",       assignTo
-                                          yield! jobOwner   |> Option.map (fun v -> "job.owner",       v) |> Option.toList
-                                          yield! repoOwners |> Option.map (fun v -> "repo.codeowners", v) |> Option.toList ]
-                                        |> Map.ofList
-                                    let body = renderTemplate vars tmpl
-                                    if input.Verbose then eprintfn "[%s] Posting nudge comment" repoStr
-                                    match! client.PostComment issue.Repo issue.Number body with
-                                    | Error e -> eprintfn "[%s] Warning: failed to post nudge comment: %s" repoStr e
-                                    | Ok ()   -> ()
+                                    do! Comments.postTemplatedComment client issue.Repo issue.Number assignTo jobOwner tmpl input.Verbose "nudge"
                                 | None -> ()
 
                             // Unassign + reassign when mode includes reassign
