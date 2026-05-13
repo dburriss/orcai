@@ -89,7 +89,7 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                             if nudgeMode = "comment-only" || nudgeMode = "comment-and-reassign" then
                                 match nudgeComment with
                                 | Some tmpl ->
-                                    do! Comments.postTemplatedComment client issue.Repo issue.Number assignTo jobOwner tmpl input.Verbose "nudge"
+                                    do! Comments.postTemplatedComment client issue.Repo issue.Number assignTo jobOwner tmpl input.Verbose "nudge" Map.empty
                                 | None -> ()
 
                             // Unassign + reassign when mode includes reassign

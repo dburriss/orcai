@@ -152,16 +152,22 @@ type NotifyArgs =
     | [<MainCommand; Mandatory>] Yaml_File of path: string
     | Dry_Run
     | Verbose
-    | Target of target: string
-    | State  of state:  string
+    | Target    of target:   string
+    | State     of state:    string
+    | Template  of template: string
+    | Data      of kv:       string
+    | Json_Data of json:     string
     interface IArgParserTemplate with
         member a.Usage =
             match a with
-            | Yaml_File _ -> "Path to the YAML job configuration file."
-            | Dry_Run     -> "Preview which items would be notified without posting any comments."
-            | Verbose     -> "Enable verbose output."
-            | Target _    -> "Which lock file items to notify: issues (default), prs, or both."
-            | State _     -> "Filter by current GitHub state: open (default), closed, or all."
+            | Yaml_File _  -> "Path to the YAML job configuration file."
+            | Dry_Run      -> "Preview which items would be notified without posting any comments."
+            | Verbose      -> "Enable verbose output."
+            | Target _     -> "Which lock file items to notify: issues (default), prs, or both."
+            | State _      -> "Filter by current GitHub state: open (default), closed, or all."
+            | Template _   -> "Inline comment template, overrides notify.comment in YAML. Supports {key} placeholders."
+            | Data _       -> "Extra template variable as key=value (repeatable). E.g. --data sprint=42."
+            | Json_Data _  -> "Extra template variables as a JSON object string. E.g. --json-data '{\"sprint\":\"42\"}'. Merged with --data; --data takes precedence on key conflicts."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type ValidateArgs =

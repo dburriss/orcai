@@ -13,11 +13,13 @@ open OrcAI.Core.GhClient
 open OrcAI.Core.Deps
 
 type NotifyInput =
-    { YamlPath : string
-      DryRun   : bool
-      Verbose  : bool
-      Target   : string  // "issues" (default) | "prs" | "both"
-      State    : string  // "open" (default) | "closed" | "all"
+    { YamlPath  : string
+      DryRun    : bool
+      Verbose   : bool
+      Target    : string              // "issues" (default) | "prs" | "both"
+      State     : string              // "open" (default) | "closed" | "all"
+      Template  : string option       // CLI override for notify.comment
+      ExtraVars : Map<string, string> // extra template variables from --data / --json-data
     }
 
 type NotifyOutcome = | Skipped | Notified | DryRunWouldNotify
@@ -51,8 +53,10 @@ let execute (deps: OrcAIDeps) (input: NotifyInput) : Result<NotifyResult list, s
         jobConfig.Assign |> Option.bind f
         |> Option.orElse (deps.Config.Assign |> Option.bind f)
 
-    let assignTo      = pickAssign  (fun a -> a.To)      |> Option.defaultValue "@copilot"
-    let notifyComment = pickNotify  (fun n -> n.Comment)
+    let assignTo         = pickAssign (fun a -> a.To) |> Option.defaultValue "@copilot"
+    let effectiveTemplate =
+        input.Template
+        |> Option.orElse (pickNotify (fun n -> n.Comment))
     let jobOwner =
         jobConfig.JobOwner
         |> Option.orElseWith (fun () ->
@@ -113,9 +117,9 @@ let execute (deps: OrcAIDeps) (input: NotifyInput) : Result<NotifyResult list, s
                     return { Repo = repo; Number = num; Kind = kind; Outcome = DryRunWouldNotify }
                 else
 
-                match notifyComment with
+                match effectiveTemplate with
                 | Some tmpl ->
-                    do! Comments.postTemplatedComment client repo issueNum assignTo jobOwner tmpl input.Verbose "notify"
+                    do! Comments.postTemplatedComment client repo issueNum assignTo jobOwner tmpl input.Verbose "notify" input.ExtraVars
                 | None ->
                     if input.Verbose then eprintfn "[%s #%d] No notify.comment configured, skipping" repoStr num
 

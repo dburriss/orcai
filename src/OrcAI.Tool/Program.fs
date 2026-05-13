@@ -505,18 +505,37 @@ let main argv =
                         printfn "Done. %d nudged, %d already have PRs, %d skipped." nudged prFound skipped
                     0)
         | Notify args ->
-            let yamlFile = args.GetResult(NotifyArgs.Yaml_File)
-            let dryRun   = args.Contains(NotifyArgs.Dry_Run)
-            let verbose  = args.Contains(NotifyArgs.Verbose)
-            let target   = args.TryGetResult(NotifyArgs.Target) |> Option.defaultValue "issues"
-            let state    = args.TryGetResult(NotifyArgs.State)  |> Option.defaultValue "open"
+            let yamlFile  = args.GetResult(NotifyArgs.Yaml_File)
+            let dryRun    = args.Contains(NotifyArgs.Dry_Run)
+            let verbose   = args.Contains(NotifyArgs.Verbose)
+            let target    = args.TryGetResult(NotifyArgs.Target)   |> Option.defaultValue "issues"
+            let state     = args.TryGetResult(NotifyArgs.State)    |> Option.defaultValue "open"
+            let template  = args.TryGetResult(NotifyArgs.Template)
+            let dataKvs =
+                args.GetResults(NotifyArgs.Data)
+                |> List.choose (fun s ->
+                    match s.IndexOf('=') with
+                    | -1  -> None
+                    | idx -> Some (s.[..idx-1], s.[idx+1..]))
+                |> Map.ofList
+            let jsonKvs =
+                args.TryGetResult(NotifyArgs.Json_Data)
+                |> Option.bind (fun json ->
+                    System.Text.Json.JsonSerializer.Deserialize<System.Collections.Generic.Dictionary<string, string>>(json)
+                    |> Option.ofObj)
+                |> Option.map (fun dict ->
+                    dict |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq)
+                |> Option.defaultValue Map.empty
+            let extraVars = Map.fold (fun acc k v -> Map.add k v acc) jsonKvs dataKvs
             withClient (fun deps _ ->
                 let input : OrcAI.Core.NotifyCommand.NotifyInput =
-                    { YamlPath = yamlFile
-                      DryRun   = dryRun
-                      Verbose  = verbose
-                      Target   = target
-                      State    = state }
+                    { YamlPath  = yamlFile
+                      DryRun    = dryRun
+                      Verbose   = verbose
+                      Target    = target
+                      State     = state
+                      Template  = template
+                      ExtraVars = extraVars }
                 match OrcAI.Core.NotifyCommand.execute deps input with
                 | Error e ->
                     eprintfn "Error: %s" e

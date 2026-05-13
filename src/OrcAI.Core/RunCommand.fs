@@ -194,7 +194,7 @@ let private processRepo
                     if assignVia = "comment" || assignVia = "comment-and-assign" then
                         match assignComment with
                         | Some tmpl ->
-                            do! Comments.postTemplatedComment client repo issue.Number assignTo jobOwner tmpl verbose "trigger"
+                            do! Comments.postTemplatedComment client repo issue.Number assignTo jobOwner tmpl verbose "trigger" Map.empty
                         | None -> ()
 
                     // Assign when via includes "assign" and not already assigned.

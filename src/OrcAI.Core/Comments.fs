@@ -10,20 +10,22 @@ let buildCommentVars (assignTo: string) (jobOwner: string option) (repoOwners: s
     |> Map.ofList
 
 let postTemplatedComment
-        (client   : IGhClient)
-        (repo     : RepoName)
-        (issue    : IssueNumber)
-        (assignTo : string)
-        (jobOwner : string option)
-        (template : string)
-        (verbose  : bool)
-        (label    : string)
+        (client    : IGhClient)
+        (repo      : RepoName)
+        (issue     : IssueNumber)
+        (assignTo  : string)
+        (jobOwner  : string option)
+        (template  : string)
+        (verbose   : bool)
+        (label     : string)
+        (extraVars : Map<string, string>)
         : Async<unit> =
     async {
         let (RepoName repoStr)   = repo
         let! codeownersContent   = client.FetchCodeowners repo
         let repoOwners           = codeownersContent |> Option.bind Codeowners.parseCatchAll
-        let vars                 = buildCommentVars assignTo jobOwner repoOwners
+        let builtIn              = buildCommentVars assignTo jobOwner repoOwners
+        let vars                 = Map.fold (fun acc k v -> Map.add k v acc) builtIn extraVars
         let body                 = renderTemplate vars template
         if verbose then eprintfn "[%s] Posting %s comment" repoStr label
         match! client.PostComment repo issue body with

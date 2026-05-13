@@ -15,6 +15,7 @@ Complete reference for all `orcai` commands, flags, configuration, and output fo
   - [auth switch](#auth-switch)
 - [run](#run)
 - [nudge](#nudge)
+- [notify](#notify)
 - [validate](#validate)
 - [info](#info)
 - [cleanup](#cleanup)
@@ -35,6 +36,7 @@ Complete reference for all `orcai` commands, flags, configuration, and output fo
 | `orcai auth pat/app/create-app/switch` | Manage stored auth profiles and active credentials |
 | `orcai run` | Execute a bulk upgrade job (supports globs, concurrency control, JSON output) |
 | `orcai nudge` | Re-trigger the assignee on stale issues (no linked PR yet) |
+| `orcai notify` | Post a comment to issues and/or PRs in the lock file |
 | `orcai validate` | Validate YAML configs and verify repository access |
 | `orcai info` | Display the current state of a job |
 | `orcai cleanup` | Tear down everything created by `run` |
@@ -297,6 +299,88 @@ A table with Repo / Issue / Status columns:
 orcai nudge jobs/my-upgrade.yml
 orcai nudge jobs/my-upgrade.yml --dry-run
 orcai nudge jobs/my-upgrade.yml --save-lock --verbose
+```
+
+---
+
+## notify
+
+Post a comment to issues and/or PRs recorded in the lock file. Useful for broadcasting status updates or custom messages to all tracked items at once.
+
+```
+orcai notify <yaml_file> [--target issues|prs|both] [--state open|closed|all] [--template <string>] [--data key=value]... [--json-data <json>] [--dry-run] [--verbose]
+```
+
+### Flags
+
+| Flag | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `<yaml_file>` | positional | Yes | — | YAML job config path. A lock file must exist next to it (run `orcai run` first). |
+| `--target` | string | No | `issues` | Which lock file items to notify: `issues`, `prs`, or `both`. |
+| `--state` | string | No | `open` | Filter by current GitHub state before posting: `open`, `closed`, or `all`. `closed` matches both closed issues and merged PRs. `all` skips the live state check entirely. |
+| `--template` | string | No | — | Inline comment template. Overrides `notify.comment` from YAML/config. Supports `{key}` placeholders. |
+| `--data` | string | No | — | Extra template variable as `key=value` (repeatable). E.g. `--data sprint=42`. |
+| `--json-data` | string | No | — | Extra template variables as a JSON object string. E.g. `--json-data '{"sprint":"42"}'`. Merged with `--data`; `--data` takes precedence on key conflicts. |
+| `--dry-run` | flag | No | false | Preview which items would be notified without posting any comments. |
+| `--verbose` | flag | No | false | Emit per-item status messages to stderr. |
+
+### Template variables
+
+The comment template supports `{key}` placeholders. Built-in variables are resolved automatically; additional variables can be injected via `--data` or `--json-data`. User-supplied values override built-in ones if the same key is used.
+
+| Variable | Source |
+|----------|--------|
+| `{assignee}` | `assign.to` from YAML/config, default `@copilot` |
+| `{job.owner}` | `job.owner` from YAML, or catch-all `*` owner from local CODEOWNERS |
+| `{repo.codeowners}` | Catch-all `*` owner from the target repo's CODEOWNERS (fetched from GitHub) |
+| `{<key>}` | Any key supplied via `--data key=value` or `--json-data` |
+
+### Template precedence
+
+1. `--template` flag (highest priority)
+2. `notify.comment` in the YAML job config
+3. `notify.comment` in the global/local JSON config
+
+### Behavior
+
+For each item in the lock file that matches `--target` and `--state`:
+
+1. Fetches the current GitHub state (unless `--state all`) and skips items that don't match.
+2. If `--dry-run`, records the item as "would notify" without posting.
+3. Resolves the effective template (CLI flag → YAML → global config). If no template is configured, the item is skipped with a verbose message.
+4. Renders the template with the merged variable map and posts the comment.
+
+### Output
+
+A table with Repo / # / Kind / Status columns, followed by a summary line:
+
+```
+ Repo                     #    Kind   Status
+ my-org/repo-one          #7   issue  notified
+ my-org/repo-two          #12  pr     skipped
+```
+
+### Examples
+
+```sh
+# Post the template from notify.comment in the YAML to all open issues
+orcai notify jobs/my-upgrade.yml
+
+# Override the template from the CLI with extra variables
+orcai notify jobs/my-upgrade.yml \
+  --template "Hey {assignee}, sprint {sprint} is starting!" \
+  --data sprint=42
+
+# Pass variables as JSON instead
+orcai notify jobs/my-upgrade.yml \
+  --template "Hey {assignee}!" \
+  --json-data '{"sprint":"42","team":"backend"}'
+
+# Notify both issues and PRs, including closed ones
+orcai notify jobs/my-upgrade.yml --target both --state all
+
+# Dry run to preview without posting
+orcai notify jobs/my-upgrade.yml --dry-run --verbose
 ```
 
 ---

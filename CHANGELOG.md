@@ -9,6 +9,9 @@
   - `--state open|closed|all` — filter by current GitHub state before commenting (default: `open`); `closed` matches both closed and merged PRs; `all` skips the live state check entirely.
   - `--dry-run` — preview which items would be notified without posting any comments.
   - `--verbose` — print per-item progress to stderr.
+  - `--template <string>` — inline comment template supplied directly on the CLI; overrides `notify.comment` from YAML/config.
+  - `--data key=value` — inject an extra template variable (repeatable). E.g. `--data sprint=42`.
+  - `--json-data <json>` — inject extra template variables as a JSON object string. Merged with `--data`; `--data` takes precedence on key conflicts. User-supplied values override built-in tokens (`{assignee}` etc.) when the same key is used.
 - `notify` block in YAML job config and global/local JSON config — configures the comment template for `orcai notify`.
   - `notify.comment` — comment body template. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` tokens as `nudge.comment`.
 

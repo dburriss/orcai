@@ -23,11 +23,13 @@ let private notifyYaml =
     "  comment: \"Hey {assignee}, please take a look.\"\n"
 
 let private defaultInput yamlPath : NotifyInput =
-    { YamlPath = yamlPath
-      DryRun   = false
-      Verbose  = false
-      Target   = "issues"
-      State    = "open" }
+    { YamlPath  = yamlPath
+      DryRun    = false
+      Verbose   = false
+      Target    = "issues"
+      State     = "open"
+      Template  = None
+      ExtraVars = Map.empty }
 
 let private writeLock (fs: MockFileSystem) (yamlPath: string) (lock: LockFile) =
     OrcAI.Core.LockFile.write (fs :> System.IO.Abstractions.IFileSystem) yamlPath lock
@@ -203,3 +205,64 @@ let ``notify notified outcome when state is closed and item is closed`` () =
 
     let results = match result with Ok r -> r | _ -> []
     Assert.Equal(Notified, results.[0].Outcome)
+
+[<Fact>]
+let ``notify uses CLI template over YAML template`` () =
+    let fs      = MockFileSystem()
+    let yaml    = Given.yamlFile fs notifyYaml "# body"
+    let repo    = RepoName "myorg/repo-a"
+    let lock    = A.LockFile.defaults () |> A.LockFile.withIssues [ A.IssueRef.defaults repo 7 ]
+    writeLock fs yaml lock
+
+    let bodies = ConcurrentBag<string>()
+    let handlers =
+        { FakeGhClient.defaults with
+            GetIssueState = fun _ _ -> async { return Some "OPEN" }
+            PostComment   = fun _ _ body -> bodies.Add(body); async { return Ok () } }
+    let deps  = Given.deps fs (FakeGhClient.from handlers)
+    let input = { defaultInput yaml with Template = Some "CLI template" }
+
+    let _ = execute deps input
+
+    Assert.Equal(1, bodies.Count)
+    Assert.Contains("CLI template", bodies |> Seq.head)
+
+[<Fact>]
+let ``notify extra vars are substituted in template`` () =
+    let fs      = MockFileSystem()
+    let yaml    = Given.yamlFile fs notifyYaml "# body"
+    let repo    = RepoName "myorg/repo-a"
+    let lock    = A.LockFile.defaults () |> A.LockFile.withIssues [ A.IssueRef.defaults repo 7 ]
+    writeLock fs yaml lock
+
+    let bodies = ConcurrentBag<string>()
+    let handlers =
+        { FakeGhClient.defaults with
+            GetIssueState = fun _ _ -> async { return Some "OPEN" }
+            PostComment   = fun _ _ body -> bodies.Add(body); async { return Ok () } }
+    let deps  = Given.deps fs (FakeGhClient.from handlers)
+    let input = { defaultInput yaml with Template = Some "Sprint {sprint}"; ExtraVars = Map [ "sprint", "42" ] }
+
+    let _ = execute deps input
+
+    Assert.Equal("Sprint 42", bodies |> Seq.head)
+
+[<Fact>]
+let ``notify extra vars override built-in vars on conflict`` () =
+    let fs      = MockFileSystem()
+    let yaml    = Given.yamlFile fs notifyYaml "# body"
+    let repo    = RepoName "myorg/repo-a"
+    let lock    = A.LockFile.defaults () |> A.LockFile.withIssues [ A.IssueRef.defaults repo 7 ]
+    writeLock fs yaml lock
+
+    let bodies = ConcurrentBag<string>()
+    let handlers =
+        { FakeGhClient.defaults with
+            GetIssueState = fun _ _ -> async { return Some "OPEN" }
+            PostComment   = fun _ _ body -> bodies.Add(body); async { return Ok () } }
+    let deps  = Given.deps fs (FakeGhClient.from handlers)
+    let input = { defaultInput yaml with Template = Some "{assignee}"; ExtraVars = Map [ "assignee", "custom-handle" ] }
+
+    let _ = execute deps input
+
+    Assert.Equal("custom-handle", bodies |> Seq.head)
