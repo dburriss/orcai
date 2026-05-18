@@ -1,5 +1,9 @@
 # OrcAI CLI
 
+<p align="center">
+  <img src="assets/orcai_banner.png" alt="OrcAI" />
+</p>
+
 A CLI tool for orchestrating bulk GitHub work across many repositories. From a single YAML config, OrcAI creates a GitHub Project, opens templated issues in every target repo, and hands them off to whoever (or whatever) does the work — a human teammate, a bot, or an AI agent like GitHub Copilot or OpenCode.
 
 ## Features
