@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-## [0.7.0-beta1] - 2026-05-13
-
 ### Added
 
 - `orcai notify` command — posts a templated comment to issues and/or PRs recorded in the lock file. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` template tokens as `nudge.comment`.
@@ -16,6 +14,8 @@
   - `--json-data <json>` — inject extra template variables as a JSON object string. Merged with `--data`; `--data` takes precedence on key conflicts. User-supplied values override built-in tokens (`{assignee}` etc.) when the same key is used.
 - `notify` block in YAML job config and global/local JSON config — configures the comment template for `orcai notify`.
   - `notify.comment` — comment body template. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` tokens as `nudge.comment`.
+- `orcai run` records repos that were skipped because they are archived in a new `skippedRepos` field in the lock file. The run summary and `--json` output include a `skippedArchived` count and status.
+- `orcai run` detects when the lock file points to a deleted or transferred issue and recreates the issue in place instead of failing. New `staleIssueRecreated` count/status in the summary and `--json` output; the lock file is rewritten with the new issue numbers.
 
 ### Changed
 
@@ -42,13 +42,10 @@
 - `job.owner` field in the YAML `job` block — statically sets the job owner for use in comment templates via `{job.owner}`. Overrides any CODEOWNERS-based discovery.
 - `orcai nudge` command now documented in the CLI reference.
 - Generated YAML scaffold now includes commented-out `assign:` and `nudge:` example blocks instead of the unused `copilot:` block.
-
-### Changed
-
 - The `copilot:` block previously scaffolded by `orcai generate` has been removed. It was never parsed and is superseded by the `assign:` block.
 - `--skip-copilot` is superseded by `assign.via: comment` (skips assignment while still allowing a trigger comment). The flag remains supported for backwards compatibility.
-
 - `ORCAI_LOG_LEVEL` environment variable — controls log verbosity. Accepts any `Microsoft.Extensions.Logging.LogLevel` name (`Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`). Defaults to `Warning`.
+- Lock file schema: new `skippedRepos: string[]` field. Old lock files without this field still load (treated as empty); the field is populated on the next run.
 
 ### Fixed
 
@@ -57,6 +54,8 @@
 - `orcai cleanup` no longer fails when a project, issue, or PR has already been deleted — the operation is treated as success and a warning is emitted instead.
 - Issue lookup now uses GitHub's title search (`in:title`) with a 100-result limit, preventing missed matches on repos with more than 30 open or closed issues.
 - PR lookup for an issue now queries GitHub's GraphQL API (`Issue.closingPullRequests`) instead of listing all PRs in the repo and filtering in memory — fixes silent data loss on repos with more than 30 PRs.
+- `orcai run` no longer errors out on archived repositories. Each repo is pre-checked with `gh repo view --json isArchived`; archived repos are skipped with a single informational line instead of cascading `Repository was archived so is read-only` errors from label and issue writes.
+- `orcai run --auto-create-labels` no longer produces spurious errors when a label already exists. Two fixes: (1) `gh label list` now uses `--limit 1000` so labels past page 1 are detected by the pre-check, and (2) `CreateLabel` is idempotent — a GitHub "already exists" / "already been taken" response is downgraded to success with a warning log.
 
 ## [0.6.0] - 2026-05-07
 

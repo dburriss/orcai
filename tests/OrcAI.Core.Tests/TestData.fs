@@ -49,7 +49,8 @@ module A =
               Project      = ProjectInfo.defaults ()
               Repos        = [ repoA; RepoName "myorg/repo-b" ]
               Issues       = [ IssueRef.defaults repoA 7 |> IssueRef.withAssignees [ "copilot" ] ]
-              PullRequests = [ PullRequestRef.defaults repoA 3 7 ] }
+              PullRequests = [ PullRequestRef.defaults repoA 3 7 ]
+              SkippedRepos = [] }
 
         let withHash h  (lf: LockFile) = { lf with YamlHash = h }
         let withRepos rs (lf: LockFile) = { lf with Repos = rs }
@@ -86,6 +87,7 @@ module A =
         let withOnClosedIssue a (i: OrcAI.Core.RunCommand.RunInput)       = { i with OnClosedIssue = a }
         let withNoParallel v (i: OrcAI.Core.RunCommand.RunInput)          = { i with NoParallel = v }
         let withContinueOnError v (i: OrcAI.Core.RunCommand.RunInput)     = { i with ContinueOnError = v }
+        let withAutoCreateLabels v (i: OrcAI.Core.RunCommand.RunInput)    = { i with AutoCreateLabels = v }
 
     module ValidateInput =
         let defaults path : OrcAI.Core.ValidateCommand.ValidateInput =

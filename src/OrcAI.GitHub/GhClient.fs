@@ -293,7 +293,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
         member _.ListLabels repo =
             async {
                 let (RepoName repoStr) = repo
-                match! runGh ghToken $"label list --repo {repoStr} --json name" with
+                match! runGh ghToken $"label list --repo {repoStr} --json name --limit 1000" with
                 | Error e -> return Error e
                 | Ok json ->
                     let arr = JsonDocument.Parse(json).RootElement
@@ -308,8 +308,14 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
             async {
                 let (RepoName repoStr) = repo
                 match! runGhWrite bucket retries ghToken $"label create \"{name}\" --repo {repoStr}" with
-                | Error e -> return Error e
                 | Ok _    -> return Ok ()
+                | Error e ->
+                    if e.Contains("already exists", StringComparison.OrdinalIgnoreCase)
+                       || e.Contains("already been taken", StringComparison.OrdinalIgnoreCase) then
+                        logger.LogWarning("Label '{Label}' already exists in repo '{Repo}' — treating as success.", name, repoStr)
+                        return Ok ()
+                    else
+                        return Error e
             }
 
         member this.CreateProject org title =
@@ -473,6 +479,19 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                 match! runGh ghToken $"repo view {repoStr} --json name" with
                 | Ok _    -> return Ok ()
                 | Error e -> return Error e
+            }
+
+        member _.IsArchived repo =
+            async {
+                let (RepoName repoStr) = repo
+                match! runGh ghToken $"repo view {repoStr} --json isArchived" with
+                | Error e -> return Error e
+                | Ok json ->
+                    let el = JsonDocument.Parse(json).RootElement
+                    match el.TryGetProperty("isArchived") with
+                    | true, v when v.ValueKind = JsonValueKind.True  -> return Ok true
+                    | true, _                                        -> return Ok false
+                    | _ -> return Error $"Missing 'isArchived' field in response for {repoStr}"
             }
 
         member _.FetchCodeowners repo =

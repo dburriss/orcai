@@ -28,6 +28,7 @@ type Handlers =
       GetIssueState    : RepoName    -> IssueNumber -> Async<string option>
       ListRepos        : OrgName                   -> Async<Result<string list, string>>
       RepoExists       : RepoName                  -> Async<Result<unit, string>>
+      IsArchived       : RepoName                  -> Async<Result<bool, string>>
       FetchCodeowners  : RepoName                  -> Async<string option> }
 
 /// Returns a default-shaped IssueRef for repo + issue number.
@@ -64,6 +65,7 @@ let defaults : Handlers =
       GetIssueState     = fun _ _        -> async { return Some "OPEN" }
       ListRepos         = fun _          -> async { return failwith "ListRepos not expected" }
       RepoExists        = fun _          -> async { return Ok () }
+      IsArchived        = fun _          -> async { return Ok false }
       FetchCodeowners   = fun _          -> async { return None } }
 
 /// Handlers where every method throws — use for tests that assert GitHub is never called.
@@ -84,6 +86,9 @@ let neverCalledHandlers : Handlers =
         GetPrState        = fun _ _        -> async { return failwith "GhClient should not be called" }
         GetIssueState     = fun _ _        -> async { return failwith "GhClient should not be called" }
         RepoExists        = fun _          -> async { return failwith "GhClient should not be called" }
+        // IsArchived is the per-repo pre-check in processRepo. Callers that expect no
+        // write activity should still allow this read to succeed.
+        IsArchived        = fun _          -> async { return Ok false }
         FetchCodeowners   = fun _          -> async { return failwith "GhClient should not be called" } }
 
 /// Wraps a Handlers record in an IGhClient interface.
@@ -110,6 +115,7 @@ let from (h: Handlers) : IGhClient =
         member _.GetIssueState repo iss     = h.GetIssueState repo iss
         member _.ListRepos org              = h.ListRepos org
         member _.RepoExists repo            = h.RepoExists repo
+        member _.IsArchived repo            = h.IsArchived repo
         member _.FetchCodeowners repo       = h.FetchCodeowners repo }
 
 /// Returns a handler for AssignIssue that records calls by `label`.

@@ -47,7 +47,8 @@ type LockFileDto =
       [<JsonPropertyName("project")>]       project:      ProjectInfoDto
       [<JsonPropertyName("repos")>]         repos:        string[]
       [<JsonPropertyName("issues")>]        issues:       IssueRefDto[]
-      [<JsonPropertyName("pullRequests")>]  pullRequests: PullRequestRefDto[] }
+      [<JsonPropertyName("pullRequests")>]  pullRequests: PullRequestRefDto[]
+      [<JsonPropertyName("skippedRepos")>]  skippedRepos: string[] }
 
 // ------------------------------------------------------------------
 // JSON serialiser options
@@ -96,6 +97,10 @@ let private toDto (lock: LockFile) : LockFileDto =
                 number      = n
                 url         = pr.Url
                 closesIssue = c })
+          |> Array.ofList
+      skippedRepos =
+          lock.SkippedRepos
+          |> List.map (fun (RepoName r) -> r)
           |> Array.ofList }
 
 let private ofDto (dto: LockFileDto) : LockFile =
@@ -124,7 +129,10 @@ let private ofDto (dto: LockFileDto) : LockFile =
               { Repo        = RepoName pr.repo
                 Number      = PrNumber pr.number
                 Url         = pr.url
-                ClosesIssue = IssueNumber pr.closesIssue }) }
+                ClosesIssue = IssueNumber pr.closesIssue })
+      SkippedRepos =
+          if isNull dto.skippedRepos then []
+          else dto.skippedRepos |> Array.toList |> List.map RepoName }
 
 // ------------------------------------------------------------------
 // Public API

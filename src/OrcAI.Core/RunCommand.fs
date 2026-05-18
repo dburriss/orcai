@@ -37,7 +37,17 @@ type RunInput =
       OnClosedIssue      : ClosedIssueAction option }
 
 /// Whether an issue was freshly created or already existed in GitHub.
-type IssueOutcome = | Created | AlreadyExisted | Reopened | Skipped | Updated | UpdateFailed of string
+type IssueOutcome =
+    | Created
+    | AlreadyExisted
+    | Reopened
+    | Skipped
+    | Updated
+    | UpdateFailed of string
+    /// Repo was archived (read-only) and skipped before any write attempt.
+    | SkippedArchived
+    /// Lock pointed to a deleted/transferred issue; a fresh issue was created in its place.
+    | StaleIssueRecreated
 
 /// The result for a single repo processed during the run.
 type RepoResult =
@@ -73,6 +83,73 @@ let labelsToCreate (existing: string list) (requested: string list) : string lis
     requested
     |> List.filter (fun l -> not (Set.contains (l.ToLowerInvariant()) existingSet))
 
+/// True if the error string from `gh label create` indicates the label already exists.
+/// `gh label list` can miss labels on first-page-only listings, so treat this as success.
+let isLabelAlreadyExists (e: string) =
+    e.Contains("already exists", StringComparison.OrdinalIgnoreCase)
+    || e.Contains("already been taken", StringComparison.OrdinalIgnoreCase)
+
+/// True if the error string from `gh issue edit` indicates the issue no longer exists
+/// (deleted, transferred, or never existed). Lock entries that hit this are recoverable
+/// by recreating the issue in the same repo.
+let isStaleIssue (e: string) =
+    e.Contains("Could not resolve to an issue", StringComparison.OrdinalIgnoreCase)
+
+/// Placeholder IssueRef for a repo that was skipped because it is archived.
+/// Carries no real issue number — number is 0 and URL points to the repo home.
+let private archivedPlaceholder (repo: RepoName) : IssueRef =
+    let (RepoName r) = repo
+    { Repo = repo; Number = IssueNumber 0; Url = $"https://github.com/{r}"; Assignees = [] }
+
+/// Resolved per-run parameters shared by `processRepo` (used by both `runFull` and
+/// the stale-issue recovery path in `updateBodies` / `Both changed`).
+type private ProcessParams =
+    { Config            : JobConfig
+      Project           : ProjectInfo
+      Verbose           : bool
+      AutoCreateLabels  : bool
+      SkipCopilot       : bool
+      IsPrimaryAuthApp  : bool
+      ClosedIssueAction : ClosedIssueAction
+      AssignTo          : string
+      AssignVia         : string
+      AssignComment     : string option
+      JobOwner          : string option }
+
+let private resolveProcessParams
+    (deps    : OrcAIDeps)
+    (input   : RunInput)
+    (config  : JobConfig)
+    (project : ProjectInfo)
+    : ProcessParams =
+    let skipCopilot       = input.SkipCopilot || config.SkipCopilot
+    let closedIssueAction = input.OnClosedIssue |> Option.defaultValue config.OnClosedIssue
+    let pickAssign f =
+        config.Assign |> Option.bind f
+        |> Option.orElse (deps.Config.Assign |> Option.bind f)
+    let assignTo      = pickAssign (fun a -> a.To)      |> Option.defaultValue "@copilot"
+    let assignVia     = pickAssign (fun a -> a.Via)     |> Option.defaultValue "assign"
+    let assignComment = pickAssign (fun a -> a.Comment)
+    let jobOwner =
+        config.JobOwner
+        |> Option.orElseWith (fun () ->
+            let dir =
+                System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(input.YamlPath))
+                |> Option.ofObj
+                |> Option.defaultValue "."
+            Codeowners.tryReadLocal deps.FileSystem dir)
+    { Config            = config
+      Project           = project
+      Verbose           = input.Verbose
+      AutoCreateLabels  = input.AutoCreateLabels
+      SkipCopilot       = skipCopilot
+      IsPrimaryAuthApp  = input.IsPrimaryAuthApp
+      ClosedIssueAction = closedIssueAction
+      AssignTo          = assignTo
+      AssignVia         = assignVia
+      AssignComment     = assignComment
+      JobOwner          = jobOwner }
+
 /// Ensure every requested label exists in the repo, creating any that are missing.
 /// Returns Ok () when all labels are present or successfully created.
 let private ensureLabelsExist
@@ -97,8 +174,10 @@ let private ensureLabelsExist
                     for label in missing do
                         if verbose then eprintfn "[%s] Creating label '%s'" repoStr label
                         match! client.CreateLabel repo label with
-                        | Error e -> lastError <- Some $"Could not create label '{label}' in {repoStr}: {e}"
                         | Ok ()   -> ()
+                        | Error e when isLabelAlreadyExists e ->
+                            if verbose then eprintfn "[%s] Label '%s' already exists — treating as success." repoStr label
+                        | Error e -> lastError <- Some $"Could not create label '{label}' in {repoStr}: {e}"
                     match lastError with
                     | Some e -> return Error e
                     | None   -> return Ok ()
@@ -108,23 +187,39 @@ let private ensureLabelsExist
 /// Returns Some RepoResult on success (with outcome Created or AlreadyExisted),
 /// None on any error (error is printed to stderr).
 let private processRepo
-    (deps             : OrcAIDeps)
-    (config           : JobConfig)
-    (project          : ProjectInfo)
-    (verbose          : bool)
-    (autoCreateLabels : bool)
-    (skipCopilot      : bool)
-    (isPrimaryAuthApp : bool)
-    (closedIssueAction: ClosedIssueAction)
-    (assignTo         : string)
-    (assignVia        : string)
-    (assignComment    : string option)
-    (jobOwner         : string option)
-    (repo             : RepoName)
+    (deps : OrcAIDeps)
+    (p    : ProcessParams)
+    (repo : RepoName)
     : Async<RepoResult option> =
     async {
         let client = deps.GhClient
         let (RepoName repoStr) = repo
+        let config            = p.Config
+        let project           = p.Project
+        let verbose           = p.Verbose
+        let autoCreateLabels  = p.AutoCreateLabels
+        let skipCopilot       = p.SkipCopilot
+        let isPrimaryAuthApp  = p.IsPrimaryAuthApp
+        let closedIssueAction = p.ClosedIssueAction
+        let assignTo          = p.AssignTo
+        let assignVia         = p.AssignVia
+        let assignComment     = p.AssignComment
+        let jobOwner          = p.JobOwner
+
+        // -1. Pre-check: skip repos that are archived (read-only). Errors from the
+        //     pre-check itself are non-fatal — fall through and let the write fail.
+        let! archivedResult = client.IsArchived repo
+        match archivedResult with
+        | Ok true ->
+            eprintfn "[%s] Repo is archived — skipping." repoStr
+            return Some { Issue = archivedPlaceholder repo; Outcome = SkippedArchived }
+        | Ok false
+        | Error _ ->
+
+        match archivedResult with
+        | Error e when verbose ->
+            eprintfn "[%s] Could not check archived state: %s — proceeding." repoStr e
+        | _ -> ()
 
         // 0. Auto-create missing labels if requested
         if autoCreateLabels && not (List.isEmpty config.Labels) then
@@ -265,26 +360,19 @@ let private runFull
     | Ok project ->
 
     // 2. Process all repos in parallel
-    let skipCopilot       = input.SkipCopilot || config.SkipCopilot
-    let closedIssueAction = input.OnClosedIssue |> Option.defaultValue config.OnClosedIssue
-    let pickAssign f =
-        config.Assign |> Option.bind f
-        |> Option.orElse (deps.Config.Assign |> Option.bind f)
-    let assignTo      = pickAssign (fun a -> a.To)      |> Option.defaultValue "@copilot"
-    let assignVia     = pickAssign (fun a -> a.Via)     |> Option.defaultValue "assign"
-    let assignComment = pickAssign (fun a -> a.Comment)
-    let jobOwner =
-        config.JobOwner
-        |> Option.orElseWith (fun () ->
-            let dir = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(input.YamlPath)) |> Option.ofObj |> Option.defaultValue "."
-            Codeowners.tryReadLocal deps.FileSystem dir)
+    let processParams = resolveProcessParams deps input config project
     let repoResults =
         config.Repos
-        |> List.map (processRepo deps config project input.Verbose input.AutoCreateLabels skipCopilot input.IsPrimaryAuthApp closedIssueAction assignTo assignVia assignComment jobOwner)
+        |> List.map (processRepo deps processParams)
         |> Async.Parallel
         |> Async.RunSynchronously
 
-    let successes = repoResults |> Array.choose id |> Array.toList
+    let allResults = repoResults |> Array.choose id |> Array.toList
+    let archivedRepos =
+        allResults
+        |> List.filter (fun r -> r.Outcome = SkippedArchived)
+        |> List.map (fun r -> r.Issue.Repo)
+    let successes = allResults |> List.filter (fun r -> r.Outcome <> SkippedArchived)
     let failures  = repoResults |> Array.filter Option.isNone |> Array.length
 
     let lock : LockFile =
@@ -294,16 +382,18 @@ let private runFull
           Project      = project
           Repos        = config.Repos
           Issues       = successes |> List.map (fun r -> r.Issue)
-          PullRequests = [] }
+          PullRequests = []
+          SkippedRepos = archivedRepos }
 
     // Only write the lock file if every repo succeeded
     if failures = 0 then
         LockFile.write deps.FileSystem input.YamlPath lock
 
-    Ok { Lock = lock; Results = successes; Source = FullRun }
+    Ok { Lock = lock; Results = allResults; Source = FullRun }
 
 /// Update issue bodies for a list of existing issues using the current template.
-/// Returns one RepoResult per issue (Updated or UpdateFailed).
+/// Returns one RepoResult per issue (Updated, UpdateFailed, or StaleIssueRecreated when
+/// the lock pointed to a deleted/transferred issue — caller handles the actual recreate).
 let private applyBodyUpdates
     (deps   : OrcAIDeps)
     (config : JobConfig)
@@ -313,8 +403,12 @@ let private applyBodyUpdates
     |> List.map (fun issue ->
         async {
             let (RepoName repoStr) = issue.Repo
+            let (IssueNumber issueNum) = issue.Number
             match! deps.GhClient.UpdateIssue issue.Repo issue.Number config.IssueTitle config.IssueBody with
             | Ok ()   -> return { Issue = issue; Outcome = Updated }
+            | Error e when isStaleIssue e ->
+                eprintfn "[%s] Stale issue #%d — will recreate." repoStr issueNum
+                return { Issue = issue; Outcome = StaleIssueRecreated }
             | Error e ->
                 eprintfn "[%s] Error updating issue body: %s" repoStr e
                 return { Issue = issue; Outcome = UpdateFailed e }
@@ -323,8 +417,52 @@ let private applyBodyUpdates
     |> Async.RunSynchronously
     |> Array.toList
 
+/// For each `StaleIssueRecreated` entry in `results`, run `processRepo` against the
+/// same repo so a fresh issue is created in place of the stale one. Returns a new
+/// results list with the stale entries replaced by the recreate outcome (Created,
+/// AlreadyExisted, etc.) and a Map from old IssueRef → new IssueRef so the caller
+/// can rewrite the lock.
+let private recreateStaleIssues
+    (deps    : OrcAIDeps)
+    (params' : ProcessParams)
+    (results : RepoResult list)
+    : RepoResult list * Map<RepoName, IssueRef> =
+    let staleRepos =
+        results
+        |> List.filter (fun r -> r.Outcome = StaleIssueRecreated)
+        |> List.map (fun r -> r.Issue.Repo)
+    if List.isEmpty staleRepos then
+        results, Map.empty
+    else
+        let recreated =
+            staleRepos
+            |> List.map (processRepo deps params')
+            |> Async.Parallel
+            |> Async.RunSynchronously
+            |> Array.toList
+        let recreatedByRepo =
+            List.zip staleRepos recreated
+            |> List.choose (fun (repo, opt) -> opt |> Option.map (fun r -> repo, r))
+            |> Map.ofList
+        let newRefByRepo =
+            recreatedByRepo |> Map.map (fun _ r -> r.Issue)
+        let finalResults =
+            results |> List.map (fun r ->
+                if r.Outcome <> StaleIssueRecreated then r
+                else
+                    match Map.tryFind r.Issue.Repo recreatedByRepo with
+                    | Some recreated ->
+                        // Surface the recreate outcome as StaleIssueRecreated so callers/UI
+                        // can show it distinctly, but carry the *new* IssueRef.
+                        { Issue = recreated.Issue; Outcome = StaleIssueRecreated }
+                    | None ->
+                        // processRepo returned None → recreate failed (already logged).
+                        { r with Outcome = UpdateFailed "stale issue recreate failed" })
+        finalResults, newRefByRepo
+
 /// Update issue bodies for all issues in the lock file, then write an updated lock.
 /// Called when only the template hash has changed (no structural changes needed).
+/// Stale lock entries (issue deleted/transferred on GitHub) are recreated in place.
 let private updateBodies
     (deps         : OrcAIDeps)
     (input        : RunInput)
@@ -333,8 +471,29 @@ let private updateBodies
     (templateHash : string)
     (lock         : LockFile)
     : Result<RunResult, string> =
-    let results = applyBodyUpdates deps config lock.Issues
-    let newLock = { lock with YamlHash = yamlHash; TemplateHash = templateHash; LockedAt = DateTimeOffset.UtcNow }
+    let initialResults = applyBodyUpdates deps config lock.Issues
+    let hasStale = initialResults |> List.exists (fun r -> r.Outcome = StaleIssueRecreated)
+    let results, newIssues =
+        if not hasStale then
+            initialResults, lock.Issues
+        else
+            // Recover: need a project to call processRepo. Reuse the project recorded
+            // in the existing lock — recreating issues doesn't change the project.
+            let processParams = resolveProcessParams deps input config lock.Project
+            let recreated, newRefByRepo = recreateStaleIssues deps processParams initialResults
+            let updatedIssues =
+                lock.Issues
+                |> List.map (fun i ->
+                    match Map.tryFind i.Repo newRefByRepo with
+                    | Some newRef -> newRef
+                    | None        -> i)
+            recreated, updatedIssues
+    let newLock =
+        { lock with
+            YamlHash     = yamlHash
+            TemplateHash = templateHash
+            LockedAt     = DateTimeOffset.UtcNow
+            Issues       = newIssues }
     LockFile.write deps.FileSystem input.YamlPath newLock
     Ok { Lock = newLock; Results = results; Source = FullRun }
 
@@ -400,13 +559,29 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
                 Ok fullResult
             else
                 let updated = applyBodyUpdates deps mergedConfig toUpdate
+                let hasStale = updated |> List.exists (fun r -> r.Outcome = StaleIssueRecreated)
+                let recoveredUpdated, newRefByRepo =
+                    if not hasStale then
+                        updated, Map.empty
+                    else
+                        let processParams = resolveProcessParams deps input mergedConfig fullResult.Lock.Project
+                        recreateStaleIssues deps processParams updated
                 let updatedByRepo =
-                    updated |> List.map (fun r -> r.Issue.Repo, r) |> Map.ofList
+                    recoveredUpdated |> List.map (fun r -> r.Issue.Repo, r) |> Map.ofList
                 let finalResults =
                     fullResult.Results |> List.map (fun r ->
                         if r.Outcome <> AlreadyExisted then r
                         else updatedByRepo |> Map.tryFind r.Issue.Repo |> Option.defaultValue r)
-                Ok { fullResult with Results = finalResults }
+                let finalIssues =
+                    fullResult.Lock.Issues
+                    |> List.map (fun i ->
+                        match Map.tryFind i.Repo newRefByRepo with
+                        | Some newRef -> newRef
+                        | None        -> i)
+                let finalLock = { fullResult.Lock with Issues = finalIssues }
+                if not (Map.isEmpty newRefByRepo) then
+                    LockFile.write deps.FileSystem input.YamlPath finalLock
+                Ok { fullResult with Lock = finalLock; Results = finalResults }
 
     | None ->
         runFull deps input mergedConfig yamlHash templateHash

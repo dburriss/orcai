@@ -114,3 +114,37 @@ let ``round-trip preserves yaml hash`` () =
     match tryRead fs "/work/job.yml" with
     | None      -> Assert.Fail("Expected Some")
     | Some read -> Assert.Equal("deadbeefcafe1234", read.YamlHash)
+
+[<Fact>]
+let ``round-trip preserves skippedRepos list`` () =
+    let fs   = MockFileSystem()
+    let lock =
+        { A.LockFile.defaults () with
+            SkippedRepos = [ RepoName "myorg/archived-a"; RepoName "myorg/archived-b" ] }
+    write fs "/work/job.yml" lock
+    match tryRead fs "/work/job.yml" with
+    | None      -> Assert.Fail("Expected Some")
+    | Some read ->
+        Assert.Equal<string list>(
+            [ "myorg/archived-a"; "myorg/archived-b" ],
+            read.SkippedRepos |> List.map (fun (RepoName r) -> r))
+
+[<Fact>]
+let ``tryRead deserialises lock files written before skippedRepos field was added`` () =
+    let fs   = MockFileSystem()
+    let path = "/work/job.lock.json"
+    (fs :> System.IO.Abstractions.IFileSystem).Directory.CreateDirectory("/work") |> ignore
+    let legacyJson =
+        """{
+          "lockedAt":     "2026-03-02T10:00:00+00:00",
+          "yamlHash":     "abc123",
+          "templateHash": "def456",
+          "project":      { "org": "myorg", "number": 1, "title": "P", "url": "https://github.com/orgs/myorg/projects/1" },
+          "repos":        ["myorg/repo-a"],
+          "issues":       [],
+          "pullRequests": []
+        }"""
+    (fs :> System.IO.Abstractions.IFileSystem).File.WriteAllText(path, legacyJson)
+    match tryRead fs "/work/job.yml" with
+    | None      -> Assert.Fail("Expected Some")
+    | Some read -> Assert.Empty(read.SkippedRepos)

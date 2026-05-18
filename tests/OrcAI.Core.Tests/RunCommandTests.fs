@@ -44,6 +44,54 @@ let ``labelsToCreate returns empty when existing labels list is empty and no lab
     Assert.Empty(labelsToCreate [] [])
 
 // ---------------------------------------------------------------------------
+// isLabelAlreadyExists — detects gh stderr indicating idempotent success
+// ---------------------------------------------------------------------------
+
+[<Theory>]
+[<InlineData("label with name \"marge\" already exists; use `--force` to update its color and description")>]
+[<InlineData("GraphQL: Name has already been taken (createLabel)")>]
+[<InlineData("ALREADY EXISTS")>]
+let ``isLabelAlreadyExists matches gh CLI duplicate-label errors`` (msg: string) =
+    Assert.True(isLabelAlreadyExists msg)
+
+[<Theory>]
+[<InlineData("HTTP 403: Repository was archived so is read-only.")>]
+[<InlineData("HTTP 404: not found")>]
+[<InlineData("")>]
+let ``isLabelAlreadyExists does not match unrelated errors`` (msg: string) =
+    Assert.False(isLabelAlreadyExists msg)
+
+[<Fact>]
+let ``ensureLabelsExist treats 'already exists' from CreateLabel as success`` () =
+    let fs    = MockFileSystem()
+    let yaml  =
+        "job:\n  title: \"T\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"./template.md\"\n  labels: [\"marge\"]\n"
+    let path =
+        let dir = "/work"
+        (fs :> System.IO.Abstractions.IFileSystem).Directory.CreateDirectory(dir) |> ignore
+        (fs :> System.IO.Abstractions.IFileSystem).File.WriteAllText(dir + "/template.md", "# body")
+        let p = dir + "/job.yml"
+        (fs :> System.IO.Abstractions.IFileSystem).File.WriteAllText(p, yaml)
+        p
+    let createCalls = ConcurrentBag<string>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                ListLabels  = fun _ -> async { return Ok [] }
+                CreateLabel = fun _ name ->
+                    createCalls.Add(name)
+                    async { return Error "label with name \"marge\" already exists; use --force to update its color and description" } }
+    let deps  = Given.deps fs client
+    let input = { A.RunInput.defaults () with AutoCreateLabels = true }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
+    Assert.Contains("marge", createCalls)
+
+// ---------------------------------------------------------------------------
 // Multi-file execute tests
 // ---------------------------------------------------------------------------
 
@@ -293,6 +341,215 @@ let ``fail action returns error and does not create or reopen`` () =
     match results.[path] with
     | Ok result -> Assert.Empty(result.Results)
     | Error _   -> ()
+
+// ---------------------------------------------------------------------------
+// Archived repo handling
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``processRepo returns SkippedArchived outcome when IsArchived=true`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                IsArchived  = fun _ -> async { return Ok true }
+                FindIssue   = fun _ _ -> async { return failwith "FindIssue not expected for archived repo" }
+                CreateIssue = fun _ _ _ _ -> async { return failwith "CreateIssue not expected for archived repo" }
+                UpdateIssue = fun _ _ _ _ -> async { return failwith "UpdateIssue not expected for archived repo" } }
+    let deps = Given.deps fs client
+
+    let results = execute deps [path] (A.RunInput.defaults ()) |> Async.RunSynchronously
+
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.True(result.Results |> List.forall (fun r -> r.Outcome = SkippedArchived))
+
+[<Fact>]
+let ``runFull writes SkippedArchived repos to lock.SkippedRepos and not lock.Issues`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                IsArchived = fun _ -> async { return Ok true } }
+    let deps  = Given.deps fs client
+    let input = { A.RunInput.defaults () with SkipLock = false }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Empty(result.Lock.Issues)
+        Assert.NotEmpty(result.Lock.SkippedRepos)
+        Assert.Equal<string list>(
+            [ "myorg/repo-a" ],
+            result.Lock.SkippedRepos |> List.map (fun (RepoName r) -> r))
+
+[<Fact>]
+let ``IsArchived error is non-fatal and processRepo proceeds`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let createCalls = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                IsArchived  = fun _ -> async { return Error "transient network error" }
+                CreateIssue = fun repo _ _ _ ->
+                    createCalls.Add(())
+                    async { return Ok (FakeGhClient.issueFor repo 42) } }
+    let deps = Given.deps fs client
+
+    let results = execute deps [path] (A.RunInput.defaults ()) |> Async.RunSynchronously
+
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.True(result.Results |> List.forall (fun r -> r.Outcome = Created))
+        Assert.NotEmpty(createCalls)
+
+// ---------------------------------------------------------------------------
+// Stale-issue detection and recovery
+// ---------------------------------------------------------------------------
+
+[<Theory>]
+[<InlineData("GraphQL: Could not resolve to an issue or pull request with the number of 42. (updateIssue)")>]
+[<InlineData("could not resolve to an issue OR PULL REQUEST")>]
+let ``isStaleIssue matches gh CLI stale-issue errors`` (msg: string) =
+    Assert.True(isStaleIssue msg)
+
+[<Theory>]
+[<InlineData("HTTP 403: Repository was archived so is read-only.")>]
+[<InlineData("HTTP 404: not found")>]
+[<InlineData("")>]
+let ``isStaleIssue does not match unrelated errors`` (msg: string) =
+    Assert.False(isStaleIssue msg)
+
+/// Set up a lock file whose YAML hash matches the current YAML file but template hash
+/// is stale, so executeSingle takes the `updateBodies` branch.
+let private givenStaleTemplateLock (fs: MockFileSystem) (yamlPath: string) (issueRepo: RepoName) (issueNum: int) =
+    let yamlHash = OrcAI.Core.YamlConfig.computeHash (fs :> System.IO.Abstractions.IFileSystem) yamlPath
+    let issue =
+        let (RepoName r) = issueRepo
+        { Repo = issueRepo
+          Number = IssueNumber issueNum
+          Url = $"https://github.com/{r}/issues/{issueNum}"
+          Assignees = [] }
+    let lock =
+        { A.LockFile.defaults () with
+            YamlHash     = yamlHash
+            TemplateHash = "stale-template-hash"
+            Repos        = [ issueRepo ]
+            Issues       = [ issue ]
+            PullRequests = [] }
+    OrcAI.Core.LockFile.write (fs :> System.IO.Abstractions.IFileSystem) yamlPath lock
+
+[<Fact>]
+let ``updateBodies recreates issue when UpdateIssue returns stale error`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let repo = RepoName "myorg/repo-a"
+    givenStaleTemplateLock fs path repo 42
+
+    let createCalls = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                UpdateIssue = fun _ _ _ _ ->
+                    async { return Error "GraphQL: Could not resolve to an issue or pull request with the number of 42. (updateIssue)" }
+                FindIssue   = fun _ _ -> async { return None }
+                FindClosedIssue = fun _ _ -> async { return None }
+                CreateIssue = fun repo _ _ _ ->
+                    createCalls.Add(())
+                    async { return Ok (FakeGhClient.issueFor repo 99) } }
+    let deps  = Given.deps fs client
+    let input = { A.RunInput.defaults () with SkipLock = false }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.NotEmpty(createCalls)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Contains(result.Results, fun r -> r.Outcome = StaleIssueRecreated)
+        let issue = List.head result.Lock.Issues
+        Assert.Equal(IssueNumber 99, issue.Number)
+
+[<Fact>]
+let ``updateBodies leaves non-stale issues unaffected when one repo is stale`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let repoA = RepoName "myorg/repo-a"
+    let repoB = RepoName "myorg/repo-b"
+    let yamlHash = OrcAI.Core.YamlConfig.computeHash (fs :> System.IO.Abstractions.IFileSystem) path
+    let lock =
+        { A.LockFile.defaults () with
+            YamlHash     = yamlHash
+            TemplateHash = "stale-template-hash"
+            Repos        = [ repoA; repoB ]
+            Issues       =
+                [ { Repo = repoA; Number = IssueNumber 7
+                    Url = "https://github.com/myorg/repo-a/issues/7"; Assignees = [] }
+                  { Repo = repoB; Number = IssueNumber 8
+                    Url = "https://github.com/myorg/repo-b/issues/8"; Assignees = [] } ]
+            PullRequests = [] }
+    OrcAI.Core.LockFile.write (fs :> System.IO.Abstractions.IFileSystem) path lock
+
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                UpdateIssue = fun repo (IssueNumber n) _ _ ->
+                    if n = 7 then
+                        async { return Error "GraphQL: Could not resolve to an issue or pull request with the number of 7." }
+                    else
+                        async { return Ok () }
+                FindIssue   = fun _ _ -> async { return None }
+                FindClosedIssue = fun _ _ -> async { return None }
+                CreateIssue = fun repo _ _ _ ->
+                    async { return Ok (FakeGhClient.issueFor repo 77) } }
+    let deps  = Given.deps fs client
+    let input = { A.RunInput.defaults () with SkipLock = false }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        let byRepo = result.Lock.Issues |> List.map (fun i -> i.Repo, i) |> Map.ofList
+        // Stale repo got new issue number; non-stale repo kept original number.
+        Assert.Equal(IssueNumber 77, byRepo.[repoA].Number)
+        Assert.Equal(IssueNumber 8,  byRepo.[repoB].Number)
+
+[<Fact>]
+let ``stale-issue recreate failure surfaces as UpdateFailed`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let repo = RepoName "myorg/repo-a"
+    givenStaleTemplateLock fs path repo 42
+
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                UpdateIssue = fun _ _ _ _ ->
+                    async { return Error "GraphQL: Could not resolve to an issue or pull request with the number of 42." }
+                FindIssue   = fun _ _ -> async { return None }
+                FindClosedIssue = fun _ _ -> async { return None }
+                CreateIssue = fun _ _ _ _ ->
+                    async { return Error "boom: create failed" } }
+    let deps  = Given.deps fs client
+    let input = { A.RunInput.defaults () with SkipLock = false }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Contains(result.Results, fun r ->
+            match r.Outcome with UpdateFailed _ -> true | _ -> false)
+
+// ---------------------------------------------------------------------------
 
 [<Fact>]
 let ``create action (default) creates new issue even when closed issue exists`` () =

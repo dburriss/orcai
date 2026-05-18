@@ -71,7 +71,8 @@ let private fetchFromGitHub
               Project      = project
               Repos        = config.Repos
               Issues       = issues
-              PullRequests = pullRequests }
+              PullRequests = pullRequests
+              SkippedRepos = [] }
 
         return Ok lock
     }

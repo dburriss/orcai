@@ -83,4 +83,6 @@ type LockFile =
       Project      : ProjectInfo
       Repos        : RepoName list
       Issues       : IssueRef list
-      PullRequests : PullRequestRef list }
+      PullRequests : PullRequestRef list
+      /// Repos skipped during the run because they are archived (read-only).
+      SkippedRepos : RepoName list }
