@@ -30,10 +30,16 @@ let private runGh (token: string) (args: string) : Async<Result<string, string>>
                 |> Async.AwaitTask
             return Ok (stdout.Trim())
         with
+        | :? ExitCodeReadException as ex ->
+            let stderr = ex.StandardError.Trim()
+            let msg =
+                if stderr.Length > 0 then stderr
+                else $"gh exited with code {ex.ExitCode}"
+            return Error msg
         | :? ExitCodeException as ex ->
-            return Error $"gh exited with code {ex.ExitCode}: {ex.Message}"
+            return Error $"gh exited with code {ex.ExitCode}"
         | ex ->
-            return Error $"Failed to run 'gh {args}': {ex.Message}"
+            return Error $"failed to run 'gh {args}': {ex.Message}"
     }
 
 // ------------------------------------------------------------------

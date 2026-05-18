@@ -12,6 +12,7 @@ module OrcAI.Core.NudgeCommand
 // network calls.
 // ---------------------------------------------------------------------------
 
+open System
 open OrcAI.Core.Domain
 open OrcAI.Core.GhClient
 open OrcAI.Core.Deps
@@ -23,13 +24,25 @@ type NudgeInput =
       SaveLock         : bool
       IsPrimaryAuthApp : bool }
 
-type NudgeOutcome = | Skipped | PrFoundLive | NudgeSent | DryRunWouldNudge
+type NudgeOutcome =
+    | Skipped
+    | PrFoundLive
+    | NudgeSent
+    | DryRunWouldNudge
+    | NudgeFailed of reason: string
 
 type NudgeResult =
     { Repo    : RepoName
       Issue   : IssueNumber
       Outcome : NudgeOutcome
       LivePrs : PullRequestRef list }
+
+/// True when a `gh` error message indicates the GitHub App token cannot assign
+/// agents (e.g. @copilot) and a PAT is required instead.
+let isAppTokenAssignError (msg: string) =
+    msg.Contains(
+        "Assigning agents is not supported with GitHub App installation tokens",
+        StringComparison.OrdinalIgnoreCase)
 
 let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, string> =
     match YamlConfig.parseFile deps.FileSystem input.YamlPath with
@@ -62,6 +75,24 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
             let dir = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(input.YamlPath)) |> Option.ofObj |> Option.defaultValue "."
             Codeowners.tryReadLocal deps.FileSystem dir)
 
+    let modeReassigns = nudgeMode = "reassign" || nudgeMode = "comment-and-reassign"
+
+    // Pre-flight: if we'd be using the App-token client to reassign @copilot
+    // we know upfront the reassign will fail. Refuse before the unassign loop
+    // runs and leaves every issue detached from @copilot.
+    let appCannotReassignCopilot =
+        modeReassigns
+        && not input.DryRun
+        && assignTo.Equals("@copilot", StringComparison.OrdinalIgnoreCase)
+        && input.IsPrimaryAuthApp
+        && deps.CopilotClient.IsNone
+
+    if appCannotReassignCopilot then
+        Error "Cannot reassign @copilot: primary auth is a GitHub App and no PAT is configured. \
+               Set ORCAI_PAT (CI) or run 'orcai auth pat --token <PAT>' (local). \
+               Refusing to unassign @copilot when reassignment would fail."
+    else
+
     let results =
         lock.Issues
         |> List.map (fun issue ->
@@ -92,17 +123,24 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                                     do! Comments.postTemplatedComment client issue.Repo issue.Number assignTo jobOwner tmpl input.Verbose "nudge" Map.empty
                                 | None -> ()
 
-                            // Unassign + reassign when mode includes reassign
-                            if nudgeMode = "reassign" || nudgeMode = "comment-and-reassign" then
+                            // Unassign + reassign when mode includes reassign.
+                            // Capture failures so the result reflects what actually happened.
+                            let mutable failure : string option = None
+                            if modeReassigns then
                                 if input.Verbose then eprintfn "[%s] Nudging %s (unassign + reassign)" repoStr assignTo
                                 match! assignClient.UnassignIssue issue.Repo issue.Number assignTo with
-                                | Error e -> eprintfn "[%s] Warning: failed to unassign %s: %s" repoStr assignTo e
+                                | Error e -> failure <- Some e
                                 | Ok ()   -> ()
-                                match! assignClient.AssignIssue issue.Repo issue.Number assignTo with
-                                | Error e -> eprintfn "[%s] Warning: failed to reassign %s: %s" repoStr assignTo e
-                                | Ok ()   -> ()
+                                if failure.IsNone then
+                                    match! assignClient.AssignIssue issue.Repo issue.Number assignTo with
+                                    | Error e -> failure <- Some e
+                                    | Ok ()   -> ()
 
-                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = NudgeSent; LivePrs = [] }
+                            let outcome =
+                                match failure with
+                                | Some reason -> NudgeFailed reason
+                                | None        -> NudgeSent
+                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = outcome; LivePrs = [] }
             })
         |> Async.Parallel
         |> Async.RunSynchronously

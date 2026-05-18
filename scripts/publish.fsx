@@ -10,7 +10,8 @@
 // 2. Extracts the "Unreleased" section from CHANGELOG.md
 // 3. Runs a preflight release build and test pass
 // 4. Prompts the user to select the next version (Major, Minor, or Patch)
-// 5. Updates CHANGELOG.md:
+// 5. Updates CHANGELOG.md (stable releases only — prereleases leave it untouched
+//    so entries roll forward into the eventual stable release):
 //    - Moves "Unreleased" changes to a new versioned section
 //    - Creates a new empty "Unreleased" section
 // 6. Updates OrcAI.Tool.fsproj via XML APIs:
@@ -273,6 +274,10 @@ let newVersionString =
 
 printfn "New Version: %s" newVersionString
 
+// Prereleases (e.g. 0.7.0-beta1) keep all entries under [Unreleased] so they roll
+// forward into the eventual stable release. Only stable versions rewrite CHANGELOG.md.
+let isPrerelease = newVersionString.Contains('-')
+
 let releaseNotes =
     unreleasedContent
     |> List.filter (fun l -> l.Trim().StartsWith("-") || l.Trim().StartsWith("*"))
@@ -289,29 +294,32 @@ else
     releaseNotesElement.Value <- releaseNotes
     projectDoc.Save(fsprojPath)
 
-printfn "Updating CHANGELOG.md..."
-let today = DateTime.Now.ToString("yyyy-MM-dd")
-
-let preUnreleasedLines = changelogLines |> List.take unreleasedIdx
-let postUnreleasedLines = changelogLines |> List.skip (unreleasedIdx + 1)
-
-let newChangelogSection =
-    [
-        "## [Unreleased]"
-        ""
-        sprintf "## [%s] - %s" newVersionString today
-    ]
-
-let newChangelogLines =
-    preUnreleasedLines @
-    newChangelogSection @
-    postUnreleasedLines
-
-if isDryRun then
-    printfn "\n[Dry Run] Would update CHANGELOG.md with new section:"
-    newChangelogSection |> List.iter (fun l -> printfn "  %s" l)
+if isPrerelease then
+    printfn "Prerelease detected — CHANGELOG.md left unchanged; entries remain under [Unreleased]."
 else
-    File.WriteAllLines(changelogPath, newChangelogLines)
+    printfn "Updating CHANGELOG.md..."
+    let today = DateTime.Now.ToString("yyyy-MM-dd")
+
+    let preUnreleasedLines = changelogLines |> List.take unreleasedIdx
+    let postUnreleasedLines = changelogLines |> List.skip (unreleasedIdx + 1)
+
+    let newChangelogSection =
+        [
+            "## [Unreleased]"
+            ""
+            sprintf "## [%s] - %s" newVersionString today
+        ]
+
+    let newChangelogLines =
+        preUnreleasedLines @
+        newChangelogSection @
+        postUnreleasedLines
+
+    if isDryRun then
+        printfn "\n[Dry Run] Would update CHANGELOG.md with new section:"
+        newChangelogSection |> List.iter (fun l -> printfn "  %s" l)
+    else
+        File.WriteAllLines(changelogPath, newChangelogLines)
 
 if isDryRun then
     printfn "[Dry Run] Would run: dotnet build \"%s\" -c Release --nologo" solutionPath
@@ -319,9 +327,15 @@ else
     printfn "Running final release build..."
     runReleaseBuild ()
 
+// For prereleases we did not touch CHANGELOG.md, so only stage the fsproj.
+let filesToStage =
+    if isPrerelease then [fsprojPath]
+    else [fsprojPath; changelogPath]
+let stagedFilesDisplay = filesToStage |> List.map (sprintf "\"%s\"") |> String.concat " "
+
 if isDryRun then
     printfn "\n[Dry Run] Git operations skipped. Would execute:"
-    printfn "1. git add \"%s\" \"%s\"" fsprojPath changelogPath
+    printfn "1. git add %s" stagedFilesDisplay
     printfn "2. git commit -m \"release: prepare v%s\"" newVersionString
     printfn "3. git tag v%s" newVersionString
     printfn "4. git push origin main"
@@ -330,7 +344,7 @@ if isDryRun then
 
 printfn "\nFiles updated. Ready to commit."
 printfn "Commands to be executed:"
-printfn "1. git add \"%s\" \"%s\"" fsprojPath changelogPath
+printfn "1. git add %s" stagedFilesDisplay
 printfn "2. git commit -m \"release: prepare v%s\"" newVersionString
 printfn "3. git tag v%s" newVersionString
 printfn "4. git push origin main"
@@ -338,7 +352,7 @@ printfn "5. git push origin v%s" newVersionString
 
 if promptYesNo "Proceed with git operations? (y/n): " then
     printfn "Executing git add..."
-    runProcess "git" ["add"; fsprojPath; changelogPath] rootPath |> ignore
+    runProcess "git" ("add" :: filesToStage) rootPath |> ignore
 
     printfn "Executing git commit..."
     runProcess "git" ["commit"; "-m"; sprintf "release: prepare v%s" newVersionString] rootPath |> ignore

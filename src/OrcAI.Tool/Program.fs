@@ -495,10 +495,19 @@ let main argv =
                     eprintfn "Error: %s" e
                     1
                 | Ok results ->
+                    let isFailure (r: OrcAI.Core.NudgeCommand.NudgeResult) =
+                        match r.Outcome with
+                        | OrcAI.Core.NudgeCommand.NudgeFailed _ -> true
+                        | _ -> false
+                    let failureReason (r: OrcAI.Core.NudgeCommand.NudgeResult) =
+                        match r.Outcome with
+                        | OrcAI.Core.NudgeCommand.NudgeFailed e -> Some e
+                        | _ -> None
                     let nudged     = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.NudgeSent)        |> List.length
                     let prFound    = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.PrFoundLive)      |> List.length
                     let skipped    = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.Skipped)          |> List.length
                     let wouldNudge = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.DryRunWouldNudge) |> List.length
+                    let failed     = results |> List.filter isFailure |> List.length
                     if not results.IsEmpty then
                         AnsiConsole.WriteLine()
                         let table = Table()
@@ -516,17 +525,34 @@ let main argv =
                                 | OrcAI.Core.NudgeCommand.PrFoundLive      -> "[green]PR found live[/]"
                                 | OrcAI.Core.NudgeCommand.NudgeSent        -> "[yellow]nudged[/]"
                                 | OrcAI.Core.NudgeCommand.DryRunWouldNudge -> "[dim]would nudge (dry run)[/]"
+                                | OrcAI.Core.NudgeCommand.NudgeFailed _    -> "[red]failed[/]"
                             table.AddRow(
                                 [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repo)}[/][/]") :> Rendering.IRenderable
                                    Markup($"[yellow]#{num}[/]")
                                    Markup(statusMarkup) |]) |> ignore
                         AnsiConsole.Write(table)
                         AnsiConsole.WriteLine()
+
+                    // Print up to a few distinct failure reasons so the user knows
+                    // what went wrong without us spamming one warning per issue.
+                    let failureReasons =
+                        results
+                        |> List.choose failureReason
+                        |> List.distinct
+                    for reason in failureReasons |> List.truncate 3 do
+                        eprintfn "Failure: %s" reason
+                    if failureReasons.Length > 3 then
+                        eprintfn "... and %d more distinct failure reason(s)." (failureReasons.Length - 3)
+
+                    if failureReasons |> List.exists OrcAI.Core.NudgeCommand.isAppTokenAssignError then
+                        eprintfn "Hint: @copilot assignment requires a PAT. Set ORCAI_PAT (CI) or run 'orcai auth pat --token <PAT>' (local)."
+
                     if dryRun then
                         printfn "Dry run: %d issue(s) would be nudged." wouldNudge
+                        0
                     else
-                        printfn "Done. %d nudged, %d already have PRs, %d skipped." nudged prFound skipped
-                    0)
+                        printfn "Done. %d nudged, %d already have PRs, %d skipped, %d failed." nudged prFound skipped failed
+                        if failed > 0 then 1 else 0)
         | Notify args ->
             let yamlFile  = args.GetResult(NotifyArgs.Yaml_File)
             let dryRun    = args.Contains(NotifyArgs.Dry_Run)
