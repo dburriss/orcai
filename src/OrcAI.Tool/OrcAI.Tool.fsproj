@@ -10,7 +10,7 @@
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
     <!-- Binary identity -->
-    <Version>0.7.2-beta3</Version>
+    <Version>0.7.3-beta4</Version>
     <Authors>Devon Burriss</Authors>
     <Description>A CLI tool for managing GitHub Projects and Copilot-assigned issues in bulk. Define your project in a YAML file and let orcai create issues, assign them to Copilot, and clean up when done.</Description>
     <Title>orcai</Title>
@@ -62,6 +62,7 @@ The `copilot:` block previously scaffolded by `orcai generate` has been removed.
 `--skip-copilot` is superseded by `assign.via: comment` (skips assignment while still allowing a trigger comment). The flag remains supported for backwards compatibility.
 `ORCAI_LOG_LEVEL` environment variable — controls log verbosity. Accepts any `Microsoft.Extensions.Logging.LogLevel` name (`Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`). Defaults to `Warning`.
 Lock file schema: new `skippedRepos: string[]` field. Old lock files without this field still load (treated as empty); the field is populated on the next run.
+`orcai run` no longer creates a duplicate issue when the GitHub API lookup itself fails. Transient `gh` errors during open- or closed-issue lookup (rate limits, network resets, exhausted retries) are now surfaced as a per-repo error instead of being silently treated as "no matching issue". This also restores `--on-closed-issue` semantics on lookup failures — the configured action (`reopen` / `skip` / `fail`) is no longer bypassed when the closed-issue query errors.
 Assignment via GitHub App auth now only requires a PAT (`ORCAI_PAT`) when the assignee is `@copilot`. Assigning human users or other bots with a GitHub App (which has `issues: write` permission) no longer warns or skips — the PAT constraint was previously applied to all assignees, not just Copilot.
 `orcai cleanup` no longer fails when a project, issue, or PR has already been deleted — the operation is treated as success and a warning is emitted instead.
 Issue lookup now uses GitHub's title search (`in:title`) with a 100-result limit, preventing missed matches on repos with more than 30 open or closed issues.
