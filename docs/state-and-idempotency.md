@@ -84,7 +84,8 @@ orcai run
   ├─ FindProject → reuse or create
   │
   └─ For each repo:
-        ├─ FindIssue (open, by title) → reuse or create
+        ├─ FindIssue (open, by title) → reuse if found
+        ├─ Else FindClosedIssue (closed, by title) → onClosedIssue action: create | reopen | skip | fail
         └─ hasCopilot? → skip or assign
 ```
 
@@ -92,19 +93,24 @@ orcai run
 
 ## GitHub Issue States
 
-GitHub issues have exactly two states: `open` and `closed`. There is no draft, pending, or in-progress state on the issue itself. The `state_reason` field (`completed`, `not_planned`, `reopened`) is supplementary and does not add a third state. The `--state open` filter in `FindIssue` is exhaustive for live issues.
+GitHub issues have exactly two states: `open` and `closed`. There is no draft, pending, or in-progress state on the issue itself. The `state_reason` field (`completed`, `not_planned`, `reopened`) is supplementary and does not add a third state. `FindIssue` queries `--state open` and `FindClosedIssue` queries `--state closed`; together they are exhaustive.
+
+## Closed issues
+
+`processRepo` first calls `FindIssue` (open) and reuses any exact-title match. If that misses, it calls `FindClosedIssue` (closed). When a closed match exists, the next step is governed by `job.onClosedIssue` (or `--on-closed-issue`):
+
+| Action | Behaviour |
+|--------|-----------|
+| `create` (default) | Open a new issue alongside the closed one. This is what produces duplicates after a manual close. |
+| `reopen` | Reopen the closed issue and proceed to project add + assign. |
+| `skip` | Leave the repo untouched, report `skipped`, and do not add to project or assign. |
+| `fail` | Treat the closed match as a hard error for that repo. |
+
+Title matching is exact and case-sensitive — any drift in `job.title` between runs (date stamps, version numbers, trailing whitespace) bypasses both checks. To stop duplicates on re-runs of a stable title, set `onClosedIssue: reopen` (or `skip`) in YAML or pass `--on-closed-issue reopen` on the CLI.
 
 ---
 
 ## Known Gaps
-
-### Closed issues are not detected
-
-Status: Done
-
-`FindIssue` only searches open issues. If an issue created by a previous run was manually closed, a subsequent run (without a valid lock file) will create a duplicate open issue.
-
-**Workaround:** Keep the lock file intact, or manually reopen the issue before running again.
 
 ### Copilot non-delivery is not detected
 
