@@ -21,6 +21,7 @@ let private defaultInput yamlPath : NudgeInput =
       DryRun           = false
       Verbose          = false
       SaveLock         = false
+      MaxConcurrency   = 4
       IsPrimaryAuthApp = false }
 
 let private writeLock (fs: MockFileSystem) (yamlPath: string) (lock: LockFile) =

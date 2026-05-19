@@ -479,16 +479,18 @@ let main argv =
                     else printInfoResult result
                     0)
         | Nudge args ->
-            let yamlFile = args.GetResult(NudgeArgs.Yaml_File)
-            let dryRun   = args.Contains(NudgeArgs.Dry_Run)
-            let saveLock = args.Contains(NudgeArgs.Save_Lock)
-            let verbose  = args.Contains(NudgeArgs.Verbose)
+            let yamlFile       = args.GetResult(NudgeArgs.Yaml_File)
+            let dryRun         = args.Contains(NudgeArgs.Dry_Run)
+            let saveLock       = args.Contains(NudgeArgs.Save_Lock)
+            let verbose        = args.Contains(NudgeArgs.Verbose)
+            let maxConcurrency = args.TryGetResult(NudgeArgs.Max_Concurrency) |> Option.defaultValue 4
             withClient (fun deps isPrimaryAuthApp ->
                 let input : OrcAI.Core.NudgeCommand.NudgeInput =
                     { YamlPath         = yamlFile
                       DryRun           = dryRun
                       Verbose          = verbose
                       SaveLock         = saveLock
+                      MaxConcurrency   = maxConcurrency
                       IsPrimaryAuthApp = isPrimaryAuthApp }
                 match OrcAI.Core.NudgeCommand.execute deps input with
                 | Error e ->

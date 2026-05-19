@@ -82,11 +82,18 @@ type private WriteBucket(perMinuteCap: int) =
             else
                 int (60_000.0 / float perMinuteCap) + 1)  // ms until next token
 
-// Like runGh but acquires a write token first and retries on rate-limit errors.
+// Like runGh but acquires a token from the shared bucket first and retries on
+// rate-limit errors. Loops on Acquire() so concurrent callers each wait for
+// their own token instead of stampeding after a single shared sleep.
 let private runGhWrite (bucket: WriteBucket) (retries: int) (token: string) (args: string) : Async<Result<string, string>> =
     withRetry retries (fun () -> async {
-        let waitMs = bucket.Acquire()
-        if waitMs > 0 then do! Async.Sleep waitMs
+        let rec waitForToken () = async {
+            let waitMs = bucket.Acquire()
+            if waitMs > 0 then
+                do! Async.Sleep waitMs
+                return! waitForToken ()
+        }
+        do! waitForToken ()
         return! runGh token args
     })
 
@@ -244,7 +251,10 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
     // Pull requests
     // ------------------------------------------------------------------
 
-    /// GraphQL query against Issue.closingPullRequests so we never hit a PR-list cap.
+    /// Look up PRs that reference an issue. Combines closingPullRequests (linked
+    /// via "fixes #N"/"closes #N") with cross-referenced PRs from the issue
+    /// timeline so we also catch Copilot-authored PRs that omit a closing
+    /// keyword. Results are deduplicated by PR number.
     member private _.FindPrsForIssueImpl(repo: RepoName) (issue: IssueNumber) : Async<PullRequestRef list> =
         async {
             let (RepoName repoStr)   = repo
@@ -252,37 +262,65 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
             let parts    = repoStr.Split('/', 2)
             let owner    = parts.[0]
             let repoName = parts.[1]
-            let query    = "query($owner:String!,$repo:String!,$issue:Int!){repository(owner:$owner,name:$repo){issue(number:$issue){closingPullRequests(first:25){nodes{number url}}}}}"
-            match! runGh ghToken $"api graphql -f \"query={query}\" -f owner={owner} -f repo={repoName} -F issue={issueN}" with
+            let query =
+                "query($owner:String!,$repo:String!,$issue:Int!){repository(owner:$owner,name:$repo){issue(number:$issue){"
+                + "closingPullRequests(first:25){nodes{number url state}}"
+                + "timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],first:50){nodes{... on CrossReferencedEvent{source{... on PullRequest{number url state}}}}}"
+                + "}}}"
+            match! runGhWrite bucket retries ghToken $"api graphql -f \"query={query}\" -f owner={owner} -f repo={repoName} -F issue={issueN}" with
             | Error _ -> return []
             | Ok json ->
                 let doc = JsonDocument.Parse(json).RootElement
-                let nodes =
+                let issueEl =
                     match doc.TryGetProperty("data") with
                     | true, data ->
                         match data.TryGetProperty("repository") with
                         | true, repoEl ->
                             match repoEl.TryGetProperty("issue") with
-                            | true, issueEl when issueEl.ValueKind <> JsonValueKind.Null ->
-                                match issueEl.TryGetProperty("closingPullRequests") with
-                                | true, prs ->
-                                    match prs.TryGetProperty("nodes") with
-                                    | true, ns -> ns.EnumerateArray() |> Seq.toList
-                                    | _        -> []
-                                | _ -> []
+                            | true, ie when ie.ValueKind <> JsonValueKind.Null -> Some ie
+                            | _ -> None
+                        | _ -> None
+                    | _ -> None
+                let closingNodes =
+                    match issueEl with
+                    | Some ie ->
+                        match ie.TryGetProperty("closingPullRequests") with
+                        | true, prs ->
+                            match prs.TryGetProperty("nodes") with
+                            | true, ns -> ns.EnumerateArray() |> Seq.toList
+                            | _        -> []
+                        | _ -> []
+                    | None -> []
+                let crossRefNodes =
+                    match issueEl with
+                    | Some ie ->
+                        match ie.TryGetProperty("timelineItems") with
+                        | true, ti ->
+                            match ti.TryGetProperty("nodes") with
+                            | true, ns ->
+                                ns.EnumerateArray()
+                                |> Seq.choose (fun el ->
+                                    match el.TryGetProperty("source") with
+                                    | true, src when src.ValueKind = JsonValueKind.Object
+                                                     && (match src.TryGetProperty("number") with true, _ -> true | _ -> false) ->
+                                        Some src
+                                    | _ -> None)
+                                |> Seq.toList
                             | _ -> []
                         | _ -> []
-                    | _ -> []
+                    | None -> []
+                let toRef (el: JsonElement) =
+                    match intProp el "number", strProp el "url" with
+                    | Some n, Some url ->
+                        Some { Repo        = repo
+                               Number      = PrNumber n
+                               Url         = url
+                               ClosesIssue = issue }
+                    | _ -> None
                 return
-                    nodes
-                    |> List.choose (fun el ->
-                        match intProp el "number", strProp el "url" with
-                        | Some n, Some url ->
-                            Some { Repo        = repo
-                                   Number      = PrNumber n
-                                   Url         = url
-                                   ClosesIssue = issue }
-                        | _ -> None)
+                    (closingNodes @ crossRefNodes)
+                    |> List.choose toRef
+                    |> List.distinctBy (fun pr -> pr.Number)
         }
 
     // ------------------------------------------------------------------

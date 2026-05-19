@@ -22,6 +22,7 @@ type NudgeInput =
       DryRun           : bool
       Verbose          : bool
       SaveLock         : bool
+      MaxConcurrency   : int
       IsPrimaryAuthApp : bool }
 
 type NudgeOutcome =
@@ -93,54 +94,59 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                Refusing to unassign @copilot when reassignment would fail."
     else
 
+    let semaphore = new System.Threading.SemaphoreSlim(max 1 input.MaxConcurrency)
     let results =
         lock.Issues
         |> List.map (fun issue ->
             async {
-                let (RepoName repoStr) = issue.Repo
+                do! semaphore.WaitAsync() |> Async.AwaitTask
+                try
+                    let (RepoName repoStr) = issue.Repo
 
-                let hasPrInLock =
-                    lock.PullRequests
-                    |> List.exists (fun pr -> pr.Repo = issue.Repo && pr.ClosesIssue = issue.Number)
+                    let hasPrInLock =
+                        lock.PullRequests
+                        |> List.exists (fun pr -> pr.Repo = issue.Repo && pr.ClosesIssue = issue.Number)
 
-                if hasPrInLock then
-                    if input.Verbose then eprintfn "[%s] PR already in lock file, skipping" repoStr
-                    return { Repo = issue.Repo; Issue = issue.Number; Outcome = Skipped; LivePrs = [] }
-                else
-                    let! prs = client.FindPrsForIssue issue.Repo issue.Number
-                    if not (List.isEmpty prs) then
-                        if input.Verbose then eprintfn "[%s] PR found on GitHub, no nudge needed" repoStr
-                        return { Repo = issue.Repo; Issue = issue.Number; Outcome = PrFoundLive; LivePrs = prs }
+                    if hasPrInLock then
+                        if input.Verbose then eprintfn "[%s] PR already in lock file, skipping" repoStr
+                        return { Repo = issue.Repo; Issue = issue.Number; Outcome = Skipped; LivePrs = [] }
                     else
-                        if input.DryRun then
-                            if input.Verbose then eprintfn "[%s] DRY RUN: would nudge %s" repoStr assignTo
-                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = DryRunWouldNudge; LivePrs = [] }
+                        let! prs = client.FindPrsForIssue issue.Repo issue.Number
+                        if not (List.isEmpty prs) then
+                            if input.Verbose then eprintfn "[%s] PR found on GitHub, no nudge needed" repoStr
+                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = PrFoundLive; LivePrs = prs }
                         else
-                            // Post nudge comment when mode includes comment
-                            if nudgeMode = "comment-only" || nudgeMode = "comment-and-reassign" then
-                                match nudgeComment with
-                                | Some tmpl ->
-                                    do! Comments.postTemplatedComment client issue.Repo issue.Number assignTo jobOwner tmpl input.Verbose "nudge" Map.empty
-                                | None -> ()
+                            if input.DryRun then
+                                if input.Verbose then eprintfn "[%s] DRY RUN: would nudge %s" repoStr assignTo
+                                return { Repo = issue.Repo; Issue = issue.Number; Outcome = DryRunWouldNudge; LivePrs = [] }
+                            else
+                                // Post nudge comment when mode includes comment
+                                if nudgeMode = "comment-only" || nudgeMode = "comment-and-reassign" then
+                                    match nudgeComment with
+                                    | Some tmpl ->
+                                        do! Comments.postTemplatedComment client issue.Repo issue.Number assignTo jobOwner tmpl input.Verbose "nudge" Map.empty
+                                    | None -> ()
 
-                            // Unassign + reassign when mode includes reassign.
-                            // Capture failures so the result reflects what actually happened.
-                            let mutable failure : string option = None
-                            if modeReassigns then
-                                if input.Verbose then eprintfn "[%s] Nudging %s (unassign + reassign)" repoStr assignTo
-                                match! assignClient.UnassignIssue issue.Repo issue.Number assignTo with
-                                | Error e -> failure <- Some e
-                                | Ok ()   -> ()
-                                if failure.IsNone then
-                                    match! assignClient.AssignIssue issue.Repo issue.Number assignTo with
+                                // Unassign + reassign when mode includes reassign.
+                                // Capture failures so the result reflects what actually happened.
+                                let mutable failure : string option = None
+                                if modeReassigns then
+                                    if input.Verbose then eprintfn "[%s] Nudging %s (unassign + reassign)" repoStr assignTo
+                                    match! assignClient.UnassignIssue issue.Repo issue.Number assignTo with
                                     | Error e -> failure <- Some e
                                     | Ok ()   -> ()
+                                    if failure.IsNone then
+                                        match! assignClient.AssignIssue issue.Repo issue.Number assignTo with
+                                        | Error e -> failure <- Some e
+                                        | Ok ()   -> ()
 
-                            let outcome =
-                                match failure with
-                                | Some reason -> NudgeFailed reason
-                                | None        -> NudgeSent
-                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = outcome; LivePrs = [] }
+                                let outcome =
+                                    match failure with
+                                    | Some reason -> NudgeFailed reason
+                                    | None        -> NudgeSent
+                                return { Repo = issue.Repo; Issue = issue.Number; Outcome = outcome; LivePrs = [] }
+                finally
+                    semaphore.Release() |> ignore
             })
         |> Async.Parallel
         |> Async.RunSynchronously

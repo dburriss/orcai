@@ -139,13 +139,15 @@ type NudgeArgs =
     | Dry_Run
     | Save_Lock
     | Verbose
+    | Max_Concurrency of n: int
     interface IArgParserTemplate with
         member a.Usage =
             match a with
-            | Yaml_File _ -> "Path to the YAML job configuration file."
-            | Dry_Run     -> "Preview which issues would be nudged without making any changes."
-            | Save_Lock   -> "Write discovered PRs back to the lock file."
-            | Verbose     -> "Enable verbose output."
+            | Yaml_File _       -> "Path to the YAML job configuration file."
+            | Dry_Run           -> "Preview which issues would be nudged without making any changes."
+            | Save_Lock         -> "Write discovered PRs back to the lock file."
+            | Verbose           -> "Enable verbose output."
+            | Max_Concurrency _ -> "Maximum number of issues processed concurrently (default: 4). Note: high values may hit GitHub rate limits."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type NotifyArgs =
