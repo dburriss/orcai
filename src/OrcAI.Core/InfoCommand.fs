@@ -52,17 +52,24 @@ let private fetchFromGitHub
             config.Repos
             |> List.map (fun repo ->
                 async {
-                    let! issueOpt = client.FindIssue repo config.IssueTitle
-                    match issueOpt with
-                    | None -> return ([], [])
-                    | Some issue ->
+                    match! client.FindIssue repo config.IssueTitle with
+                    | Error e -> return Error $"Failed to look up issue in {repo}: {e}"
+                    | Ok None -> return Ok ([], [])
+                    | Ok (Some issue) ->
                         let! prs = client.FindPrsForIssue repo issue.Number
-                        return ([issue], prs)
+                        return Ok ([issue], prs)
                 })
             |> Async.Parallel
 
-        let issues       = issueResults |> Array.toList |> List.collect fst
-        let pullRequests = issueResults |> Array.toList |> List.collect snd
+        let firstError =
+            issueResults |> Array.tryPick (function Error e -> Some e | Ok _ -> None)
+        match firstError with
+        | Some e -> return Error e
+        | None ->
+
+        let okResults    = issueResults |> Array.choose (function Ok r -> Some r | Error _ -> None) |> Array.toList
+        let issues       = okResults |> List.collect fst
+        let pullRequests = okResults |> List.collect snd
 
         let lock : LockFile =
             { LockedAt     = DateTimeOffset.UtcNow

@@ -108,12 +108,17 @@ let execute (deps: OrcAIDeps) (input: CleanupInput) : Result<CleanupResult, stri
                 Error $"Project '{config.ProjectTitle}' not found in '{orgStr}'. Nothing to clean up."
             | Some project ->
                 // Without a lock file we don't have issue numbers.
-                // Look up each issue by title in each repo.
+                // Look up each issue by title in each repo. Lookup errors are logged and
+                // the repo is skipped — cleanup is best-effort.
                 let issues =
                     config.Repos
                     |> List.choose (fun repo ->
-                        deps.GhClient.FindIssue repo config.IssueTitle
-                        |> Async.RunSynchronously)
+                        match deps.GhClient.FindIssue repo config.IssueTitle |> Async.RunSynchronously with
+                        | Ok issueOpt -> issueOpt
+                        | Error e ->
+                            let (RepoName repoStr) = repo
+                            eprintfn "[%s] Warning: failed to look up issue, skipping: %s" repoStr e
+                            None)
                 Ok (project, issues)
 
     match projectAndIssues with

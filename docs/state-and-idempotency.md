@@ -44,10 +44,13 @@ When no valid lock file exists, `runFull` is called and each resource is checked
 
 | `FindIssue` result | Action | `IssueOutcome` |
 |---|---|---|
-| `Some issue` | Skip creation | `AlreadyExisted` |
-| `None` | Create issue | `Created` |
+| `Ok (Some issue)` | Skip creation | `AlreadyExisted` |
+| `Ok None` | Create issue | `Created` |
+| `Error e` | Abort the repo with an error | _no outcome — repo reported as failed_ |
 
 The `assignees` field is fetched at this point and feeds directly into the Copilot check below.
+
+A lookup error (transient `gh` failure after `runGhApi`'s retry budget is exhausted) short-circuits the repo rather than being treated as "no matching issue". This prevents the duplicate-issue path where a temporary rate-limit or network blip during `FindIssue`/`FindClosedIssue` would otherwise cause `CreateIssue` to fire against a repo that already has the target issue. The lock file is not written for failed repos, so the next run retries cleanly.
 
 ### Copilot Assignment
 

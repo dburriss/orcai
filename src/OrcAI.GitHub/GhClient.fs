@@ -192,14 +192,14 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
     // ------------------------------------------------------------------
 
     /// `gh issue list --repo <org/repo> --state open --json title,number,url,assignees`
-    member private _.FindIssueImpl(repo: RepoName) (title: string) : Async<IssueRef option> =
+    member private _.FindIssueImpl(repo: RepoName) (title: string) : Async<Result<IssueRef option, string>> =
         async {
             let (RepoName repoStr) = repo
             match! runGhApi bucket retries ghToken $"issue list --repo {repoStr} --state open --search \"{title} in:title\" --limit 100 --json title,number,url,assignees" with
-            | Error _ -> return None
+            | Error e -> return Error e
             | Ok json ->
                 let arr = JsonDocument.Parse(json).RootElement
-                return
+                return Ok (
                     arr.EnumerateArray()
                     |> Seq.tryFind (fun el ->
                         strProp el "title" = Some title)
@@ -217,18 +217,18 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                                    Number    = IssueNumber n
                                    Url       = url
                                    Assignees = assignees }
-                        | _ -> None)
+                        | _ -> None))
         }
 
     /// `gh issue list --repo <org/repo> --state closed --json title,number,url,assignees`
-    member private _.FindClosedIssueImpl(repo: RepoName) (title: string) : Async<IssueRef option> =
+    member private _.FindClosedIssueImpl(repo: RepoName) (title: string) : Async<Result<IssueRef option, string>> =
         async {
             let (RepoName repoStr) = repo
             match! runGhApi bucket retries ghToken $"issue list --repo {repoStr} --state closed --search \"{title} in:title\" --limit 100 --json title,number,url,assignees" with
-            | Error _ -> return None
+            | Error e -> return Error e
             | Ok json ->
                 let arr = JsonDocument.Parse(json).RootElement
-                return
+                return Ok (
                     arr.EnumerateArray()
                     |> Seq.tryFind (fun el ->
                         strProp el "title" = Some title)
@@ -246,7 +246,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                                    Number    = IssueNumber n
                                    Url       = url
                                    Assignees = assignees }
-                        | _ -> None)
+                        | _ -> None))
         }
 
     /// Reopen a closed issue and return the refreshed IssueRef.

@@ -49,6 +49,8 @@
 
 ### Fixed
 
+- `orcai run` no longer creates a duplicate issue when the GitHub API lookup itself fails. Transient `gh` errors during open- or closed-issue lookup (rate limits, network resets, exhausted retries) are now surfaced as a per-repo error instead of being silently treated as "no matching issue". This also restores `--on-closed-issue` semantics on lookup failures — the configured action (`reopen` / `skip` / `fail`) is no longer bypassed when the closed-issue query errors.
+
 - Assignment via GitHub App auth now only requires a PAT (`ORCAI_PAT`) when the assignee is `@copilot`. Assigning human users or other bots with a GitHub App (which has `issues: write` permission) no longer warns or skips — the PAT constraint was previously applied to all assignees, not just Copilot.
 
 - `orcai cleanup` no longer fails when a project, issue, or PR has already been deleted — the operation is treated as success and a warning is emitted instead.

@@ -22,8 +22,8 @@ type IGhClient =
     abstract CreateLabel : repo:RepoName -> name:string -> Async<Result<unit, string>>
 
     // Issues
-    abstract FindIssue        : repo:RepoName -> title:string -> Async<IssueRef option>
-    abstract FindClosedIssue  : repo:RepoName -> title:string -> Async<IssueRef option>
+    abstract FindIssue        : repo:RepoName -> title:string -> Async<Result<IssueRef option, string>>
+    abstract FindClosedIssue  : repo:RepoName -> title:string -> Async<Result<IssueRef option, string>>
     abstract ReopenIssue      : repo:RepoName -> issue:IssueNumber -> Async<Result<IssueRef, string>>
     abstract CreateIssue      : repo:RepoName -> title:string -> body:string -> labels:string list -> Async<Result<IssueRef, string>>
     abstract UpdateIssue      : repo:RepoName -> issue:IssueNumber -> title:string -> body:string  -> Async<Result<unit, string>>

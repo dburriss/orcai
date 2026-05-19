@@ -227,22 +227,24 @@ let private processRepo
             | Error e -> eprintfn "[%s] Warning: could not ensure labels exist: %s" repoStr e
             | Ok ()   -> ()
 
-        // 1. Find or create issue — track whether it was newly created
+        // 1. Find or create issue — track whether it was newly created.
+        //    Lookup errors (transient gh failures, exhausted retries) abort the repo
+        //    instead of falling through to CreateIssue, which would create a duplicate.
         let! issueResult =
             async {
-                let! issueOpt = client.FindIssue repo config.IssueTitle
-                match issueOpt with
-                | Some issue ->
+                match! client.FindIssue repo config.IssueTitle with
+                | Error e -> return Error $"Failed to check for existing open issue: {e}"
+                | Ok (Some issue) ->
                     if verbose then eprintfn "[%s] Issue already exists: %s" repoStr issue.Url
                     return Ok (issue, AlreadyExisted)
-                | None ->
-                    let! closedOpt = client.FindClosedIssue repo config.IssueTitle
-                    match closedOpt with
-                    | None ->
+                | Ok None ->
+                    match! client.FindClosedIssue repo config.IssueTitle with
+                    | Error e -> return Error $"Failed to check for existing closed issue: {e}"
+                    | Ok None ->
                         if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
                         let! result = client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels
                         return result |> Result.map (fun issue -> (issue, Created))
-                    | Some closed ->
+                    | Ok (Some closed) ->
                         match closedIssueAction with
                         | Create ->
                             if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle

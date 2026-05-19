@@ -12,8 +12,8 @@ type Handlers =
       DeleteProject    : ProjectInfo               -> Async<Result<unit, string>>
       ListLabels       : RepoName                  -> Async<Result<string list, string>>
       CreateLabel      : RepoName    -> string      -> Async<Result<unit, string>>
-      FindIssue        : RepoName    -> string      -> Async<IssueRef option>
-      FindClosedIssue  : RepoName    -> string      -> Async<IssueRef option>
+      FindIssue        : RepoName    -> string      -> Async<Result<IssueRef option, string>>
+      FindClosedIssue  : RepoName    -> string      -> Async<Result<IssueRef option, string>>
       ReopenIssue      : RepoName    -> IssueNumber -> Async<Result<IssueRef, string>>
       CreateIssue      : RepoName    -> string -> string -> string list -> Async<Result<IssueRef, string>>
       UpdateIssue      : RepoName    -> IssueNumber -> string -> string -> Async<Result<unit, string>>
@@ -49,8 +49,8 @@ let defaults : Handlers =
       DeleteProject     = fun _          -> async { return failwith "DeleteProject not expected" }
       ListLabels        = fun _          -> async { return Ok [] }
       CreateLabel       = fun _ _        -> async { return Ok () }
-      FindIssue         = fun _ _        -> async { return None }
-      FindClosedIssue   = fun _ _        -> async { return None }
+      FindIssue         = fun _ _        -> async { return Ok None }
+      FindClosedIssue   = fun _ _        -> async { return Ok None }
       ReopenIssue       = fun _ _        -> async { return failwith "ReopenIssue not expected" }
       CreateIssue       = fun repo _ _ _ -> async { return Ok (issueFor repo 42) }
       UpdateIssue       = fun _ _ _ _    -> async { return Ok () }

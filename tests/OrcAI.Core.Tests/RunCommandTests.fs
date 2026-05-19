@@ -243,7 +243,7 @@ let ``processRepo skips assignment entirely when skipCopilot=true regardless of 
 let private closedIssueClient () =
     FakeGhClient.from
         { FakeGhClient.defaults with
-            FindClosedIssue = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
+            FindClosedIssue = fun repo _ -> async { return Ok (Some (FakeGhClient.issueFor repo 7)) }
             ReopenIssue     = fun repo _ -> async { return Ok (FakeGhClient.issueFor repo 7) }
             CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue should not be called" } }
 
@@ -282,7 +282,7 @@ let ``skip action returns Skipped outcome without creating or reopening`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindClosedIssue   = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
+                FindClosedIssue   = fun repo _ -> async { return Ok (Some (FakeGhClient.issueFor repo 7)) }
                 CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
                 AddIssueToProject = FakeGhClient.trackingAddIssue pc
                 AssignIssue       = FakeGhClient.trackingAssignUnit ac }
@@ -306,7 +306,7 @@ let ``skip action does not add issue to project or assign copilot`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindClosedIssue   = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
+                FindClosedIssue   = fun repo _ -> async { return Ok (Some (FakeGhClient.issueFor repo 7)) }
                 CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
                 AddIssueToProject = FakeGhClient.trackingAddIssue pc
                 AssignIssue       = FakeGhClient.trackingAssignUnit ac }
@@ -328,12 +328,55 @@ let ``fail action returns error and does not create or reopen`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindClosedIssue   = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
+                FindClosedIssue   = fun repo _ -> async { return Ok (Some (FakeGhClient.issueFor repo 7)) }
                 CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
                 AddIssueToProject = fun _ _     -> async { return failwith "AddIssueToProject not expected" }
                 AssignIssue       = fun _ _ _   -> async { return failwith "AssignIssue not expected" } }
     let deps  = Given.deps fs client
     let input = A.RunInput.defaults () |> A.RunInput.withOnClosedIssue (Some Fail)
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.True(results.ContainsKey(path))
+    match results.[path] with
+    | Ok result -> Assert.Empty(result.Results)
+    | Error _   -> ()
+
+// ---------------------------------------------------------------------------
+// Lookup error handling — must NOT fall through to CreateIssue
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``FindIssue Error does not create a new issue`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindIssue       = fun _ _ -> async { return Error "API rate limit exceeded" }
+                FindClosedIssue = fun _ _ -> async { return failwith "FindClosedIssue should not be called when FindIssue errors" }
+                CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue must not be called on lookup error" } }
+    let deps = Given.deps fs client
+
+    let results = execute deps [path] (A.RunInput.defaults ()) |> Async.RunSynchronously
+
+    Assert.True(results.ContainsKey(path))
+    match results.[path] with
+    | Ok result -> Assert.Empty(result.Results)
+    | Error _   -> ()
+
+[<Fact>]
+let ``FindClosedIssue Error does not create a new issue`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindIssue       = fun _ _ -> async { return Ok None }
+                FindClosedIssue = fun _ _ -> async { return Error "secondary rate limit" }
+                CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue must not be called on closed-issue lookup error" } }
+    let deps  = Given.deps fs client
+    let input = A.RunInput.defaults () |> A.RunInput.withOnClosedIssue (Some Reopen)
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
@@ -459,8 +502,8 @@ let ``updateBodies recreates issue when UpdateIssue returns stale error`` () =
             { FakeGhClient.defaults with
                 UpdateIssue = fun _ _ _ _ ->
                     async { return Error "GraphQL: Could not resolve to an issue or pull request with the number of 42. (updateIssue)" }
-                FindIssue   = fun _ _ -> async { return None }
-                FindClosedIssue = fun _ _ -> async { return None }
+                FindIssue   = fun _ _ -> async { return Ok None }
+                FindClosedIssue = fun _ _ -> async { return Ok None }
                 CreateIssue = fun repo _ _ _ ->
                     createCalls.Add(())
                     async { return Ok (FakeGhClient.issueFor repo 99) } }
@@ -505,8 +548,8 @@ let ``updateBodies leaves non-stale issues unaffected when one repo is stale`` (
                         async { return Error "GraphQL: Could not resolve to an issue or pull request with the number of 7." }
                     else
                         async { return Ok () }
-                FindIssue   = fun _ _ -> async { return None }
-                FindClosedIssue = fun _ _ -> async { return None }
+                FindIssue   = fun _ _ -> async { return Ok None }
+                FindClosedIssue = fun _ _ -> async { return Ok None }
                 CreateIssue = fun repo _ _ _ ->
                     async { return Ok (FakeGhClient.issueFor repo 77) } }
     let deps  = Given.deps fs client
@@ -534,8 +577,8 @@ let ``stale-issue recreate failure surfaces as UpdateFailed`` () =
             { FakeGhClient.defaults with
                 UpdateIssue = fun _ _ _ _ ->
                     async { return Error "GraphQL: Could not resolve to an issue or pull request with the number of 42." }
-                FindIssue   = fun _ _ -> async { return None }
-                FindClosedIssue = fun _ _ -> async { return None }
+                FindIssue   = fun _ _ -> async { return Ok None }
+                FindClosedIssue = fun _ _ -> async { return Ok None }
                 CreateIssue = fun _ _ _ _ ->
                     async { return Error "boom: create failed" } }
     let deps  = Given.deps fs client
@@ -559,7 +602,7 @@ let ``create action (default) creates new issue even when closed issue exists`` 
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindClosedIssue = fun repo _ -> async { return Some (FakeGhClient.issueFor repo 7) }
+                FindClosedIssue = fun repo _ -> async { return Ok (Some (FakeGhClient.issueFor repo 7)) }
                 CreateIssue     = fun repo _ _ _ ->
                     createCallCount.Add(())
                     async { return Ok (FakeGhClient.issueFor repo 99) } }
