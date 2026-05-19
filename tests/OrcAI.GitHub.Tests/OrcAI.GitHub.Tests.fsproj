@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <Compile Include="GhClientTests.fs" />
+    <Compile Include="RateLimitTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

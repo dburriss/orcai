@@ -93,8 +93,24 @@ let private withClient (f: OrcAIDeps -> bool -> int) : int =
             let home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile)
             let cwd  = System.Environment.CurrentDirectory
             let cfg  = OrcAI.Core.OrcAIConfig.resolve fs home cwd
-            let writesPerMinute  = cfg.WritesPerMinute  |> Option.defaultValue 60
-            let rateLimitRetries = cfg.RateLimitRetries |> Option.defaultValue 3
+            // Env > config > default. ORCAI_WRITES_PER_MINUTE and
+            // ORCAI_RATE_LIMIT_RETRIES let a developer override the throttle
+            // for a single invocation without editing config files.
+            let envInt (name: string) =
+                match Environment.GetEnvironmentVariable(name) with
+                | null | "" -> None
+                | s ->
+                    match Int32.TryParse(s) with
+                    | true, n when n > 0 -> Some n
+                    | _ -> None
+            let writesPerMinute =
+                envInt "ORCAI_WRITES_PER_MINUTE"
+                |> Option.orElse cfg.WritesPerMinute
+                |> Option.defaultValue 60
+            let rateLimitRetries =
+                envInt "ORCAI_RATE_LIMIT_RETRIES"
+                |> Option.orElse cfg.RateLimitRetries
+                |> Option.defaultValue 3
             let logLevel    = resolveLogLevel ()
             let logFactory  = LoggerFactory.Create(fun b -> b.AddConsole().SetMinimumLevel(logLevel) |> ignore)
             let ghLogger    = logFactory.CreateLogger("OrcAI.GitHub.GhCliClient")

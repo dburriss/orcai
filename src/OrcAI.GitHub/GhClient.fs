@@ -46,31 +46,61 @@ let private runGh (token: string) (args: string) : Async<Result<string, string>>
 // Rate limiting and retry helpers
 // ------------------------------------------------------------------
 
-let private isRateLimit (msg: string) =
+let internal isRateLimit (msg: string) =
     msg.Contains("API rate limit exceeded", StringComparison.OrdinalIgnoreCase)
     || msg.Contains("secondary rate limit", StringComparison.OrdinalIgnoreCase)
     || msg.Contains("abuse detection mechanism", StringComparison.OrdinalIgnoreCase)
     || msg.Contains("was submitted too quickly", StringComparison.OrdinalIgnoreCase)
 
-let private withRetry maxAttempts (run: unit -> Async<Result<'a, string>>) : Async<Result<'a, string>> =
-    let rec loop attempt (delay: int) = async {
+let internal isTransient (msg: string) =
+    let m = msg.ToLowerInvariant()
+    [ "i/o timeout"; "connection refused"; "connection reset"
+      "no such host"; "tls handshake"; "remote end closed"
+      "502 bad gateway"; "503 service unavailable"; "504 gateway timeout" ]
+    |> List.exists m.Contains
+
+// ±25% jitter on a delay, with a floor so a degenerate negative can't become 0.
+let internal jitter (ms: int) =
+    let delta = max 1 (ms / 4)
+    ms + System.Random.Shared.Next(-delta, delta + 1)
+
+// Two independent backoff schedules (rate-limit vs transient) sharing one
+// attempt budget. Initial delays are parameters so tests don't have to sleep
+// the production defaults.
+let internal withRetryDelays
+        (maxAttempts: int)
+        (initialRl: int)
+        (initialTx: int)
+        (run: unit -> Async<Result<'a, string>>)
+        : Async<Result<'a, string>> =
+    let rec loop attempt (rlDelay: int) (txDelay: int) = async {
         let! result = run()
         match result with
         | Error msg when isRateLimit msg && attempt < maxAttempts ->
-            do! Async.Sleep delay
-            return! loop (attempt + 1) (min (delay * 2) 300_000)
+            do! Async.Sleep (max 500 (jitter rlDelay))
+            return! loop (attempt + 1) (min (rlDelay * 2) 300_000) txDelay
+        | Error msg when isTransient msg && attempt < maxAttempts ->
+            do! Async.Sleep (max 500 (jitter txDelay))
+            return! loop (attempt + 1) rlDelay (min (txDelay * 2) 30_000)
         | other -> return other
     }
-    loop 1 60_000  // first retry after 60s, doubles each time, capped at 5min
+    loop 1 initialRl initialTx
 
-type private WriteBucket(perMinuteCap: int) =
-    let mutable tokens = perMinuteCap
-    let mutable lastRefill = DateTime.UtcNow
+let private withRetry maxAttempts run = withRetryDelays maxAttempts 60_000 2_000 run
+
+type internal ApiBucket(perMinuteCap: int, getNow: unit -> DateTime) =
+    // Start at 80% of capacity instead of 100% — a full bucket lets the first
+    // ~perMinuteCap calls bypass pacing entirely; 80% leaves a small warm-up
+    // burst without effectively disabling the throttle for the first minute.
+    let mutable tokens = perMinuteCap * 4 / 5
+    let mutable lastRefill = getNow()
     let gate = obj()
+
+    new(perMinuteCap: int) = ApiBucket(perMinuteCap, fun () -> DateTime.UtcNow)
 
     member _.Acquire() =
         lock gate (fun () ->
-            let now = DateTime.UtcNow
+            let now = getNow()
             let elapsed = (now - lastRefill).TotalSeconds
             let refilled = int (elapsed * float perMinuteCap / 60.0)
             if refilled > 0 then
@@ -83,9 +113,10 @@ type private WriteBucket(perMinuteCap: int) =
                 int (60_000.0 / float perMinuteCap) + 1)  // ms until next token
 
 // Like runGh but acquires a token from the shared bucket first and retries on
-// rate-limit errors. Loops on Acquire() so concurrent callers each wait for
-// their own token instead of stampeding after a single shared sleep.
-let private runGhWrite (bucket: WriteBucket) (retries: int) (token: string) (args: string) : Async<Result<string, string>> =
+// rate-limit and transient errors. Loops on Acquire() so concurrent callers
+// each wait for their own token instead of stampeding after a single shared
+// sleep.
+let private runGhApi (bucket: ApiBucket) (retries: int) (token: string) (args: string) : Async<Result<string, string>> =
     withRetry retries (fun () -> async {
         let rec waitForToken () = async {
             let waitMs = bucket.Acquire()
@@ -122,7 +153,7 @@ let private intProp (el: JsonElement) (name: string) =
 
 /// Production implementation that shells out to `gh` via SimpleExec.
 type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, logger: ILogger) =
-    let bucket  = WriteBucket(writesPerMinute)
+    let bucket  = ApiBucket(writesPerMinute)
     let retries = rateLimitRetries
 
     // ------------------------------------------------------------------
@@ -134,7 +165,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
     member private _.FindProjectImpl(org: OrgName) (title: string) : Async<ProjectInfo option> =
         async {
             let (OrgName orgStr) = org
-            match! runGh ghToken $"project list --owner {orgStr} --format json" with
+            match! runGhApi bucket retries ghToken $"project list --owner {orgStr} --format json" with
             | Error _ -> return None
             | Ok json ->
                 let doc = JsonDocument.Parse(json)
@@ -164,7 +195,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
     member private _.FindIssueImpl(repo: RepoName) (title: string) : Async<IssueRef option> =
         async {
             let (RepoName repoStr) = repo
-            match! runGh ghToken $"issue list --repo {repoStr} --state open --search \"{title} in:title\" --limit 100 --json title,number,url,assignees" with
+            match! runGhApi bucket retries ghToken $"issue list --repo {repoStr} --state open --search \"{title} in:title\" --limit 100 --json title,number,url,assignees" with
             | Error _ -> return None
             | Ok json ->
                 let arr = JsonDocument.Parse(json).RootElement
@@ -193,7 +224,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
     member private _.FindClosedIssueImpl(repo: RepoName) (title: string) : Async<IssueRef option> =
         async {
             let (RepoName repoStr) = repo
-            match! runGh ghToken $"issue list --repo {repoStr} --state closed --search \"{title} in:title\" --limit 100 --json title,number,url,assignees" with
+            match! runGhApi bucket retries ghToken $"issue list --repo {repoStr} --state closed --search \"{title} in:title\" --limit 100 --json title,number,url,assignees" with
             | Error _ -> return None
             | Ok json ->
                 let arr = JsonDocument.Parse(json).RootElement
@@ -223,10 +254,10 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
         async {
             let (RepoName repoStr)   = repo
             let (IssueNumber issueN) = issue
-            match! runGhWrite bucket retries ghToken $"issue reopen {issueN} --repo {repoStr}" with
+            match! runGhApi bucket retries ghToken $"issue reopen {issueN} --repo {repoStr}" with
             | Error e -> return Error e
             | Ok _ ->
-                match! runGh ghToken $"issue view {issueN} --repo {repoStr} --json number,url,assignees" with
+                match! runGhApi bucket retries ghToken $"issue view {issueN} --repo {repoStr} --json number,url,assignees" with
                 | Error e -> return Error e
                 | Ok json ->
                     let el = JsonDocument.Parse(json).RootElement
@@ -267,7 +298,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                 + "closingPullRequests(first:25){nodes{number url state}}"
                 + "timelineItems(itemTypes:[CROSS_REFERENCED_EVENT],first:50){nodes{... on CrossReferencedEvent{source{... on PullRequest{number url state}}}}}"
                 + "}}}"
-            match! runGhWrite bucket retries ghToken $"api graphql -f \"query={query}\" -f owner={owner} -f repo={repoName} -F issue={issueN}" with
+            match! runGhApi bucket retries ghToken $"api graphql -f \"query={query}\" -f owner={owner} -f repo={repoName} -F issue={issueN}" with
             | Error _ -> return []
             | Ok json ->
                 let doc = JsonDocument.Parse(json).RootElement
@@ -337,7 +368,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
         member _.ListLabels repo =
             async {
                 let (RepoName repoStr) = repo
-                match! runGh ghToken $"label list --repo {repoStr} --json name --limit 1000" with
+                match! runGhApi bucket retries ghToken $"label list --repo {repoStr} --json name --limit 1000" with
                 | Error e -> return Error e
                 | Ok json ->
                     let arr = JsonDocument.Parse(json).RootElement
@@ -351,7 +382,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
         member _.CreateLabel repo name =
             async {
                 let (RepoName repoStr) = repo
-                match! runGhWrite bucket retries ghToken $"label create \"{name}\" --repo {repoStr}" with
+                match! runGhApi bucket retries ghToken $"label create \"{name}\" --repo {repoStr}" with
                 | Ok _    -> return Ok ()
                 | Error e ->
                     if e.Contains("already exists", StringComparison.OrdinalIgnoreCase)
@@ -365,7 +396,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
         member this.CreateProject org title =
             async {
                 let (OrgName orgStr) = org
-                match! runGhWrite bucket retries ghToken $"project create --title \"{title}\" --owner {orgStr} --format json" with
+                match! runGhApi bucket retries ghToken $"project create --title \"{title}\" --owner {orgStr} --format json" with
                 | Error e -> return Error e
                 | Ok json ->
                     let el = JsonDocument.Parse(json).RootElement
@@ -379,7 +410,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
         member _.DeleteProject project =
             async {
                 let (OrgName orgStr) = project.Org
-                match! runGhWrite bucket retries ghToken $"project delete {project.Number} --owner {orgStr}" with
+                match! runGhApi bucket retries ghToken $"project delete {project.Number} --owner {orgStr}" with
                 | Error e ->
                     if e.Contains("Could not resolve to a ProjectV2") then
                         logger.LogWarning("Project #{ProjectNumber} in org '{Org}' not found — already deleted.", project.Number, orgStr)
@@ -402,7 +433,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                             let flags = labels |> List.map (fun l -> $"--label \"{l}\"") |> String.concat " "
                             $" {flags}"
                     // gh issue create outputs the issue URL as plain text (no --json support)
-                    match! runGhWrite bucket retries ghToken $"issue create --repo {repoStr} --title \"{title}\" --body-file \"{tmpFile}\"{labelPart}" with
+                    match! runGhApi bucket retries ghToken $"issue create --repo {repoStr} --title \"{title}\" --body-file \"{tmpFile}\"{labelPart}" with
                     | Error e -> return Error e
                     | Ok url ->
                         // URL format: https://github.com/owner/repo/issues/123
@@ -427,7 +458,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                 let tmpFile = System.IO.Path.GetTempFileName()
                 try
                     System.IO.File.WriteAllText(tmpFile, body)
-                    match! runGhWrite bucket retries ghToken $"issue edit {issueN} --repo {repoStr} --title \"{title}\" --body-file \"{tmpFile}\"" with
+                    match! runGhApi bucket retries ghToken $"issue edit {issueN} --repo {repoStr} --title \"{title}\" --body-file \"{tmpFile}\"" with
                     | Ok _    -> return Ok ()
                     | Error e -> return Error e
                 finally
@@ -438,7 +469,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
             async {
                 let (RepoName repoStr)   = repo
                 let (IssueNumber issueN) = issue
-                match! runGhWrite bucket retries ghToken $"issue delete {issueN} --repo {repoStr} --yes" with
+                match! runGhApi bucket retries ghToken $"issue delete {issueN} --repo {repoStr} --yes" with
                 | Ok _    -> return Ok ()
                 | Error e ->
                     if e.Contains("Could not resolve to an issue or pull request") then
@@ -453,7 +484,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                 let (OrgName orgStr) = project.Org
                 // Idempotent: if the item is already in the project the gh CLI succeeds silently.
                 // We intentionally ignore non-zero exits here (e.g. "already exists" variants).
-                let! _ = runGhWrite bucket retries ghToken $"project item-add {project.Number} --owner {orgStr} --url {issue.Url}"
+                let! _ = runGhApi bucket retries ghToken $"project item-add {project.Number} --owner {orgStr} --url {issue.Url}"
                 return Ok ()
             }
 
@@ -461,7 +492,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
             async {
                 let (RepoName repoStr)   = repo
                 let (IssueNumber issueN) = issue
-                match! runGhWrite bucket retries ghToken $"issue edit {issueN} --repo {repoStr} --add-assignee {assignee}" with
+                match! runGhApi bucket retries ghToken $"issue edit {issueN} --repo {repoStr} --add-assignee {assignee}" with
                 | Error e -> return Error e
                 | Ok _    -> return Ok ()
             }
@@ -470,7 +501,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
             async {
                 let (RepoName repoStr)   = repo
                 let (IssueNumber issueN) = issue
-                match! runGhWrite bucket retries ghToken $"issue edit {issueN} --repo {repoStr} --remove-assignee {assignee}" with
+                match! runGhApi bucket retries ghToken $"issue edit {issueN} --repo {repoStr} --remove-assignee {assignee}" with
                 | Error e -> return Error e
                 | Ok _    -> return Ok ()
             }
@@ -482,7 +513,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                 let tmpFile = System.IO.Path.GetTempFileName()
                 try
                     System.IO.File.WriteAllText(tmpFile, body)
-                    match! runGhWrite bucket retries ghToken $"issue comment {issueN} --repo {repoStr} --body-file \"{tmpFile}\"" with
+                    match! runGhApi bucket retries ghToken $"issue comment {issueN} --repo {repoStr} --body-file \"{tmpFile}\"" with
                     | Error e -> return Error e
                     | Ok _    -> return Ok ()
                 finally
@@ -493,7 +524,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
             async {
                 let (RepoName repoStr) = repo
                 let (PrNumber prN)     = pr
-                match! runGhWrite bucket retries ghToken $"pr close {prN} --repo {repoStr}" with
+                match! runGhApi bucket retries ghToken $"pr close {prN} --repo {repoStr}" with
                 | Error e ->
                     if e.Contains("Could not resolve to a PullRequest") then
                         logger.LogWarning("PR #{PrNumber} in repo '{Repo}' not found — already closed/deleted.", prN, repoStr)
@@ -506,7 +537,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
         member _.ListRepos org =
             async {
                 let (OrgName orgStr) = org
-                match! runGh ghToken $"repo list {orgStr} --json name --limit 1000" with
+                match! runGhApi bucket retries ghToken $"repo list {orgStr} --json name --limit 1000" with
                 | Error e -> return Error e
                 | Ok json ->
                     let arr = JsonDocument.Parse(json).RootElement
@@ -520,7 +551,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
         member _.RepoExists repo =
             async {
                 let (RepoName repoStr) = repo
-                match! runGh ghToken $"repo view {repoStr} --json name" with
+                match! runGhApi bucket retries ghToken $"repo view {repoStr} --json name" with
                 | Ok _    -> return Ok ()
                 | Error e -> return Error e
             }
@@ -528,7 +559,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
         member _.IsArchived repo =
             async {
                 let (RepoName repoStr) = repo
-                match! runGh ghToken $"repo view {repoStr} --json isArchived" with
+                match! runGhApi bucket retries ghToken $"repo view {repoStr} --json isArchived" with
                 | Error e -> return Error e
                 | Ok json ->
                     let el = JsonDocument.Parse(json).RootElement
@@ -546,7 +577,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                     | [] -> async { return None }
                     | (p: string) :: rest ->
                         async {
-                            match! runGh ghToken $"api repos/{r}/contents/{p}" with
+                            match! runGhApi bucket retries ghToken $"api repos/{r}/contents/{p}" with
                             | Error _ -> return! tryPaths rest
                             | Ok json ->
                                 let el = JsonDocument.Parse(json).RootElement
@@ -564,7 +595,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
             async {
                 let (RepoName repoStr)   = repo
                 let (IssueNumber issueN) = issue
-                match! runGh ghToken $"issue view {issueN} --repo {repoStr} --json state" with
+                match! runGhApi bucket retries ghToken $"issue view {issueN} --repo {repoStr} --json state" with
                 | Error _ -> return None
                 | Ok json ->
                     let el = JsonDocument.Parse(json).RootElement
@@ -575,7 +606,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
             async {
                 let (RepoName repoStr) = repo
                 let (PrNumber prN)     = pr
-                match! runGh ghToken $"pr view {prN} --repo {repoStr} --json state" with
+                match! runGhApi bucket retries ghToken $"pr view {prN} --repo {repoStr} --json state" with
                 | Error _ -> return None
                 | Ok json ->
                     let el = JsonDocument.Parse(json).RootElement

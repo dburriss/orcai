@@ -117,6 +117,10 @@ With both files present, the effective config merges them with local values winn
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORCAI_LOG_LEVEL` | `Warning` | Minimum log level for diagnostic output. Accepts any [`LogLevel`](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.logging.loglevel) name: `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`. |
+| `ORCAI_WRITES_PER_MINUTE` | — | Overrides `writesPerMinute` for a single invocation. Useful for smoke-testing the throttle without editing config files (e.g. `ORCAI_WRITES_PER_MINUTE=12 orcai run job.yml`). Must be a positive integer; non-positive or non-numeric values are ignored. |
+| `ORCAI_RATE_LIMIT_RETRIES` | — | Overrides `rateLimitRetries` for a single invocation. Must be a positive integer. |
+
+Precedence for these two knobs: env var > config (local/global) > built-in default.
 
 ### Examples
 
