@@ -282,6 +282,10 @@ For each issue in the lock file:
    - `mode: comment-only` — posts the configured comment only.
    - `mode: comment-and-reassign` — posts a comment and reassigns.
 
+### PAT requirement for `@copilot`
+
+GitHub Apps cannot assign `@copilot` to issues. When `assign.to` is `@copilot` (the default) and `nudge.mode` includes reassignment (`reassign` or `comment-and-reassign`), a PAT must be available — either via `ORCAI_PAT` or a stored `pat` profile (`orcai auth pat`). If primary auth is a GitHub App and no PAT is configured, `orcai nudge` refuses upfront with an error rather than unassigning `@copilot` and failing to reassign. `mode: comment-only` is unaffected.
+
 ### Output
 
 A table with Repo / Issue / Status columns:
