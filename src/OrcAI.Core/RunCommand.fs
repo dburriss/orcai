@@ -102,7 +102,7 @@ let private archivedPlaceholder (repo: RepoName) : IssueRef =
     { Repo = repo; Number = IssueNumber 0; Url = $"https://github.com/{r}"; Assignees = [] }
 
 /// Resolved per-run parameters shared by `processRepo` (used by both `runFull` and
-/// the stale-issue recovery path in `updateBodies` / `Both changed`).
+/// the stale-issue recovery path inside `refreshBodies`).
 type private ProcessParams =
     { Config            : JobConfig
       Project           : ProjectInfo
@@ -393,32 +393,6 @@ let private runFull
 
     Ok { Lock = lock; Results = allResults; Source = FullRun }
 
-/// Update issue bodies for a list of existing issues using the current template.
-/// Returns one RepoResult per issue (Updated, UpdateFailed, or StaleIssueRecreated when
-/// the lock pointed to a deleted/transferred issue — caller handles the actual recreate).
-let private applyBodyUpdates
-    (deps   : OrcAIDeps)
-    (config : JobConfig)
-    (issues : IssueRef list)
-    : RepoResult list =
-    issues
-    |> List.map (fun issue ->
-        async {
-            let (RepoName repoStr) = issue.Repo
-            let (IssueNumber issueNum) = issue.Number
-            match! deps.GhClient.UpdateIssue issue.Repo issue.Number config.IssueTitle config.IssueBody with
-            | Ok ()   -> return { Issue = issue; Outcome = Updated }
-            | Error e when isStaleIssue e ->
-                eprintfn "[%s] Stale issue #%d — will recreate." repoStr issueNum
-                return { Issue = issue; Outcome = StaleIssueRecreated }
-            | Error e ->
-                eprintfn "[%s] Error updating issue body: %s" repoStr e
-                return { Issue = issue; Outcome = UpdateFailed e }
-        })
-    |> Async.Parallel
-    |> Async.RunSynchronously
-    |> Array.toList
-
 /// For each `StaleIssueRecreated` entry in `results`, run `processRepo` against the
 /// same repo so a fresh issue is created in place of the stale one. Returns a new
 /// results list with the stale entries replaced by the recreate outcome (Created,
@@ -462,52 +436,82 @@ let private recreateStaleIssues
                         { r with Outcome = UpdateFailed "stale issue recreate failed" })
         finalResults, newRefByRepo
 
-/// Update issue bodies for all issues in the lock file, then write an updated lock.
-/// Called when only the template hash has changed (no structural changes needed).
-/// Stale lock entries (issue deleted/transferred on GitHub) are recreated in place.
-let private updateBodies
-    (deps         : OrcAIDeps)
-    (input        : RunInput)
-    (config       : JobConfig)
-    (yamlHash     : string)
-    (templateHash : string)
-    (lock         : LockFile)
+/// Refresh issue bodies for repos that `runFull` confirmed are open or just reopened.
+/// Called after `runFull` whenever the MD template may have changed (the lock's template
+/// hash differs from the current one, or `--skip-lock` was set so no prior hash exists).
+/// Skips `Created`, `Skipped`, `SkippedArchived`, and any failure outcomes; `runFull`
+/// already handles `onClosedIssue` so the closed-issue case never reaches this step.
+/// Stale errors during the refresh (issue deleted/transferred between `runFull` and the
+/// body write) are recovered via `recreateStaleIssues`.
+let private refreshBodies
+    (deps       : OrcAIDeps)
+    (input      : RunInput)
+    (config     : JobConfig)
+    (fullResult : RunResult)
     : Result<RunResult, string> =
-    let initialResults = applyBodyUpdates deps config lock.Issues
-    let hasStale = initialResults |> List.exists (fun r -> r.Outcome = StaleIssueRecreated)
-    let results, newIssues =
-        if not hasStale then
-            initialResults, lock.Issues
-        else
-            // Recover: need a project to call processRepo. Reuse the project recorded
-            // in the existing lock — recreating issues doesn't change the project.
-            let processParams = resolveProcessParams deps input config lock.Project
-            let recreated, newRefByRepo = recreateStaleIssues deps processParams initialResults
-            let updatedIssues =
-                lock.Issues
-                |> List.map (fun i ->
-                    match Map.tryFind i.Repo newRefByRepo with
-                    | Some newRef -> newRef
-                    | None        -> i)
-            recreated, updatedIssues
-    let newLock =
-        { lock with
-            YamlHash     = yamlHash
-            TemplateHash = templateHash
-            LockedAt     = DateTimeOffset.UtcNow
-            Issues       = newIssues }
-    LockFile.write deps.FileSystem input.YamlPath newLock
-    Ok { Lock = newLock; Results = results; Source = FullRun }
+    let toRefresh =
+        fullResult.Results
+        |> List.filter (fun r -> r.Outcome = AlreadyExisted || r.Outcome = Reopened)
+    if List.isEmpty toRefresh then
+        Ok fullResult
+    else
+        let refreshed =
+            toRefresh
+            |> List.map (fun r ->
+                async {
+                    let (RepoName repoStr) = r.Issue.Repo
+                    let (IssueNumber issueN) = r.Issue.Number
+                    match! deps.GhClient.UpdateIssue r.Issue.Repo r.Issue.Number config.IssueTitle config.IssueBody with
+                    | Ok () ->
+                        let newOutcome =
+                            match r.Outcome with
+                            | Reopened -> Reopened   // keep distinction in summary
+                            | _        -> Updated
+                        return { Issue = r.Issue; Outcome = newOutcome }
+                    | Error e when isStaleIssue e ->
+                        eprintfn "[%s] Stale issue #%d during body refresh — will recreate." repoStr issueN
+                        return { Issue = r.Issue; Outcome = StaleIssueRecreated }
+                    | Error e ->
+                        eprintfn "[%s] Error refreshing issue body: %s" repoStr e
+                        return { Issue = r.Issue; Outcome = UpdateFailed e }
+                })
+            |> Async.Parallel
+            |> Async.RunSynchronously
+            |> Array.toList
+        let hasStale = refreshed |> List.exists (fun r -> r.Outcome = StaleIssueRecreated)
+        let recoveredRefreshed, newRefByRepo =
+            if not hasStale then
+                refreshed, Map.empty
+            else
+                let processParams = resolveProcessParams deps input config fullResult.Lock.Project
+                recreateStaleIssues deps processParams refreshed
+        let refreshedByRepo =
+            recoveredRefreshed |> List.map (fun r -> r.Issue.Repo, r) |> Map.ofList
+        let finalResults =
+            fullResult.Results
+            |> List.map (fun r ->
+                refreshedByRepo
+                |> Map.tryFind r.Issue.Repo
+                |> Option.defaultValue r)
+        let finalIssues =
+            fullResult.Lock.Issues
+            |> List.map (fun i ->
+                match Map.tryFind i.Repo newRefByRepo with
+                | Some newRef -> newRef
+                | None        -> i)
+        let finalLock = { fullResult.Lock with Issues = finalIssues }
+        if not (Map.isEmpty newRefByRepo) then
+            LockFile.write deps.FileSystem input.YamlPath finalLock
+        Ok { fullResult with Lock = finalLock; Results = finalResults }
 
 /// Execute the run command for a single YAML path.
 /// Returns a RunResult on success, or an error string.
 ///
-/// Dispatch logic (checked in order, --skip-lock bypasses all):
-///   Both hashes match   → fast path, zero network calls (AlreadyExisted for all)
-///   Only YAML changed   → runFull (structural changes; body unchanged)
-///   Only template changed → updateBodies only (UpdateIssue per repo in lock)
-///   Both changed        → runFull, then UpdateIssue for any AlreadyExisted repos
-///   No lock file        → runFull (creates everything fresh)
+/// Dispatch logic:
+///   --skip-lock          → runFull, then refreshBodies (unconditional — no prior hash)
+///   Both hashes match    → fast path, zero network calls (AlreadyExisted for all)
+///   Lock + anything diff → runFull, then refreshBodies iff template hash changed
+///   No lock file         → runFull (creates everything fresh)
 let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string> =
     match YamlConfig.parseFile deps.FileSystem input.YamlPath with
     | Error e -> Error e
@@ -530,7 +534,9 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
 
     if input.SkipLock then
         if input.Verbose then eprintfn "--skip-lock set, bypassing lock file."
-        runFull deps input mergedConfig yamlHash templateHash
+        match runFull deps input mergedConfig yamlHash templateHash with
+        | Error e       -> Error e
+        | Ok fullResult -> refreshBodies deps input mergedConfig fullResult
     else
 
     match LockFile.tryRead deps.FileSystem input.YamlPath with
@@ -539,51 +545,15 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
         let results = lock.Issues |> List.map (fun i -> { Issue = i; Outcome = AlreadyExisted })
         Ok { Lock = lock; Results = results; Source = FromLockFile }
 
-    | Some lock when lock.YamlHash = yamlHash ->
-        if input.Verbose then eprintfn "Lock file found, template changed — updating issue bodies."
-        updateBodies deps input mergedConfig yamlHash templateHash lock
-
-    | Some lock when lock.TemplateHash = templateHash ->
-        if input.Verbose then eprintfn "Lock file found but YAML hash changed — re-running."
-        runFull deps input mergedConfig yamlHash templateHash
-
     | Some lock ->
-        // Both changed: structural runFull, then update bodies for existing issues.
-        if input.Verbose then eprintfn "Lock file found but YAML and template hashes changed — re-running and updating issue bodies."
+        if input.Verbose then eprintfn "Lock file found but hashes changed — re-running."
         match runFull deps input mergedConfig yamlHash templateHash with
         | Error e -> Error e
+        | Ok fullResult when lock.TemplateHash = templateHash ->
+            // YAML changed but template didn't — no body refresh needed.
+            Ok fullResult
         | Ok fullResult ->
-            let toUpdate =
-                fullResult.Results
-                |> List.filter (fun r -> r.Outcome = AlreadyExisted)
-                |> List.map (fun r -> r.Issue)
-            if List.isEmpty toUpdate then
-                Ok fullResult
-            else
-                let updated = applyBodyUpdates deps mergedConfig toUpdate
-                let hasStale = updated |> List.exists (fun r -> r.Outcome = StaleIssueRecreated)
-                let recoveredUpdated, newRefByRepo =
-                    if not hasStale then
-                        updated, Map.empty
-                    else
-                        let processParams = resolveProcessParams deps input mergedConfig fullResult.Lock.Project
-                        recreateStaleIssues deps processParams updated
-                let updatedByRepo =
-                    recoveredUpdated |> List.map (fun r -> r.Issue.Repo, r) |> Map.ofList
-                let finalResults =
-                    fullResult.Results |> List.map (fun r ->
-                        if r.Outcome <> AlreadyExisted then r
-                        else updatedByRepo |> Map.tryFind r.Issue.Repo |> Option.defaultValue r)
-                let finalIssues =
-                    fullResult.Lock.Issues
-                    |> List.map (fun i ->
-                        match Map.tryFind i.Repo newRefByRepo with
-                        | Some newRef -> newRef
-                        | None        -> i)
-                let finalLock = { fullResult.Lock with Issues = finalIssues }
-                if not (Map.isEmpty newRefByRepo) then
-                    LockFile.write deps.FileSystem input.YamlPath finalLock
-                Ok { fullResult with Lock = finalLock; Results = finalResults }
+            refreshBodies deps input mergedConfig fullResult
 
     | None ->
         runFull deps input mergedConfig yamlHash templateHash

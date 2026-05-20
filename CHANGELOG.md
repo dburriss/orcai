@@ -22,10 +22,9 @@
 - Comment-building logic (template variable resolution + `PostComment`) extracted from `RunCommand` and `NudgeCommand` into a shared internal `Comments` module, used by all three comment-posting paths.
 
 - `orcai run` now automatically updates issue bodies when the Markdown template changes. A `templateHash` field is stored in the lock file alongside the existing `yamlHash`, allowing the tool to detect which changed:
-  - Only `.md` changed → updates issue bodies only (`gh issue edit` per repo); no project, label, or assignment calls made.
-  - Only `.yml` changed → structural re-run as before; no redundant body edits.
-  - Both changed → structural re-run, then issue bodies updated for any repos that already had issues.
+  - Either `.yml` or `.md` changed → structural re-run via `runFull`, honouring `onClosedIssue` policy. If the template hash changed, issue bodies are refreshed for any repos reconciled as `AlreadyExisted` or `Reopened`.
   - Neither changed → fast path, zero network calls (unchanged from before).
+  - `--skip-lock` → structural re-run plus unconditional body refresh for `AlreadyExisted` / `Reopened`.
   - Old lock files without `templateHash` are treated as changed, triggering a one-time body sync on next run.
 
 - `assign` block in YAML job config and global/local JSON config — configures who receives the issue and how they are triggered. Applies to both `orcai run` and `orcai nudge`.
@@ -48,6 +47,8 @@
 - Lock file schema: new `skippedRepos: string[]` field. Old lock files without this field still load (treated as empty); the field is populated on the next run.
 
 ### Fixed
+
+- Template bumps now go through `runFull`, honouring `onClosedIssue` policy and refreshing the body of reopened issues. Previously, editing only the MD template could silently rewrite the body of a closed issue and skip the body refresh for reopened issues.
 
 - `orcai run` no longer creates a duplicate issue when the GitHub API lookup itself fails. Transient `gh` errors during open- or closed-issue lookup (rate limits, network resets, exhausted retries) are now surfaced as a per-repo error instead of being silently treated as "no matching issue". This also restores `--on-closed-issue` semantics on lookup failures — the configured action (`reopen` / `skip` / `fail`) is no longer bypassed when the closed-issue query errors.
 

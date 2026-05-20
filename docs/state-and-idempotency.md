@@ -9,10 +9,11 @@ OrcAI uses two layered guards to avoid creating duplicate GitHub resources: a **
 A successful `orcai run` writes a `<stem>.lock.json` file alongside the YAML config. It records:
 
 - `yamlHash` — SHA-256 of the raw YAML file bytes
+- `templateHash` — SHA-256 of the raw MD template file bytes
 - `lockedAt` — timestamp of the run
 - All created resources: `project`, `repos`, `issues`, `pullRequests`
 
-On subsequent runs, if the lock file exists and its `yamlHash` matches the current YAML content, the run short-circuits immediately — no GitHub API calls are made. Every issue is reported as `AlreadyExisted` and the result source is `FromLockFile`.
+On subsequent runs, if the lock file exists and **both** `yamlHash` and `templateHash` match the current files, the run short-circuits immediately — no GitHub API calls are made. Every issue is reported as `AlreadyExisted` and the result source is `FromLockFile`. If either hash differs, the run falls through to `runFull`.
 
 ### Lock file lifecycle
 
@@ -21,12 +22,13 @@ On subsequent runs, if the lock file exists and its `yamlHash` matches the curre
 | All repos succeed | Written (or overwritten) |
 | Any repo fails | Not written — no partial lock |
 | YAML content changes | Hash mismatch → full re-run → lock overwritten on success |
+| MD template content changes | Hash mismatch → full re-run → body refresh → lock overwritten on success |
 | `orcai cleanup` succeeds | Lock file deleted |
-| `--skip-lock` flag | Lock file ignored entirely; always full run |
+| `--skip-lock` flag | Lock file ignored entirely; always full run + body refresh |
 
 ### Hash computation
 
-The hash is `SHA256(raw YAML bytes)`. Any change to the file — including whitespace — invalidates the lock and triggers a full run.
+Both hashes are `SHA256(raw file bytes)`. Any change to either the YAML or the MD template — including whitespace — invalidates the lock and triggers a full run. A template-only change additionally refreshes the body of every issue that `runFull` reconciled as `AlreadyExisted` or `Reopened`.
 
 ---
 
@@ -80,17 +82,29 @@ PRs are not created by OrcAI — that is delegated entirely to Copilot. `FindPrs
 ```
 orcai run
   │
-  ├─ Lock file exists AND yamlHash matches?
+  ├─ --skip-lock?
+  │     YES → runFull, then refresh body for AlreadyExisted + Reopened
+  │     NO  ↓
+  │
+  ├─ Lock file exists AND yamlHash matches AND templateHash matches?
   │     YES → return all issues as AlreadyExisted (no API calls)
   │     NO  ↓
   │
-  ├─ FindProject → reuse or create
+  ├─ Lock file exists but a hash changed?
+  │     YES → runFull, then if templateHash differs: refresh body
+  │           for AlreadyExisted + Reopened
+  │     NO (no lock at all) → runFull (no body refresh — issues
+  │                           were just created with the current body)
   │
-  └─ For each repo:
-        ├─ FindIssue (open, by title) → reuse if found
-        ├─ Else FindClosedIssue (closed, by title) → onClosedIssue action: create | reopen | skip | fail
-        └─ hasCopilot? → skip or assign
+  └─ runFull:
+        ├─ FindProject → reuse or create
+        └─ For each repo:
+              ├─ FindIssue (open, by title) → reuse if found
+              ├─ Else FindClosedIssue (closed, by title) → onClosedIssue action: create | reopen | skip | fail
+              └─ hasCopilot? → skip or assign
 ```
+
+A change to either the YAML or the MD template invalidates the lock the same way. Body-refresh after `runFull` only targets `AlreadyExisted` and `Reopened` outcomes — never `Skipped`, `SkippedArchived`, `Created`, or a closed issue that the policy left alone.
 
 ---
 
@@ -110,6 +124,8 @@ GitHub issues have exactly two states: `open` and `closed`. There is no draft, p
 | `fail` | Treat the closed match as a hard error for that repo. |
 
 Title matching is exact and case-sensitive — any drift in `job.title` between runs (date stamps, version numbers, trailing whitespace) bypasses both checks. To stop duplicates on re-runs of a stable title, set `onClosedIssue: reopen` (or `skip`) in YAML or pass `--on-closed-issue reopen` on the CLI.
+
+Template bumps go through the same `runFull` path as YAML changes, so the `onClosedIssue` policy applies uniformly — editing only the MD template will never silently rewrite the body of a closed issue.
 
 ---
 

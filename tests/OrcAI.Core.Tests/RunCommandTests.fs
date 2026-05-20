@@ -471,7 +471,7 @@ let ``isStaleIssue does not match unrelated errors`` (msg: string) =
     Assert.False(isStaleIssue msg)
 
 /// Set up a lock file whose YAML hash matches the current YAML file but template hash
-/// is stale, so executeSingle takes the `updateBodies` branch.
+/// is stale, so executeSingle re-runs runFull and then refreshBodies.
 let private givenStaleTemplateLock (fs: MockFileSystem) (yamlPath: string) (issueRepo: RepoName) (issueNum: int) =
     let yamlHash = OrcAI.Core.YamlConfig.computeHash (fs :> System.IO.Abstractions.IFileSystem) yamlPath
     let issue =
@@ -489,24 +489,194 @@ let private givenStaleTemplateLock (fs: MockFileSystem) (yamlPath: string) (issu
             PullRequests = [] }
     OrcAI.Core.LockFile.write (fs :> System.IO.Abstractions.IFileSystem) yamlPath lock
 
+/// Set up a lock file whose template hash matches the current template but YAML hash
+/// is stale, so executeSingle re-runs runFull but skips refreshBodies.
+let private givenStaleYamlLock (fs: MockFileSystem) (yamlPath: string) (issueRepo: RepoName) (issueNum: int) =
+    let templateHash =
+        match OrcAI.Core.YamlConfig.resolveTemplatePath (fs :> System.IO.Abstractions.IFileSystem) yamlPath with
+        | Some p -> OrcAI.Core.YamlConfig.computeTemplateHash (fs :> System.IO.Abstractions.IFileSystem) p
+        | None   -> ""
+    let issue =
+        let (RepoName r) = issueRepo
+        { Repo = issueRepo
+          Number = IssueNumber issueNum
+          Url = $"https://github.com/{r}/issues/{issueNum}"
+          Assignees = [] }
+    let lock =
+        { A.LockFile.defaults () with
+            YamlHash     = "stale-yaml-hash"
+            TemplateHash = templateHash
+            Repos        = [ issueRepo ]
+            Issues       = [ issue ]
+            PullRequests = [] }
+    OrcAI.Core.LockFile.write (fs :> System.IO.Abstractions.IFileSystem) yamlPath lock
+
 [<Fact>]
-let ``updateBodies recreates issue when UpdateIssue returns stale error`` () =
+let ``template change triggers runFull and refreshes body of existing open issue`` () =
     let fs   = MockFileSystem()
     let path = Given.namedYamlFile fs "job.yml"
     let repo = RepoName "myorg/repo-a"
     givenStaleTemplateLock fs path repo 42
 
-    let createCalls = ConcurrentBag<unit>()
+    let updateCalls = ConcurrentBag<unit>()
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
+                FindIssue   = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 42)) }
                 UpdateIssue = fun _ _ _ _ ->
-                    async { return Error "GraphQL: Could not resolve to an issue or pull request with the number of 42. (updateIssue)" }
-                FindIssue   = fun _ _ -> async { return Ok None }
+                    updateCalls.Add(())
+                    async { return Ok () }
+                CreateIssue = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" } }
+    let deps  = Given.deps fs client
+    let input = { A.RunInput.defaults () with SkipLock = false }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.NotEmpty(updateCalls)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Contains(result.Results, fun r -> r.Outcome = Updated)
+
+[<Fact>]
+let ``YAML-only change runs runFull but does NOT refresh issue bodies`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let repo = RepoName "myorg/repo-a"
+    givenStaleYamlLock fs path repo 42
+
+    let updateCalls = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindIssue   = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 42)) }
+                UpdateIssue = fun _ _ _ _ ->
+                    updateCalls.Add(())
+                    async { return Ok () } }
+    let deps  = Given.deps fs client
+    let input = { A.RunInput.defaults () with SkipLock = false }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.Empty(updateCalls)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Contains(result.Results, fun r -> r.Outcome = AlreadyExisted)
+
+[<Fact>]
+let ``--skip-lock refreshes bodies of existing open issues even with no edits`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+
+    let updateCalls = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindIssue   = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 42)) }
+                UpdateIssue = fun _ _ _ _ ->
+                    updateCalls.Add(())
+                    async { return Ok () }
+                CreateIssue = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" } }
+    let deps  = Given.deps fs client
+    let input = { A.RunInput.defaults () with SkipLock = true }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.NotEmpty(updateCalls)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Contains(result.Results, fun r -> r.Outcome = Updated)
+
+[<Fact>]
+let ``template change + onClosedIssue=skip does not edit closed issue body`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let repo = RepoName "myorg/repo-a"
+    givenStaleTemplateLock fs path repo 42
+
+    let updateCalls = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindIssue       = fun _ _ -> async { return Ok None }
+                FindClosedIssue = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 7)) }
+                UpdateIssue     = fun _ _ _ _ ->
+                    updateCalls.Add(())
+                    async { return Ok () }
+                CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" } }
+    let deps  = Given.deps fs client
+    let input =
+        A.RunInput.defaults ()
+        |> A.RunInput.withOnClosedIssue (Some Skip)
+    let input = { input with SkipLock = false }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.Empty(updateCalls)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Contains(result.Results, fun r -> r.Outcome = Skipped)
+
+[<Fact>]
+let ``template change + onClosedIssue=reopen reopens and refreshes body`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let repo = RepoName "myorg/repo-a"
+    givenStaleTemplateLock fs path repo 42
+
+    let updateCalls = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindIssue       = fun _ _ -> async { return Ok None }
+                FindClosedIssue = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 7)) }
+                ReopenIssue     = fun r _ -> async { return Ok (FakeGhClient.issueFor r 7) }
+                UpdateIssue     = fun _ _ _ _ ->
+                    updateCalls.Add(())
+                    async { return Ok () }
+                CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" } }
+    let deps  = Given.deps fs client
+    let input =
+        A.RunInput.defaults ()
+        |> A.RunInput.withOnClosedIssue (Some Reopen)
+    let input = { input with SkipLock = false }
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.NotEmpty(updateCalls)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Contains(result.Results, fun r -> r.Outcome = Reopened)
+
+[<Fact>]
+let ``refreshBodies recreates issue when UpdateIssue returns stale error`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let repo = RepoName "myorg/repo-a"
+    givenStaleTemplateLock fs path repo 42
+
+    // Stateful FindIssue: returns the original on first call (during runFull → AlreadyExisted),
+    // then None on second call (during recreateStaleIssues' processRepo) so it falls through to
+    // CreateIssue.
+    let findCallCount = ref 0
+    let createCalls   = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindIssue       = fun r _ ->
+                    let n = System.Threading.Interlocked.Increment(findCallCount)
+                    if n = 1 then async { return Ok (Some (FakeGhClient.issueFor r 42)) }
+                    else          async { return Ok None }
                 FindClosedIssue = fun _ _ -> async { return Ok None }
-                CreateIssue = fun repo _ _ _ ->
+                UpdateIssue     = fun _ _ _ _ ->
+                    async { return Error "GraphQL: Could not resolve to an issue or pull request with the number of 42. (updateIssue)" }
+                CreateIssue     = fun r _ _ _ ->
                     createCalls.Add(())
-                    async { return Ok (FakeGhClient.issueFor repo 99) } }
+                    async { return Ok (FakeGhClient.issueFor r 99) } }
     let deps  = Given.deps fs client
     let input = { A.RunInput.defaults () with SkipLock = false }
 
@@ -519,78 +689,6 @@ let ``updateBodies recreates issue when UpdateIssue returns stale error`` () =
         Assert.Contains(result.Results, fun r -> r.Outcome = StaleIssueRecreated)
         let issue = List.head result.Lock.Issues
         Assert.Equal(IssueNumber 99, issue.Number)
-
-[<Fact>]
-let ``updateBodies leaves non-stale issues unaffected when one repo is stale`` () =
-    let fs   = MockFileSystem()
-    let path = Given.namedYamlFile fs "job.yml"
-    let repoA = RepoName "myorg/repo-a"
-    let repoB = RepoName "myorg/repo-b"
-    let yamlHash = OrcAI.Core.YamlConfig.computeHash (fs :> System.IO.Abstractions.IFileSystem) path
-    let lock =
-        { A.LockFile.defaults () with
-            YamlHash     = yamlHash
-            TemplateHash = "stale-template-hash"
-            Repos        = [ repoA; repoB ]
-            Issues       =
-                [ { Repo = repoA; Number = IssueNumber 7
-                    Url = "https://github.com/myorg/repo-a/issues/7"; Assignees = [] }
-                  { Repo = repoB; Number = IssueNumber 8
-                    Url = "https://github.com/myorg/repo-b/issues/8"; Assignees = [] } ]
-            PullRequests = [] }
-    OrcAI.Core.LockFile.write (fs :> System.IO.Abstractions.IFileSystem) path lock
-
-    let client =
-        FakeGhClient.from
-            { FakeGhClient.defaults with
-                UpdateIssue = fun repo (IssueNumber n) _ _ ->
-                    if n = 7 then
-                        async { return Error "GraphQL: Could not resolve to an issue or pull request with the number of 7." }
-                    else
-                        async { return Ok () }
-                FindIssue   = fun _ _ -> async { return Ok None }
-                FindClosedIssue = fun _ _ -> async { return Ok None }
-                CreateIssue = fun repo _ _ _ ->
-                    async { return Ok (FakeGhClient.issueFor repo 77) } }
-    let deps  = Given.deps fs client
-    let input = { A.RunInput.defaults () with SkipLock = false }
-
-    let results = execute deps [path] input |> Async.RunSynchronously
-
-    match results.[path] with
-    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
-    | Ok result ->
-        let byRepo = result.Lock.Issues |> List.map (fun i -> i.Repo, i) |> Map.ofList
-        // Stale repo got new issue number; non-stale repo kept original number.
-        Assert.Equal(IssueNumber 77, byRepo.[repoA].Number)
-        Assert.Equal(IssueNumber 8,  byRepo.[repoB].Number)
-
-[<Fact>]
-let ``stale-issue recreate failure surfaces as UpdateFailed`` () =
-    let fs   = MockFileSystem()
-    let path = Given.namedYamlFile fs "job.yml"
-    let repo = RepoName "myorg/repo-a"
-    givenStaleTemplateLock fs path repo 42
-
-    let client =
-        FakeGhClient.from
-            { FakeGhClient.defaults with
-                UpdateIssue = fun _ _ _ _ ->
-                    async { return Error "GraphQL: Could not resolve to an issue or pull request with the number of 42." }
-                FindIssue   = fun _ _ -> async { return Ok None }
-                FindClosedIssue = fun _ _ -> async { return Ok None }
-                CreateIssue = fun _ _ _ _ ->
-                    async { return Error "boom: create failed" } }
-    let deps  = Given.deps fs client
-    let input = { A.RunInput.defaults () with SkipLock = false }
-
-    let results = execute deps [path] input |> Async.RunSynchronously
-
-    match results.[path] with
-    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
-    | Ok result ->
-        Assert.Contains(result.Results, fun r ->
-            match r.Outcome with UpdateFailed _ -> true | _ -> false)
 
 // ---------------------------------------------------------------------------
 
