@@ -189,7 +189,7 @@ Execute a bulk upgrade job defined in one or more YAML files. Globs are supporte
 ```
 orcai run <yaml_file_or_glob> [--verbose] [--auto-create-labels] [--skip-copilot]
          [--skip-lock] [--max-concurrency <n>] [--no-parallel] [--continue-on-error]
-         [--on-closed-issue <action>] [--json]
+         [--on-closed-issue <action>] [--dryrun] [--json]
 ```
 
 ### Arguments and flags
@@ -205,6 +205,7 @@ orcai run <yaml_file_or_glob> [--verbose] [--auto-create-labels] [--skip-copilot
 | `--no-parallel` | flag | No | false | Disable all parallelism — files and repo checks run sequentially. Overrides `--max-concurrency`. |
 | `--continue-on-error` | flag | No | false | Continue processing remaining files when one fails instead of stopping. |
 | `--on-closed-issue` | string | No | `create` | What to do when a closed issue with the exact same title already exists in a repo: `create` (open a new issue anyway), `reopen` (reopen the closed one), `skip` (do nothing), or `fail` (error out). Overrides the YAML `job.onClosedIssue` value. |
+| `--dryrun` | flag | No | false | Preview what would be created/updated/reopened. Performs no GitHub mutations and does not write the lock file. Read-only lookups still run so the preview reflects current state. |
 | `--json` | flag | No | false | Emit machine-readable JSON output to stdout instead of the human summary. |
 
 ### Behavior
@@ -259,7 +260,7 @@ orcai run "jobs/*.yml" --no-parallel
 Re-trigger the assignee on stale issues — those with no linked pull request yet. Reads the lock file written by `orcai run` to find issues, then checks GitHub live for any PRs that have been opened since the last run.
 
 ```
-orcai nudge <yaml_file> [--dry-run] [--save-lock] [--verbose]
+orcai nudge <yaml_file> [--dryrun] [--save-lock] [--verbose]
 ```
 
 ### Flags
@@ -267,7 +268,7 @@ orcai nudge <yaml_file> [--dry-run] [--save-lock] [--verbose]
 | Flag | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `<yaml_file>` | positional | Yes | — | YAML job config path. A lock file must exist next to it (run `orcai run` first). |
-| `--dry-run` | flag | No | false | Show what would be nudged without making any changes. |
+| `--dryrun` | flag | No | false | Show what would be nudged without making any changes. |
 | `--save-lock` | flag | No | false | If live PR checks discover new PRs, write them to the lock file. |
 | `--verbose` | flag | No | false | Emit per-issue status messages to stderr. |
 
@@ -302,7 +303,7 @@ A table with Repo / Issue / Status columns:
 
 ```sh
 orcai nudge jobs/my-upgrade.yml
-orcai nudge jobs/my-upgrade.yml --dry-run
+orcai nudge jobs/my-upgrade.yml --dryrun
 orcai nudge jobs/my-upgrade.yml --save-lock --verbose
 ```
 
@@ -313,7 +314,7 @@ orcai nudge jobs/my-upgrade.yml --save-lock --verbose
 Post a comment to issues and/or PRs recorded in the lock file. Useful for broadcasting status updates or custom messages to all tracked items at once.
 
 ```
-orcai notify <yaml_file> [--target issues|prs|both] [--state open|closed|all] [--template <string>] [--data key=value]... [--json-data <json>] [--dry-run] [--verbose]
+orcai notify <yaml_file> [--target issues|prs|both] [--state open|closed|all] [--template <string>] [--data key=value]... [--json-data <json>] [--dryrun] [--verbose]
 ```
 
 ### Flags
@@ -326,7 +327,7 @@ orcai notify <yaml_file> [--target issues|prs|both] [--state open|closed|all] [-
 | `--template` | string | No | — | Inline comment template. Overrides `notify.comment` from YAML/config. Supports `{key}` placeholders. |
 | `--data` | string | No | — | Extra template variable as `key=value` (repeatable). E.g. `--data sprint=42`. |
 | `--json-data` | string | No | — | Extra template variables as a JSON object string. E.g. `--json-data '{"sprint":"42"}'`. Merged with `--data`; `--data` takes precedence on key conflicts. |
-| `--dry-run` | flag | No | false | Preview which items would be notified without posting any comments. |
+| `--dryrun` | flag | No | false | Preview which items would be notified without posting any comments. |
 | `--verbose` | flag | No | false | Emit per-item status messages to stderr. |
 
 ### Template variables
@@ -351,7 +352,7 @@ The comment template supports `{key}` placeholders. Built-in variables are resol
 For each item in the lock file that matches `--target` and `--state`:
 
 1. Fetches the current GitHub state (unless `--state all`) and skips items that don't match.
-2. If `--dry-run`, records the item as "would notify" without posting.
+2. If `--dryrun`, records the item as "would notify" without posting.
 3. Resolves the effective template (CLI flag → YAML → global config). If no template is configured, the item is skipped with a verbose message.
 4. Renders the template with the merged variable map and posts the comment.
 
@@ -385,7 +386,7 @@ orcai notify jobs/my-upgrade.yml \
 orcai notify jobs/my-upgrade.yml --target both --state all
 
 # Dry run to preview without posting
-orcai notify jobs/my-upgrade.yml --dry-run --verbose
+orcai notify jobs/my-upgrade.yml --dryrun --verbose
 ```
 
 ---

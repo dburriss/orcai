@@ -28,7 +28,7 @@
     <PackageReleaseNotes>`orcai notify` command — posts a templated comment to issues and/or PRs recorded in the lock file. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` template tokens as `nudge.comment`.
 `--target issues|prs|both` — which lock file items to notify (default: `issues`).
 `--state open|closed|all` — filter by current GitHub state before commenting (default: `open`); `closed` matches both closed and merged PRs; `all` skips the live state check entirely.
-`--dry-run` — preview which items would be notified without posting any comments.
+`--dryrun` — preview which items would be notified without posting any comments.
 `--verbose` — print per-item progress to stderr.
 `--template &lt;string&gt;` — inline comment template supplied directly on the CLI; overrides `notify.comment` from YAML/config.
 `--data key=value` — inject an extra template variable (repeatable). E.g. `--data sprint=42`.

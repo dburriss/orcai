@@ -18,6 +18,7 @@ type RunArgs =
     | No_Parallel
     | Continue_On_Error
     | On_Closed_Issue of action: string
+    | Dryrun
     | Json
     interface IArgParserTemplate with
         member a.Usage =
@@ -31,6 +32,7 @@ type RunArgs =
             | No_Parallel        -> "Disable all parallelism — files are processed sequentially and repo checks within each file run sequentially. Overrides --max-concurrency."
             | Continue_On_Error  -> "Continue processing remaining files when one fails, instead of stopping on the first error."
             | On_Closed_Issue _  -> "What to do when a closed issue with a matching title is found: create (default), reopen, skip, or fail."
+            | Dryrun             -> "Preview what would be created/updated without making any GitHub API calls or writing the lock file."
             | Json               -> "Emit machine-readable JSON output to stdout."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
@@ -136,7 +138,7 @@ type GenerateArgs =
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type NudgeArgs =
     | [<MainCommand; Mandatory>] Yaml_File of path: string
-    | Dry_Run
+    | Dryrun
     | Save_Lock
     | Verbose
     | Max_Concurrency of n: int
@@ -144,7 +146,7 @@ type NudgeArgs =
         member a.Usage =
             match a with
             | Yaml_File _       -> "Path to the YAML job configuration file."
-            | Dry_Run           -> "Preview which issues would be nudged without making any changes."
+            | Dryrun            -> "Preview which issues would be nudged without making any changes."
             | Save_Lock         -> "Write discovered PRs back to the lock file."
             | Verbose           -> "Enable verbose output."
             | Max_Concurrency _ -> "Maximum number of issues processed concurrently (default: 4). Note: high values may hit GitHub rate limits."
@@ -152,7 +154,7 @@ type NudgeArgs =
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type NotifyArgs =
     | [<MainCommand; Mandatory>] Yaml_File of path: string
-    | Dry_Run
+    | Dryrun
     | Verbose
     | Target    of target:   string
     | State     of state:    string
@@ -163,7 +165,7 @@ type NotifyArgs =
         member a.Usage =
             match a with
             | Yaml_File _  -> "Path to the YAML job configuration file."
-            | Dry_Run      -> "Preview which items would be notified without posting any comments."
+            | Dryrun       -> "Preview which items would be notified without posting any comments."
             | Verbose      -> "Enable verbose output."
             | Target _     -> "Which lock file items to notify: issues (default), prs, or both."
             | State _      -> "Filter by current GitHub state: open (default), closed, or all."

@@ -250,6 +250,9 @@ let private printRunJsonMulti (results: Map<string, Result<OrcAI.Core.RunCommand
                     let updated       = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Updated)              |> List.length
                     let skippedArch   = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.SkippedArchived)      |> List.length
                     let staleRecreated= result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.StaleIssueRecreated)  |> List.length
+                    let wouldCreate   = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.DryRunWouldCreate)    |> List.length
+                    let wouldReopen   = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.DryRunWouldReopen)    |> List.length
+                    let wouldUpdate   = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.DryRunWouldUpdate)    |> List.length
                     let issues =
                         result.Results |> List.map (fun r ->
                             let (RepoName repo)   = r.Issue.Repo
@@ -264,6 +267,9 @@ let private printRunJsonMulti (results: Map<string, Result<OrcAI.Core.RunCommand
                                 | OrcAI.Core.RunCommand.UpdateFailed _      -> "updateFailed"
                                 | OrcAI.Core.RunCommand.SkippedArchived     -> "skippedArchived"
                                 | OrcAI.Core.RunCommand.StaleIssueRecreated -> "staleIssueRecreated"
+                                | OrcAI.Core.RunCommand.DryRunWouldCreate   -> "dryRunWouldCreate"
+                                | OrcAI.Core.RunCommand.DryRunWouldReopen   -> "dryRunWouldReopen"
+                                | OrcAI.Core.RunCommand.DryRunWouldUpdate   -> "dryRunWouldUpdate"
                             {| repo = repo; issueNumber = num; status = status |})
                     box
                         {| created             = created
@@ -273,6 +279,9 @@ let private printRunJsonMulti (results: Map<string, Result<OrcAI.Core.RunCommand
                            updated             = updated
                            skippedArchived     = skippedArch
                            staleIssueRecreated = staleRecreated
+                           dryRunWouldCreate   = wouldCreate
+                           dryRunWouldReopen   = wouldReopen
+                           dryRunWouldUpdate   = wouldUpdate
                            repos               = issues |}
             path, value)
         |> dict
@@ -331,6 +340,7 @@ let main argv =
             let maxConcurrency  = args.TryGetResult(RunArgs.Max_Concurrency) |> Option.defaultValue 4
             let noParallel      = args.Contains(RunArgs.No_Parallel)
             let continueOnError = args.Contains(RunArgs.Continue_On_Error)
+            let dryRun          = args.Contains(RunArgs.Dryrun)
             let json            = args.Contains(RunArgs.Json)
             let onClosedIssue   =
                 match args.TryGetResult(RunArgs.On_Closed_Issue) with
@@ -370,7 +380,8 @@ let main argv =
                       ContinueOnError    = effectiveContinueOnError
                       DefaultLabels      = deps.Config.DefaultLabels |> Option.defaultValue []
                       IsPrimaryAuthApp   = isPrimaryAuthApp
-                      OnClosedIssue      = onClosedIssue }
+                      OnClosedIssue      = onClosedIssue
+                      DryRun             = dryRun }
                 let results =
                     OrcAI.Core.RunCommand.execute deps paths input
                     |> Async.RunSynchronously
@@ -395,16 +406,23 @@ let main argv =
                                 let skippedArch   = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.SkippedArchived)      |> List.length
                                 let staleRecreated= result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.StaleIssueRecreated)  |> List.length
                                 let updateFailed  = result.Results |> List.filter (fun r -> match r.Outcome with OrcAI.Core.RunCommand.UpdateFailed _ -> true | _ -> false) |> List.length
-                                let extras =
-                                    [ if reopened       > 0 then $", {reopened} reopened"
-                                      if skipped        > 0 then $", {skipped} skipped"
-                                      if updated        > 0 then $", {updated} updated"
-                                      if skippedArch    > 0 then $", {skippedArch} skipped-archived"
-                                      if staleRecreated > 0 then $", {staleRecreated} stale-recreated"
-                                      if updateFailed   > 0 then $", {updateFailed} update-failed" ]
-                                    |> String.concat ""
-                                printfn "  Run complete. %d issue(s) created, %d already existed%s across %d repo(s). Lock file written."
-                                    created existing extras result.Lock.Repos.Length
+                                let wouldCreate   = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.DryRunWouldCreate)    |> List.length
+                                let wouldReopen   = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.DryRunWouldReopen)    |> List.length
+                                let wouldUpdate   = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.DryRunWouldUpdate)    |> List.length
+                                if dryRun then
+                                    printfn "  Dry run: %d issue(s) would be created, %d would be reopened, %d would be updated (across %d repo(s))."
+                                        wouldCreate wouldReopen wouldUpdate result.Lock.Repos.Length
+                                else
+                                    let extras =
+                                        [ if reopened       > 0 then $", {reopened} reopened"
+                                          if skipped        > 0 then $", {skipped} skipped"
+                                          if updated        > 0 then $", {updated} updated"
+                                          if skippedArch    > 0 then $", {skippedArch} skipped-archived"
+                                          if staleRecreated > 0 then $", {staleRecreated} stale-recreated"
+                                          if updateFailed   > 0 then $", {updateFailed} update-failed" ]
+                                        |> String.concat ""
+                                    printfn "  Run complete. %d issue(s) created, %d already existed%s across %d repo(s). Lock file written."
+                                        created existing extras result.Lock.Repos.Length
                             if verbose && not result.Results.IsEmpty then
                                 AnsiConsole.WriteLine()
                                 let table = Table()
@@ -426,6 +444,9 @@ let main argv =
                                         | OrcAI.Core.RunCommand.UpdateFailed _      -> "[red]update failed[/]"
                                         | OrcAI.Core.RunCommand.SkippedArchived     -> "[grey]skipped (archived)[/]"
                                         | OrcAI.Core.RunCommand.StaleIssueRecreated -> "[yellow]stale — recreated[/]"
+                                        | OrcAI.Core.RunCommand.DryRunWouldCreate   -> "[dim]would create (dry run)[/]"
+                                        | OrcAI.Core.RunCommand.DryRunWouldReopen   -> "[dim]would reopen (dry run)[/]"
+                                        | OrcAI.Core.RunCommand.DryRunWouldUpdate   -> "[dim]would update (dry run)[/]"
                                     let issueCell =
                                         if num = 0 then Markup("[dim]-[/]")
                                         else Markup($"[yellow]#{num}[/]")
@@ -496,7 +517,7 @@ let main argv =
                     0)
         | Nudge args ->
             let yamlFile       = args.GetResult(NudgeArgs.Yaml_File)
-            let dryRun         = args.Contains(NudgeArgs.Dry_Run)
+            let dryRun         = args.Contains(NudgeArgs.Dryrun)
             let saveLock       = args.Contains(NudgeArgs.Save_Lock)
             let verbose        = args.Contains(NudgeArgs.Verbose)
             let maxConcurrency = args.TryGetResult(NudgeArgs.Max_Concurrency) |> Option.defaultValue 4
@@ -573,7 +594,7 @@ let main argv =
                         if failed > 0 then 1 else 0)
         | Notify args ->
             let yamlFile  = args.GetResult(NotifyArgs.Yaml_File)
-            let dryRun    = args.Contains(NotifyArgs.Dry_Run)
+            let dryRun    = args.Contains(NotifyArgs.Dryrun)
             let verbose   = args.Contains(NotifyArgs.Verbose)
             let target    = args.TryGetResult(NotifyArgs.Target)   |> Option.defaultValue "issues"
             let state     = args.TryGetResult(NotifyArgs.State)    |> Option.defaultValue "open"

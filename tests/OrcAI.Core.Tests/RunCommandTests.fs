@@ -715,3 +715,165 @@ let ``create action (default) creates new issue even when closed issue exists`` 
     | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
     | Ok result ->
         Assert.True(result.Results |> List.forall (fun r -> r.Outcome = Created))
+
+// ---------------------------------------------------------------------------
+// Dry-run — must not perform any GitHub mutations or write the lock file
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``dry-run does not call CreateIssue, AddIssueToProject, or AssignIssue`` () =
+    let fs          = MockFileSystem()
+    let path        = Given.namedYamlFile fs "job.yml"
+    let createCalls = ConcurrentBag<unit>()
+    let addCalls    = ConcurrentBag<unit>()
+    let assignCalls = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                CreateIssue       = fun _ _ _ _ ->
+                    createCalls.Add(())
+                    async { return failwith "CreateIssue must not be called in dry-run" }
+                AddIssueToProject = FakeGhClient.trackingAddIssue addCalls
+                AssignIssue       = FakeGhClient.trackingAssignUnit assignCalls }
+    let deps  = Given.deps fs client
+    let input =
+        A.RunInput.defaults ()
+        |> A.RunInput.withDryRun true
+        |> A.RunInput.withSkipCopilot false
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.Empty(createCalls)
+    Assert.Empty(addCalls)
+    Assert.Empty(assignCalls)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Contains(result.Results, fun r -> r.Outcome = DryRunWouldCreate)
+
+[<Fact>]
+let ``dry-run does not call CreateProject when project missing`` () =
+    let fs                = MockFileSystem()
+    let path              = Given.namedYamlFile fs "job.yml"
+    let createProjectCalls = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindProject   = fun _ _ -> async { return None }
+                CreateProject = fun _ _ ->
+                    createProjectCalls.Add(())
+                    async { return failwith "CreateProject must not be called in dry-run" } }
+    let deps  = Given.deps fs client
+    let input = A.RunInput.defaults () |> A.RunInput.withDryRun true
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.Empty(createProjectCalls)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Equal(0, result.Lock.Project.Number)
+
+[<Fact>]
+let ``dry-run skips ReopenIssue and returns DryRunWouldReopen outcome`` () =
+    let fs           = MockFileSystem()
+    let path         = Given.namedYamlFile fs "job.yml"
+    let reopenCalls  = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindClosedIssue = fun repo _ -> async { return Ok (Some (FakeGhClient.issueFor repo 7)) }
+                ReopenIssue     = fun _ _ ->
+                    reopenCalls.Add(())
+                    async { return failwith "ReopenIssue must not be called in dry-run" } }
+    let deps  = Given.deps fs client
+    let input =
+        A.RunInput.defaults ()
+        |> A.RunInput.withDryRun true
+        |> A.RunInput.withOnClosedIssue (Some Reopen)
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.Empty(reopenCalls)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Contains(result.Results, fun r -> r.Outcome = DryRunWouldReopen)
+
+[<Fact>]
+let ``dry-run skips UpdateIssue in refreshBodies and returns DryRunWouldUpdate`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let repo = RepoName "myorg/repo-a"
+    givenStaleTemplateLock fs path repo 42
+
+    let updateCalls = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindIssue   = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 42)) }
+                UpdateIssue = fun _ _ _ _ ->
+                    updateCalls.Add(())
+                    async { return failwith "UpdateIssue must not be called in dry-run" } }
+    let deps  = Given.deps fs client
+    let input =
+        { A.RunInput.defaults () with SkipLock = false }
+        |> A.RunInput.withDryRun true
+
+    let results = execute deps [path] input |> Async.RunSynchronously
+
+    Assert.Empty(updateCalls)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result ->
+        Assert.Contains(result.Results, fun r -> r.Outcome = DryRunWouldUpdate)
+
+[<Fact>]
+let ``dry-run does not write the lock file`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+    let client = FakeGhClient.from FakeGhClient.defaults
+    let deps  = Given.deps fs client
+    let input =
+        { A.RunInput.defaults () with SkipLock = false }
+        |> A.RunInput.withDryRun true
+
+    execute deps [path] input |> Async.RunSynchronously |> ignore
+
+    let lockPath = path.Replace(".yml", ".lock.json")
+    Assert.False((fs :> System.IO.Abstractions.IFileSystem).File.Exists(lockPath))
+
+[<Fact>]
+let ``dry-run still performs read-only lookups (FindIssue, FindClosedIssue, ListLabels)`` () =
+    let fs              = MockFileSystem()
+    let yaml =
+        "job:\n  title: \"T\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"./template.md\"\n  labels: [\"bug\"]\n"
+    let path            = Given.yamlFile fs yaml "# body"
+    let findCalls       = ConcurrentBag<unit>()
+    let findClosedCalls = ConcurrentBag<unit>()
+    let listLabelsCalls = ConcurrentBag<unit>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindIssue       = fun _ _ ->
+                    findCalls.Add(())
+                    async { return Ok None }
+                FindClosedIssue = fun _ _ ->
+                    findClosedCalls.Add(())
+                    async { return Ok None }
+                ListLabels      = fun _ ->
+                    listLabelsCalls.Add(())
+                    async { return Ok [] } }
+    let deps  = Given.deps fs client
+    let input =
+        A.RunInput.defaults ()
+        |> A.RunInput.withDryRun true
+        |> A.RunInput.withAutoCreateLabels true
+
+    execute deps [path] input |> Async.RunSynchronously |> ignore
+
+    Assert.NotEmpty(findCalls)
+    Assert.NotEmpty(findClosedCalls)
+    Assert.NotEmpty(listLabelsCalls)

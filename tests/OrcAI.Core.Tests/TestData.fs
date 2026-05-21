@@ -80,7 +80,8 @@ module A =
               ContinueOnError  = false
               DefaultLabels    = []
               IsPrimaryAuthApp = false
-              OnClosedIssue    = None }
+              OnClosedIssue    = None
+              DryRun           = false }
 
         let withSkipCopilot v (i: OrcAI.Core.RunCommand.RunInput)         = { i with SkipCopilot = v }
         let withIsPrimaryAuthApp v (i: OrcAI.Core.RunCommand.RunInput)    = { i with IsPrimaryAuthApp = v }
@@ -88,6 +89,7 @@ module A =
         let withNoParallel v (i: OrcAI.Core.RunCommand.RunInput)          = { i with NoParallel = v }
         let withContinueOnError v (i: OrcAI.Core.RunCommand.RunInput)     = { i with ContinueOnError = v }
         let withAutoCreateLabels v (i: OrcAI.Core.RunCommand.RunInput)    = { i with AutoCreateLabels = v }
+        let withDryRun v (i: OrcAI.Core.RunCommand.RunInput)              = { i with DryRun = v }
 
     module ValidateInput =
         let defaults path : OrcAI.Core.ValidateCommand.ValidateInput =

@@ -4,10 +4,12 @@
 
 ### Added
 
+- `orcai run --dryrun` — preview what would be created, reopened, or updated without making any GitHub API calls or writing the lock file. Read-only lookups still run so the preview reflects current state. Outcomes are reported per repo as `would create`, `would reopen`, or `would update`, with a summary line and `dryRunWouldCreate` / `dryRunWouldReopen` / `dryRunWouldUpdate` counts in `--json`.
+
 - `orcai notify` command — posts a templated comment to issues and/or PRs recorded in the lock file. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` template tokens as `nudge.comment`.
   - `--target issues|prs|both` — which lock file items to notify (default: `issues`).
   - `--state open|closed|all` — filter by current GitHub state before commenting (default: `open`); `closed` matches both closed and merged PRs; `all` skips the live state check entirely.
-  - `--dry-run` — preview which items would be notified without posting any comments.
+  - `--dryrun` — preview which items would be notified without posting any comments.
   - `--verbose` — print per-item progress to stderr.
   - `--template <string>` — inline comment template supplied directly on the CLI; overrides `notify.comment` from YAML/config.
   - `--data key=value` — inject an extra template variable (repeatable). E.g. `--data sprint=42`.
@@ -18,6 +20,8 @@
 - `orcai run` detects when the lock file points to a deleted or transferred issue and recreates the issue in place instead of failing. New `staleIssueRecreated` count/status in the summary and `--json` output; the lock file is rewritten with the new issue numbers.
 
 ### Changed
+
+- `orcai nudge` and `orcai notify` rename `--dry-run` to `--dryrun` for consistency with `cleanup` (and the new `run --dryrun`). The old spelling is no longer accepted.
 
 - Comment-building logic (template variable resolution + `PostComment`) extracted from `RunCommand` and `NudgeCommand` into a shared internal `Comments` module, used by all three comment-posting paths.
 

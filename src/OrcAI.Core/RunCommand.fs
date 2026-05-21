@@ -34,7 +34,10 @@ type RunInput =
       /// warning when no secondary PAT is available for Copilot assignment.
       IsPrimaryAuthApp   : bool
       /// Overrides the YAML onClosedIssue value when explicitly set via CLI.
-      OnClosedIssue      : ClosedIssueAction option }
+      OnClosedIssue      : ClosedIssueAction option
+      /// When true, perform no GitHub mutations and do not write the lock file.
+      /// Read-only lookups still run so the preview reflects current state.
+      DryRun             : bool }
 
 /// Whether an issue was freshly created or already existed in GitHub.
 type IssueOutcome =
@@ -48,6 +51,12 @@ type IssueOutcome =
     | SkippedArchived
     /// Lock pointed to a deleted/transferred issue; a fresh issue was created in its place.
     | StaleIssueRecreated
+    /// Dry run: a new issue would have been created.
+    | DryRunWouldCreate
+    /// Dry run: an existing closed issue would have been reopened.
+    | DryRunWouldReopen
+    /// Dry run: an existing open issue's body would have been refreshed.
+    | DryRunWouldUpdate
 
 /// The result for a single repo processed during the run.
 type RepoResult =
@@ -101,6 +110,12 @@ let private archivedPlaceholder (repo: RepoName) : IssueRef =
     let (RepoName r) = repo
     { Repo = repo; Number = IssueNumber 0; Url = $"https://github.com/{r}"; Assignees = [] }
 
+/// Placeholder IssueRef for a repo where a dry run would have created a new issue.
+/// Number is 0 and URL points to a non-existent /issues/0 path.
+let private dryRunCreatePlaceholder (repo: RepoName) : IssueRef =
+    let (RepoName r) = repo
+    { Repo = repo; Number = IssueNumber 0; Url = $"https://github.com/{r}/issues/0"; Assignees = [] }
+
 /// Resolved per-run parameters shared by `processRepo` (used by both `runFull` and
 /// the stale-issue recovery path inside `refreshBodies`).
 type private ProcessParams =
@@ -114,7 +129,8 @@ type private ProcessParams =
       AssignTo          : string
       AssignVia         : string
       AssignComment     : string option
-      JobOwner          : string option }
+      JobOwner          : string option
+      DryRun            : bool }
 
 let private resolveProcessParams
     (deps    : OrcAIDeps)
@@ -148,15 +164,18 @@ let private resolveProcessParams
       AssignTo          = assignTo
       AssignVia         = assignVia
       AssignComment     = assignComment
-      JobOwner          = jobOwner }
+      JobOwner          = jobOwner
+      DryRun            = input.DryRun }
 
 /// Ensure every requested label exists in the repo, creating any that are missing.
 /// Returns Ok () when all labels are present or successfully created.
+/// When dryRun is true, lists missing labels (and logs them when verbose) but does not create them.
 let private ensureLabelsExist
     (client  : IGhClient)
     (repo    : RepoName)
     (labels  : string list)
     (verbose : bool)
+    (dryRun  : bool)
     : Async<Result<unit, string>> =
     async {
         if List.isEmpty labels then
@@ -168,6 +187,11 @@ let private ensureLabelsExist
             | Ok existing ->
                 let missing = labelsToCreate existing labels
                 if List.isEmpty missing then
+                    return Ok ()
+                elif dryRun then
+                    if verbose then
+                        for label in missing do
+                            eprintfn "[%s] Would create label '%s' (dry run)" repoStr label
                     return Ok ()
                 else
                     let mutable lastError : string option = None
@@ -205,6 +229,7 @@ let private processRepo
         let assignVia         = p.AssignVia
         let assignComment     = p.AssignComment
         let jobOwner          = p.JobOwner
+        let dryRun            = p.DryRun
 
         // -1. Pre-check: skip repos that are archived (read-only). Errors from the
         //     pre-check itself are non-fatal — fall through and let the write fail.
@@ -223,7 +248,7 @@ let private processRepo
 
         // 0. Auto-create missing labels if requested
         if autoCreateLabels && not (List.isEmpty config.Labels) then
-            match! ensureLabelsExist client repo config.Labels verbose with
+            match! ensureLabelsExist client repo config.Labels verbose dryRun with
             | Error e -> eprintfn "[%s] Warning: could not ensure labels exist: %s" repoStr e
             | Ok ()   -> ()
 
@@ -241,19 +266,31 @@ let private processRepo
                     match! client.FindClosedIssue repo config.IssueTitle with
                     | Error e -> return Error $"Failed to check for existing closed issue: {e}"
                     | Ok None ->
-                        if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
-                        let! result = client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels
-                        return result |> Result.map (fun issue -> (issue, Created))
-                    | Ok (Some closed) ->
-                        match closedIssueAction with
-                        | Create ->
+                        if dryRun then
+                            if verbose then eprintfn "[%s] Would create issue '%s' (dry run)" repoStr config.IssueTitle
+                            return Ok (dryRunCreatePlaceholder repo, DryRunWouldCreate)
+                        else
                             if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
                             let! result = client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels
                             return result |> Result.map (fun issue -> (issue, Created))
+                    | Ok (Some closed) ->
+                        match closedIssueAction with
+                        | Create ->
+                            if dryRun then
+                                if verbose then eprintfn "[%s] Would create issue '%s' (dry run)" repoStr config.IssueTitle
+                                return Ok (dryRunCreatePlaceholder repo, DryRunWouldCreate)
+                            else
+                                if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
+                                let! result = client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels
+                                return result |> Result.map (fun issue -> (issue, Created))
                         | Reopen ->
-                            if verbose then eprintfn "[%s] Reopening closed issue: %s" repoStr closed.Url
-                            let! reopenResult = client.ReopenIssue repo closed.Number
-                            return reopenResult |> Result.map (fun issue -> (issue, Reopened))
+                            if dryRun then
+                                if verbose then eprintfn "[%s] Would reopen closed issue: %s (dry run)" repoStr closed.Url
+                                return Ok (closed, DryRunWouldReopen)
+                            else
+                                if verbose then eprintfn "[%s] Reopening closed issue: %s" repoStr closed.Url
+                                let! reopenResult = client.ReopenIssue repo closed.Number
+                                return reopenResult |> Result.map (fun issue -> (issue, Reopened))
                         | Skip ->
                             if verbose then eprintfn "[%s] Closed issue found, skipping: %s" repoStr closed.Url
                             return Ok (closed, Skipped)
@@ -270,6 +307,16 @@ let private processRepo
 
         // 2. Add to project and assign copilot (bypassed for Skipped outcome)
         if outcome = Skipped then
+            return Some { Issue = issue; Outcome = outcome }
+        else
+
+        // Dry-run short-circuit: no further mutations beyond this point.
+        if dryRun then
+            if verbose then
+                match outcome with
+                | DryRunWouldCreate -> eprintfn "[%s] Would add issue to project and assign %s (dry run)" repoStr assignTo
+                | DryRunWouldReopen -> eprintfn "[%s] Would refresh project membership and assignment (dry run)" repoStr
+                | _                 -> ()
             return Some { Issue = issue; Outcome = outcome }
         else
 
@@ -345,13 +392,23 @@ let private runFull
     | Error e -> Error $"Auth error: {e}"
     | Ok _ ->
 
-    // 1. Find or create the GitHub Project (must complete before per-repo work)
+    // 1. Find or create the GitHub Project (must complete before per-repo work).
+    //    In dry-run mode, never call CreateProject — synthesise a placeholder so the
+    //    rest of the pipeline can still report what would happen.
     let projectResult =
         async {
             let (OrgName orgStr) = config.Org
             match! deps.GhClient.FindProject config.Org config.ProjectTitle with
             | Some p -> return Ok p
-            | None   ->
+            | None when input.DryRun ->
+                eprintfn "Project '%s' not found in '%s' — would create (dry run)." config.ProjectTitle orgStr
+                let placeholder : ProjectInfo =
+                    { Org    = config.Org
+                      Number = 0
+                      Title  = config.ProjectTitle
+                      Url    = $"https://github.com/orgs/{orgStr}/projects/0" }
+                return Ok placeholder
+            | None ->
                 eprintfn "Project '%s' not found in '%s', creating..." config.ProjectTitle orgStr
                 return! deps.GhClient.CreateProject config.Org config.ProjectTitle
         }
@@ -387,8 +444,8 @@ let private runFull
           PullRequests = []
           SkippedRepos = archivedRepos }
 
-    // Only write the lock file if every repo succeeded
-    if failures = 0 then
+    // Only write the lock file if every repo succeeded (and not a dry run)
+    if failures = 0 && not input.DryRun then
         LockFile.write deps.FileSystem input.YamlPath lock
 
     Ok { Lock = lock; Results = allResults; Source = FullRun }
@@ -459,21 +516,26 @@ let private refreshBodies
             toRefresh
             |> List.map (fun r ->
                 async {
-                    let (RepoName repoStr) = r.Issue.Repo
-                    let (IssueNumber issueN) = r.Issue.Number
-                    match! deps.GhClient.UpdateIssue r.Issue.Repo r.Issue.Number config.IssueTitle config.IssueBody with
-                    | Ok () ->
-                        let newOutcome =
-                            match r.Outcome with
-                            | Reopened -> Reopened   // keep distinction in summary
-                            | _        -> Updated
-                        return { Issue = r.Issue; Outcome = newOutcome }
-                    | Error e when isStaleIssue e ->
-                        eprintfn "[%s] Stale issue #%d during body refresh — will recreate." repoStr issueN
-                        return { Issue = r.Issue; Outcome = StaleIssueRecreated }
-                    | Error e ->
-                        eprintfn "[%s] Error refreshing issue body: %s" repoStr e
-                        return { Issue = r.Issue; Outcome = UpdateFailed e }
+                    if input.DryRun then
+                        let (RepoName repoStr) = r.Issue.Repo
+                        if input.Verbose then eprintfn "[%s] Would refresh issue body (dry run)" repoStr
+                        return { Issue = r.Issue; Outcome = DryRunWouldUpdate }
+                    else
+                        let (RepoName repoStr) = r.Issue.Repo
+                        let (IssueNumber issueN) = r.Issue.Number
+                        match! deps.GhClient.UpdateIssue r.Issue.Repo r.Issue.Number config.IssueTitle config.IssueBody with
+                        | Ok () ->
+                            let newOutcome =
+                                match r.Outcome with
+                                | Reopened -> Reopened   // keep distinction in summary
+                                | _        -> Updated
+                            return { Issue = r.Issue; Outcome = newOutcome }
+                        | Error e when isStaleIssue e ->
+                            eprintfn "[%s] Stale issue #%d during body refresh — will recreate." repoStr issueN
+                            return { Issue = r.Issue; Outcome = StaleIssueRecreated }
+                        | Error e ->
+                            eprintfn "[%s] Error refreshing issue body: %s" repoStr e
+                            return { Issue = r.Issue; Outcome = UpdateFailed e }
                 })
             |> Async.Parallel
             |> Async.RunSynchronously
@@ -500,7 +562,7 @@ let private refreshBodies
                 | Some newRef -> newRef
                 | None        -> i)
         let finalLock = { fullResult.Lock with Issues = finalIssues }
-        if not (Map.isEmpty newRefByRepo) then
+        if not (Map.isEmpty newRefByRepo) && not input.DryRun then
             LockFile.write deps.FileSystem input.YamlPath finalLock
         Ok { fullResult with Lock = finalLock; Results = finalResults }
 
