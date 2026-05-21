@@ -10,7 +10,7 @@
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
     <!-- Binary identity -->
-    <Version>0.7.3-beta4</Version>
+    <Version>0.7.4-beta5</Version>
     <Authors>Devon Burriss</Authors>
     <Description>A CLI tool for managing GitHub Projects and Copilot-assigned issues in bulk. Define your project in a YAML file and let orcai create issues, assign them to Copilot, and clean up when done.</Description>
     <Title>orcai</Title>
@@ -25,7 +25,8 @@
     <!-- Discoverability -->
     <PackageTags>github copilot cli project-management automation</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>`orcai notify` command — posts a templated comment to issues and/or PRs recorded in the lock file. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` template tokens as `nudge.comment`.
+    <PackageReleaseNotes>`orcai run --dryrun` — preview what would be created, reopened, or updated without making any GitHub API calls or writing the lock file. Read-only lookups still run so the preview reflects current state. Outcomes are reported per repo as `would create`, `would reopen`, or `would update`, with a summary line and `dryRunWouldCreate` / `dryRunWouldReopen` / `dryRunWouldUpdate` counts in `--json`.
+`orcai notify` command — posts a templated comment to issues and/or PRs recorded in the lock file. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` template tokens as `nudge.comment`.
 `--target issues|prs|both` — which lock file items to notify (default: `issues`).
 `--state open|closed|all` — filter by current GitHub state before commenting (default: `open`); `closed` matches both closed and merged PRs; `all` skips the live state check entirely.
 `--dryrun` — preview which items would be notified without posting any comments.
@@ -37,12 +38,12 @@
 `notify.comment` — comment body template. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` tokens as `nudge.comment`.
 `orcai run` records repos that were skipped because they are archived in a new `skippedRepos` field in the lock file. The run summary and `--json` output include a `skippedArchived` count and status.
 `orcai run` detects when the lock file points to a deleted or transferred issue and recreates the issue in place instead of failing. New `staleIssueRecreated` count/status in the summary and `--json` output; the lock file is rewritten with the new issue numbers.
+`orcai nudge` and `orcai notify` rename `--dry-run` to `--dryrun` for consistency with `cleanup` (and the new `run --dryrun`). The old spelling is no longer accepted.
 Comment-building logic (template variable resolution + `PostComment`) extracted from `RunCommand` and `NudgeCommand` into a shared internal `Comments` module, used by all three comment-posting paths.
 `orcai run` now automatically updates issue bodies when the Markdown template changes. A `templateHash` field is stored in the lock file alongside the existing `yamlHash`, allowing the tool to detect which changed:
-Only `.md` changed → updates issue bodies only (`gh issue edit` per repo); no project, label, or assignment calls made.
-Only `.yml` changed → structural re-run as before; no redundant body edits.
-Both changed → structural re-run, then issue bodies updated for any repos that already had issues.
+Either `.yml` or `.md` changed → structural re-run via `runFull`, honouring `onClosedIssue` policy. If the template hash changed, issue bodies are refreshed for any repos reconciled as `AlreadyExisted` or `Reopened`.
 Neither changed → fast path, zero network calls (unchanged from before).
+`--skip-lock` → structural re-run plus unconditional body refresh for `AlreadyExisted` / `Reopened`.
 Old lock files without `templateHash` are treated as changed, triggering a one-time body sync on next run.
 `assign` block in YAML job config and global/local JSON config — configures who receives the issue and how they are triggered. Applies to both `orcai run` and `orcai nudge`.
 `assign.to` — assignee handle (default: `@copilot`). Accepts any GitHub user, bot, or GitHub App bot handle. Note: assigning `@copilot` requires a PAT (`ORCAI_PAT`) regardless of primary auth method, as GitHub Copilot can only be assigned via a user-level token.
@@ -62,6 +63,7 @@ The `copilot:` block previously scaffolded by `orcai generate` has been removed.
 `--skip-copilot` is superseded by `assign.via: comment` (skips assignment while still allowing a trigger comment). The flag remains supported for backwards compatibility.
 `ORCAI_LOG_LEVEL` environment variable — controls log verbosity. Accepts any `Microsoft.Extensions.Logging.LogLevel` name (`Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`). Defaults to `Warning`.
 Lock file schema: new `skippedRepos: string[]` field. Old lock files without this field still load (treated as empty); the field is populated on the next run.
+Template bumps now go through `runFull`, honouring `onClosedIssue` policy and refreshing the body of reopened issues. Previously, editing only the MD template could silently rewrite the body of a closed issue and skip the body refresh for reopened issues.
 `orcai run` no longer creates a duplicate issue when the GitHub API lookup itself fails. Transient `gh` errors during open- or closed-issue lookup (rate limits, network resets, exhausted retries) are now surfaced as a per-repo error instead of being silently treated as "no matching issue". This also restores `--on-closed-issue` semantics on lookup failures — the configured action (`reopen` / `skip` / `fail`) is no longer bypassed when the closed-issue query errors.
 Assignment via GitHub App auth now only requires a PAT (`ORCAI_PAT`) when the assignee is `@copilot`. Assigning human users or other bots with a GitHub App (which has `issues: write` permission) no longer warns or skips — the PAT constraint was previously applied to all assignees, not just Copilot.
 `orcai cleanup` no longer fails when a project, issue, or PR has already been deleted — the operation is treated as success and a warning is emitted instead.
