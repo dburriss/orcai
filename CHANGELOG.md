@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-09
+
 ### Added
 
 - `orcai run --dryrun` — preview what would be created, reopened, or updated without making any GitHub API calls or writing the lock file. Read-only lookups still run so the preview reflects current state. Outcomes are reported per repo as `would create`, `would reopen`, or `would update`, with a summary line and `dryRunWouldCreate` / `dryRunWouldReopen` / `dryRunWouldUpdate` counts in `--json`.
