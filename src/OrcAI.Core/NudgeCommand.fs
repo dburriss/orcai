@@ -45,6 +45,16 @@ let isAppTokenAssignError (msg: string) =
         "Assigning agents is not supported with GitHub App installation tokens",
         StringComparison.OrdinalIgnoreCase)
 
+/// Classify a raw gh error and return a user-friendly nudge failure message.
+let private nudgeFailureMessage (assignTo: string) (rawError: string) : string =
+    match LockFile.classifyCause rawError with
+    | NotFound        -> "issue not found on GitHub — the lock file may be stale; run 'orcai run' to refresh"
+    | UserError       -> $"could not assign '{assignTo}' — check the assignee name is valid"
+    | Permission      -> "permission denied — ensure the token has the required scopes"
+    | RateLimit       -> rawError
+    | NetworkTransient -> $"network error contacting GitHub — try again ({rawError})"
+    | Unknown         -> rawError
+
 let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, string> =
     match YamlConfig.parseFile deps.FileSystem input.YamlPath with
     | Error e -> Error e
@@ -133,11 +143,11 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                                 if modeReassigns then
                                     if input.Verbose then eprintfn "[%s] Nudging %s (unassign + reassign)" repoStr assignTo
                                     match! assignClient.UnassignIssue issue.Repo issue.Number assignTo with
-                                    | Error e -> failure <- Some e
+                                    | Error e -> failure <- Some (nudgeFailureMessage assignTo e)
                                     | Ok ()   -> ()
                                     if failure.IsNone then
                                         match! assignClient.AssignIssue issue.Repo issue.Number assignTo with
-                                        | Error e -> failure <- Some e
+                                        | Error e -> failure <- Some (nudgeFailureMessage assignTo e)
                                         | Ok ()   -> ()
 
                                 let outcome =
