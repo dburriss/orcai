@@ -53,13 +53,18 @@ type YamlNotify =
     { comment : string }
 
 [<CLIMutable>]
+type YamlFailures =
+    { maxAttempts : System.Nullable<int> }
+
+[<CLIMutable>]
 type YamlRoot =
-    { job:    YamlJob
-      repos:  System.Collections.Generic.List<string>
-      issue:  YamlIssue
-      assign: YamlAssign
-      nudge:  YamlNudge
-      notify: YamlNotify }
+    { job:      YamlJob
+      repos:    System.Collections.Generic.List<string>
+      issue:    YamlIssue
+      assign:   YamlAssign
+      nudge:    YamlNudge
+      notify:   YamlNotify
+      failures: YamlFailures }
 
 let private deserializer =
     DeserializerBuilder()
@@ -111,6 +116,10 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
             let notifyConfig =
                 if isNull (box root.notify) then None
                 else Some { Comment = nullStr root.notify.comment }
+            let maxAttempts =
+                if isNull (box root.failures) then None
+                elif root.failures.maxAttempts.HasValue then Some root.failures.maxAttempts.Value
+                else None
             Ok { Org           = OrgName root.job.org
                  ProjectTitle  = root.job.title
                  Repos         = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
@@ -122,7 +131,8 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                  Assign        = assignConfig
                  Nudge         = nudgeConfig
                  Notify        = notifyConfig
-                 JobOwner      = nullStr root.job.owner }
+                 JobOwner      = nullStr root.job.owner
+                 MaxAttempts   = maxAttempts }
     with ex ->
         Error $"Failed to parse YAML: {ex.Message}"
 

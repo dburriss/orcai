@@ -18,6 +18,7 @@
   - `notify.comment` — comment body template. Supports the same `{assignee}`, `{job.owner}`, and `{repo.codeowners}` tokens as `nudge.comment`.
 - `orcai run` records repos that were skipped because they are archived in a new `skippedRepos` field in the lock file. The run summary and `--json` output include a `skippedArchived` count and status.
 - `orcai run` detects when the lock file points to a deleted or transferred issue and recreates the issue in place instead of failing. New `staleIssueRecreated` count/status in the summary and `--json` output; the lock file is rewritten with the new issue numbers.
+- `orcai run` now persists error information in the lock file when a repo fails to process, allowing errors to be surfaced in subsequent runs instead of being silently ignored as "not created". New `failures` field in the lock file maps repo, attempts, and action that failed.
 
 ### Changed
 

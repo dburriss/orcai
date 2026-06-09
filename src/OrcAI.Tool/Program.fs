@@ -423,6 +423,32 @@ let main argv =
                                         |> String.concat ""
                                     printfn "  Run complete. %d issue(s) created, %d already existed%s across %d repo(s). Lock file written."
                                         created existing extras result.Lock.Repos.Length
+                                let failures = result.Lock.Failures
+                                if not (List.isEmpty failures) then
+                                    let cap = OrcAI.Core.RunCommand.defaultMaxAttempts
+                                    let active  = failures |> List.filter (fun f -> f.Attempts < cap) |> List.length
+                                    let capped  = failures |> List.filter (fun f -> f.Attempts >= cap) |> List.length
+                                    printfn "  %d failure(s) recorded (%d active, %d at max attempts). See lock file for details." failures.Length active capped
+                                    for f in failures do
+                                        let (RepoName r) = f.Repo
+                                        let catStr =
+                                            match f.Category with
+                                            | OrcAI.Core.Domain.FindIssue    -> "FindIssue"
+                                            | OrcAI.Core.Domain.CreateIssue  -> "CreateIssue"
+                                            | OrcAI.Core.Domain.ReopenIssue  -> "ReopenIssue"
+                                            | OrcAI.Core.Domain.AssignIssue  -> "AssignIssue"
+                                            | OrcAI.Core.Domain.AddToProject -> "AddToProject"
+                                            | OrcAI.Core.Domain.UpdateBody   -> "UpdateBody"
+                                        let causeStr =
+                                            match f.Cause with
+                                            | OrcAI.Core.Domain.RateLimit        -> "RateLimit"
+                                            | OrcAI.Core.Domain.NotFound         -> "NotFound"
+                                            | OrcAI.Core.Domain.Permission       -> "Permission"
+                                            | OrcAI.Core.Domain.UserError        -> "UserError"
+                                            | OrcAI.Core.Domain.NetworkTransient -> "NetworkTransient"
+                                            | OrcAI.Core.Domain.Unknown          -> "Unknown"
+                                        let status = if f.Attempts >= cap then "SKIPPED" else $"attempt {f.Attempts}/{cap}"
+                                        printfn "    [%s] %s %s %s — %s" r catStr causeStr status f.LastMessage
                             if verbose && not result.Results.IsEmpty then
                                 AnsiConsole.WriteLine()
                                 let table = Table()

@@ -40,6 +40,16 @@ type PullRequestRefDto =
       [<JsonPropertyName("closesIssue")>] closesIssue: int }
 
 [<CLIMutable>]
+type RepoFailureDto =
+    { [<JsonPropertyName("repo")>]          repo:          string
+      [<JsonPropertyName("category")>]      category:      string
+      [<JsonPropertyName("cause")>]         cause:         string
+      [<JsonPropertyName("attempts")>]      attempts:      int
+      [<JsonPropertyName("firstFailedAt")>] firstFailedAt: string
+      [<JsonPropertyName("lastFailedAt")>]  lastFailedAt:  string
+      [<JsonPropertyName("lastMessage")>]   lastMessage:   string }
+
+[<CLIMutable>]
 type LockFileDto =
     { [<JsonPropertyName("lockedAt")>]      lockedAt:     string
       [<JsonPropertyName("yamlHash")>]      yamlHash:     string
@@ -48,7 +58,8 @@ type LockFileDto =
       [<JsonPropertyName("repos")>]         repos:        string[]
       [<JsonPropertyName("issues")>]        issues:       IssueRefDto[]
       [<JsonPropertyName("pullRequests")>]  pullRequests: PullRequestRefDto[]
-      [<JsonPropertyName("skippedRepos")>]  skippedRepos: string[] }
+      [<JsonPropertyName("skippedRepos")>]  skippedRepos: string[]
+      [<JsonPropertyName("failures")>]      failures:     RepoFailureDto[] }
 
 // ------------------------------------------------------------------
 // JSON serialiser options
@@ -58,6 +69,110 @@ let private jsonOptions =
     let opts = JsonSerializerOptions(WriteIndented = true)
     opts.PropertyNameCaseInsensitive <- true
     opts
+
+// ------------------------------------------------------------------
+// Failure category / cause helpers (string ↔ union)
+// ------------------------------------------------------------------
+
+let internal categoryToString (c: RepoFailureCategory) : string =
+    match c with
+    | FindIssue    -> "FindIssue"
+    | CreateIssue  -> "CreateIssue"
+    | ReopenIssue  -> "ReopenIssue"
+    | AssignIssue  -> "AssignIssue"
+    | AddToProject -> "AddToProject"
+    | UpdateBody   -> "UpdateBody"
+
+let internal categoryOfString (s: string) : RepoFailureCategory option =
+    match s with
+    | "FindIssue"    -> Some FindIssue
+    | "CreateIssue"  -> Some CreateIssue
+    | "ReopenIssue"  -> Some ReopenIssue
+    | "AssignIssue"  -> Some AssignIssue
+    | "AddToProject" -> Some AddToProject
+    | "UpdateBody"   -> Some UpdateBody
+    | _              -> None
+
+let internal causeToString (c: RepoFailureCause) : string =
+    match c with
+    | RateLimit        -> "RateLimit"
+    | NotFound         -> "NotFound"
+    | Permission       -> "Permission"
+    | UserError        -> "UserError"
+    | NetworkTransient -> "NetworkTransient"
+    | Unknown          -> "Unknown"
+
+let internal causeOfString (s: string) : RepoFailureCause =
+    match s with
+    | "RateLimit"        -> RateLimit
+    | "NotFound"         -> NotFound
+    | "Permission"       -> Permission
+    | "UserError"        -> UserError
+    | "NetworkTransient" -> NetworkTransient
+    | _                  -> Unknown
+
+/// Classify a raw `gh` error message into a RepoFailureCause.
+/// First match wins; falls back to Unknown.
+let classifyCause (msg: string) : RepoFailureCause =
+    if isNull msg then Unknown
+    else
+        let m = msg.ToLowerInvariant()
+        let any (parts: string list) = parts |> List.exists m.Contains
+        if   any [ "rate limit"; "secondary rate limit"; "abuse detection"; "submitted too quickly" ] then RateLimit
+        // UserError must beat NotFound: gh emits "could not resolve user 'foo'" for bad assignees.
+        elif any [ "could not resolve user"; "no such user"; "invalid login"; "invalid user" ]        then UserError
+        elif any [ "could not resolve to"; "404"; "not found" ]                                       then NotFound
+        elif any [ "403"; "permission"; "forbidden" ]                                                 then Permission
+        elif any [ "timeout"; "connection refused"; "connection reset"; "tls handshake"
+                   "remote end closed"; "no such host"; " eof"; "network" ]                          then NetworkTransient
+        else Unknown
+
+/// Merge per-step attempt results with the prior failure list.
+///   - Ok      → drop any matching (repo, category) entry.
+///   - Error m → upsert: increment Attempts (or start at 1), update LastFailedAt/LastMessage/Cause,
+///               preserve FirstFailedAt from the prior entry when present.
+/// Previous entries for steps NOT attempted this run are kept unchanged. Hash-change
+/// based clearing is handled by the caller before invoking processRepo (it controls
+/// which steps get attempted).
+let mergeFailures
+    (previous : RepoFailure list)
+    (attempted : (RepoName * RepoFailureCategory * Result<unit, string>) list)
+    (now : DateTimeOffset)
+    : RepoFailure list =
+    let prevMap =
+        previous |> List.map (fun f -> (f.Repo, f.Category), f) |> Map.ofList
+    let afterAttempts =
+        attempted
+        |> List.fold (fun map (repo, cat, result) ->
+            match result with
+            | Ok () ->
+                Map.remove (repo, cat) map
+            | Error msg ->
+                let cause = classifyCause msg
+                let updated =
+                    match Map.tryFind (repo, cat) map with
+                    | Some e ->
+                        { e with
+                            Attempts     = e.Attempts + 1
+                            LastFailedAt = now
+                            LastMessage  = msg
+                            Cause        = cause }
+                    | None ->
+                        { Repo          = repo
+                          Category      = cat
+                          Cause         = cause
+                          Attempts      = 1
+                          FirstFailedAt = now
+                          LastFailedAt  = now
+                          LastMessage   = msg }
+                Map.add (repo, cat) updated map
+        ) prevMap
+    afterAttempts
+    |> Map.toList
+    |> List.map snd
+    |> List.sortBy (fun f ->
+        let (RepoName r) = f.Repo
+        r, categoryToString f.Category)
 
 // ------------------------------------------------------------------
 // Domain ↔ DTO conversion
@@ -101,6 +216,18 @@ let private toDto (lock: LockFile) : LockFileDto =
       skippedRepos =
           lock.SkippedRepos
           |> List.map (fun (RepoName r) -> r)
+          |> Array.ofList
+      failures =
+          lock.Failures
+          |> List.map (fun f ->
+              let (RepoName r) = f.Repo
+              { repo          = r
+                category      = categoryToString f.Category
+                cause         = causeToString f.Cause
+                attempts      = f.Attempts
+                firstFailedAt = f.FirstFailedAt.ToString("o")
+                lastFailedAt  = f.LastFailedAt.ToString("o")
+                lastMessage   = f.LastMessage })
           |> Array.ofList }
 
 let private ofDto (dto: LockFileDto) : LockFile =
@@ -132,7 +259,23 @@ let private ofDto (dto: LockFileDto) : LockFile =
                 ClosesIssue = IssueNumber pr.closesIssue })
       SkippedRepos =
           if isNull dto.skippedRepos then []
-          else dto.skippedRepos |> Array.toList |> List.map RepoName }
+          else dto.skippedRepos |> Array.toList |> List.map RepoName
+      Failures =
+          if isNull dto.failures then []
+          else
+              dto.failures
+              |> Array.toList
+              |> List.choose (fun f ->
+                  match categoryOfString f.category with
+                  | None     -> None  // unknown category — drop the entry rather than fail the read
+                  | Some cat ->
+                      Some { Repo          = RepoName f.repo
+                             Category      = cat
+                             Cause         = causeOfString f.cause
+                             Attempts      = f.attempts
+                             FirstFailedAt = DateTimeOffset.Parse(f.firstFailedAt)
+                             LastFailedAt  = DateTimeOffset.Parse(f.lastFailedAt)
+                             LastMessage   = if isNull f.lastMessage then "" else f.lastMessage }) }
 
 // ------------------------------------------------------------------
 // Public API

@@ -185,6 +185,23 @@ let ``parse sets SkipCopilot false when not present in YAML`` () =
     | Ok cfg  -> Assert.False(cfg.SkipCopilot)
 
 [<Fact>]
+let ``parse returns None for MaxAttempts when failures section absent`` () =
+    match parse pureParsYaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(None, cfg.MaxAttempts)
+
+[<Fact>]
+let ``parse reads failures.maxAttempts when set`` () =
+    let yaml =
+        "job:\n  title: \"T\"\n  org: \"o\"\n" +
+        "repos:\n  - \"r\"\n" +
+        "issue:\n  template: \"./t.md\"\n" +
+        "failures:\n  maxAttempts: 5\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(Some 5, cfg.MaxAttempts)
+
+[<Fact>]
 let ``parse sets SkipCopilot true when job.skipCopilot is true`` () =
     let yaml =
         "job:\n  title: \"My Job\"\n  org: \"acme\"\n  skipCopilot: true\n" +

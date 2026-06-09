@@ -50,7 +50,8 @@ module A =
               Repos        = [ repoA; RepoName "myorg/repo-b" ]
               Issues       = [ IssueRef.defaults repoA 7 |> IssueRef.withAssignees [ "copilot" ] ]
               PullRequests = [ PullRequestRef.defaults repoA 3 7 ]
-              SkippedRepos = [] }
+              SkippedRepos = []
+              Failures     = [] }
 
         let withHash h  (lf: LockFile) = { lf with YamlHash = h }
         let withRepos rs (lf: LockFile) = { lf with Repos = rs }

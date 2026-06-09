@@ -116,27 +116,35 @@ let private dryRunCreatePlaceholder (repo: RepoName) : IssueRef =
     let (RepoName r) = repo
     { Repo = repo; Number = IssueNumber 0; Url = $"https://github.com/{r}/issues/0"; Assignees = [] }
 
+/// Default maximum retry attempts per (repo, category) failure before a step is skipped.
+let defaultMaxAttempts = 3
+
 /// Resolved per-run parameters shared by `processRepo` (used by both `runFull` and
 /// the stale-issue recovery path inside `refreshBodies`).
 type private ProcessParams =
-    { Config            : JobConfig
-      Project           : ProjectInfo
-      Verbose           : bool
-      AutoCreateLabels  : bool
-      SkipCopilot       : bool
-      IsPrimaryAuthApp  : bool
-      ClosedIssueAction : ClosedIssueAction
-      AssignTo          : string
-      AssignVia         : string
-      AssignComment     : string option
-      JobOwner          : string option
-      DryRun            : bool }
+    { Config              : JobConfig
+      Project             : ProjectInfo
+      Verbose             : bool
+      AutoCreateLabels    : bool
+      SkipCopilot         : bool
+      IsPrimaryAuthApp    : bool
+      ClosedIssueAction   : ClosedIssueAction
+      AssignTo            : string
+      AssignVia           : string
+      AssignComment       : string option
+      JobOwner            : string option
+      DryRun              : bool
+      MaxAttempts         : int
+      YamlHashChanged     : bool
+      TemplateHashChanged : bool }
 
 let private resolveProcessParams
-    (deps    : OrcAIDeps)
-    (input   : RunInput)
-    (config  : JobConfig)
-    (project : ProjectInfo)
+    (deps                : OrcAIDeps)
+    (input               : RunInput)
+    (config              : JobConfig)
+    (project             : ProjectInfo)
+    (yamlHashChanged     : bool)
+    (templateHashChanged : bool)
     : ProcessParams =
     let skipCopilot       = input.SkipCopilot || config.SkipCopilot
     let closedIssueAction = input.OnClosedIssue |> Option.defaultValue config.OnClosedIssue
@@ -154,18 +162,38 @@ let private resolveProcessParams
                 |> Option.ofObj
                 |> Option.defaultValue "."
             Codeowners.tryReadLocal deps.FileSystem dir)
-    { Config            = config
-      Project           = project
-      Verbose           = input.Verbose
-      AutoCreateLabels  = input.AutoCreateLabels
-      SkipCopilot       = skipCopilot
-      IsPrimaryAuthApp  = input.IsPrimaryAuthApp
-      ClosedIssueAction = closedIssueAction
-      AssignTo          = assignTo
-      AssignVia         = assignVia
-      AssignComment     = assignComment
-      JobOwner          = jobOwner
-      DryRun            = input.DryRun }
+    { Config              = config
+      Project             = project
+      Verbose             = input.Verbose
+      AutoCreateLabels    = input.AutoCreateLabels
+      SkipCopilot         = skipCopilot
+      IsPrimaryAuthApp    = input.IsPrimaryAuthApp
+      ClosedIssueAction   = closedIssueAction
+      AssignTo            = assignTo
+      AssignVia           = assignVia
+      AssignComment       = assignComment
+      JobOwner            = jobOwner
+      DryRun              = input.DryRun
+      MaxAttempts         = config.MaxAttempts |> Option.defaultValue defaultMaxAttempts
+      YamlHashChanged     = yamlHashChanged
+      TemplateHashChanged = templateHashChanged }
+
+/// Decide whether to attempt `cat` for this repo, given prior failures.
+/// Skips when attempts hit the cap, or when the cause is UserError and the
+/// relevant hash hasn't changed (re-edit the YAML/template to retry).
+let private shouldAttempt
+    (p             : ProcessParams)
+    (priorFailures : RepoFailure list)
+    (cat           : RepoFailureCategory)
+    : bool =
+    match priorFailures |> List.tryFind (fun f -> f.Category = cat) with
+    | None                                        -> true
+    | Some e when e.Attempts >= p.MaxAttempts     -> false
+    | Some e when e.Cause = UserError ->
+        match cat with
+        | UpdateBody -> p.TemplateHashChanged
+        | _          -> p.YamlHashChanged
+    | _                                           -> true
 
 /// Ensure every requested label exists in the repo, creating any that are missing.
 /// Returns Ok () when all labels are present or successfully created.
@@ -207,14 +235,21 @@ let private ensureLabelsExist
                     | None   -> return Ok ()
     }
 
+/// Result of processing a single repo: the run outcome (if any) plus the per-step
+/// attempt results, which `runFull` feeds into `mergeFailures` to update the lock.
+type private RepoOutcome =
+    { Result    : RepoResult option
+      Attempted : (RepoFailureCategory * Result<unit, string>) list }
+
 /// Process a single repo: find/create issue, add to project, trigger assignee.
-/// Returns Some RepoResult on success (with outcome Created or AlreadyExisted),
-/// None on any error (error is printed to stderr).
+/// `priorFailures` drives the per-step skip decisions (max-attempts cap, UserError
+/// causes locked behind a hash change).
 let private processRepo
-    (deps : OrcAIDeps)
-    (p    : ProcessParams)
-    (repo : RepoName)
-    : Async<RepoResult option> =
+    (deps          : OrcAIDeps)
+    (p             : ProcessParams)
+    (priorFailures : RepoFailure list)
+    (repo          : RepoName)
+    : Async<RepoOutcome> =
     async {
         let client = deps.GhClient
         let (RepoName repoStr) = repo
@@ -231,13 +266,17 @@ let private processRepo
         let jobOwner          = p.JobOwner
         let dryRun            = p.DryRun
 
+        let attempted = ResizeArray<RepoFailureCategory * Result<unit, string>>()
+        let record cat result = attempted.Add(cat, result)
+        let outcome r = { Result = r; Attempted = List.ofSeq attempted }
+
         // -1. Pre-check: skip repos that are archived (read-only). Errors from the
         //     pre-check itself are non-fatal — fall through and let the write fail.
         let! archivedResult = client.IsArchived repo
         match archivedResult with
         | Ok true ->
             eprintfn "[%s] Repo is archived — skipping." repoStr
-            return Some { Issue = archivedPlaceholder repo; Outcome = SkippedArchived }
+            return outcome (Some { Issue = archivedPlaceholder repo; Outcome = SkippedArchived })
         | Ok false
         | Error _ ->
 
@@ -252,45 +291,62 @@ let private processRepo
             | Error e -> eprintfn "[%s] Warning: could not ensure labels exist: %s" repoStr e
             | Ok ()   -> ()
 
-        // 1. Find or create issue — track whether it was newly created.
-        //    Lookup errors (transient gh failures, exhausted retries) abort the repo
-        //    instead of falling through to CreateIssue, which would create a duplicate.
+        // 1. Find or create issue. shouldAttempt-gated skipping when prior failures
+        //    have hit the cap or are UserError without a relevant hash change.
         let! issueResult =
             async {
+                if not (shouldAttempt p priorFailures FindIssue) then
+                    return Error "FindIssue skipped (prior failure not retryable)"
+                else
                 match! client.FindIssue repo config.IssueTitle with
-                | Error e -> return Error $"Failed to check for existing open issue: {e}"
+                | Error e ->
+                    record FindIssue (Error e)
+                    return Error $"Failed to check for existing open issue: {e}"
                 | Ok (Some issue) ->
+                    record FindIssue (Ok ())
                     if verbose then eprintfn "[%s] Issue already exists: %s" repoStr issue.Url
                     return Ok (issue, AlreadyExisted)
                 | Ok None ->
+                    record FindIssue (Ok ())
                     match! client.FindClosedIssue repo config.IssueTitle with
-                    | Error e -> return Error $"Failed to check for existing closed issue: {e}"
+                    | Error e ->
+                        record FindIssue (Error e)
+                        return Error $"Failed to check for existing closed issue: {e}"
                     | Ok None ->
                         if dryRun then
                             if verbose then eprintfn "[%s] Would create issue '%s' (dry run)" repoStr config.IssueTitle
                             return Ok (dryRunCreatePlaceholder repo, DryRunWouldCreate)
+                        elif not (shouldAttempt p priorFailures CreateIssue) then
+                            return Error "CreateIssue skipped (prior failure not retryable)"
                         else
                             if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
-                            let! result = client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels
-                            return result |> Result.map (fun issue -> (issue, Created))
+                            match! client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels with
+                            | Ok issue -> record CreateIssue (Ok ()); return Ok (issue, Created)
+                            | Error e  -> record CreateIssue (Error e); return Error e
                     | Ok (Some closed) ->
                         match closedIssueAction with
                         | Create ->
                             if dryRun then
                                 if verbose then eprintfn "[%s] Would create issue '%s' (dry run)" repoStr config.IssueTitle
                                 return Ok (dryRunCreatePlaceholder repo, DryRunWouldCreate)
+                            elif not (shouldAttempt p priorFailures CreateIssue) then
+                                return Error "CreateIssue skipped (prior failure not retryable)"
                             else
                                 if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
-                                let! result = client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels
-                                return result |> Result.map (fun issue -> (issue, Created))
+                                match! client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels with
+                                | Ok issue -> record CreateIssue (Ok ()); return Ok (issue, Created)
+                                | Error e  -> record CreateIssue (Error e); return Error e
                         | Reopen ->
                             if dryRun then
                                 if verbose then eprintfn "[%s] Would reopen closed issue: %s (dry run)" repoStr closed.Url
                                 return Ok (closed, DryRunWouldReopen)
+                            elif not (shouldAttempt p priorFailures ReopenIssue) then
+                                return Error "ReopenIssue skipped (prior failure not retryable)"
                             else
                                 if verbose then eprintfn "[%s] Reopening closed issue: %s" repoStr closed.Url
-                                let! reopenResult = client.ReopenIssue repo closed.Number
-                                return reopenResult |> Result.map (fun issue -> (issue, Reopened))
+                                match! client.ReopenIssue repo closed.Number with
+                                | Ok issue -> record ReopenIssue (Ok ()); return Ok (issue, Reopened)
+                                | Error e  -> record ReopenIssue (Error e); return Error e
                         | Skip ->
                             if verbose then eprintfn "[%s] Closed issue found, skipping: %s" repoStr closed.Url
                             return Ok (closed, Skipped)
@@ -302,29 +358,36 @@ let private processRepo
         match issueResult with
         | Error e ->
             eprintfn "[%s] Error finding/creating issue: %s" repoStr e
-            return None
-        | Ok (issue, outcome) ->
+            return outcome None
+        | Ok (issue, issueOutcome) ->
 
         // 2. Add to project and assign copilot (bypassed for Skipped outcome)
-        if outcome = Skipped then
-            return Some { Issue = issue; Outcome = outcome }
+        if issueOutcome = Skipped then
+            return outcome (Some { Issue = issue; Outcome = issueOutcome })
         else
 
         // Dry-run short-circuit: no further mutations beyond this point.
         if dryRun then
             if verbose then
-                match outcome with
+                match issueOutcome with
                 | DryRunWouldCreate -> eprintfn "[%s] Would add issue to project and assign %s (dry run)" repoStr assignTo
                 | DryRunWouldReopen -> eprintfn "[%s] Would refresh project membership and assignment (dry run)" repoStr
                 | _                 -> ()
-            return Some { Issue = issue; Outcome = outcome }
+            return outcome (Some { Issue = issue; Outcome = issueOutcome })
         else
 
-        // 3. Add to project (idempotent — errors are swallowed in GhClient)
-        if verbose then eprintfn "[%s] Adding issue to project" repoStr
-        let! _ = client.AddIssueToProject project issue
+        // 3. Add to project (idempotent — gh CLI succeeds silently when the item is already present).
+        if shouldAttempt p priorFailures AddToProject then
+            if verbose then eprintfn "[%s] Adding issue to project" repoStr
+            match! client.AddIssueToProject project issue with
+            | Ok ()   -> record AddToProject (Ok ())
+            | Error e ->
+                record AddToProject (Error e)
+                eprintfn "[%s] Warning: failed to add issue to project: %s" repoStr e
+        elif verbose then
+            eprintfn "[%s] Skipping AddToProject (prior failure not retryable)" repoStr
 
-        // 3. Trigger assignee: post comment and/or assign, controlled by assignVia.
+        // 4. Trigger assignee: post comment and/or assign, controlled by assignVia.
         //    When the primary auth is a GitHub App, use the CopilotClient (PAT-based)
         //    for assignment — GitHub Apps cannot assign users directly.
         //    If no CopilotClient is available and primary auth is App-based, warn and skip assignment.
@@ -344,10 +407,15 @@ let private processRepo
                     // Assign when via includes "assign" and not already assigned.
                     // @copilot specifically requires a PAT (user-level token) to assign;
                     // all other assignees work with GitHub App auth directly.
-                    let shouldAssign =
+                    let wantsAssign =
                         (assignVia = "assign" || assignVia = "comment-and-assign")
                         && not (hasAssignee assignTo issue)
-                    if shouldAssign then
+                    if not wantsAssign then
+                        return issue
+                    elif not (shouldAttempt p priorFailures AssignIssue) then
+                        if verbose then eprintfn "[%s] Skipping AssignIssue (prior failure not retryable)" repoStr
+                        return issue
+                    else
                         let isCopilot = assignTo.TrimStart('@').Equals("copilot", StringComparison.OrdinalIgnoreCase)
                         let assignClient =
                             if isCopilot then deps.CopilotClient |> Option.defaultValue client
@@ -359,15 +427,15 @@ let private processRepo
                             if verbose then eprintfn "[%s] Assigning %s" repoStr assignTo
                             match! assignClient.AssignIssue repo issue.Number assignTo with
                             | Error e ->
+                                record AssignIssue (Error e)
                                 eprintfn "[%s] Warning: failed to assign %s: %s" repoStr assignTo e
                                 return issue
                             | Ok () ->
+                                record AssignIssue (Ok ())
                                 return { issue with Assignees = issue.Assignees @ [assignTo.TrimStart('@')] }
-                    else
-                        return issue
                 }
 
-        return Some { Issue = finalIssue; Outcome = outcome }
+        return outcome (Some { Issue = finalIssue; Outcome = issueOutcome })
     }
 
 // ---------------------------------------------------------------------------
@@ -375,13 +443,17 @@ let private processRepo
 // ---------------------------------------------------------------------------
 
 /// Perform the full run: find/create project, process all repos, write lock.
-/// Only writes the lock file if all repos succeeded.
+/// `priorLock` provides per-repo prior issue refs and failure history. The lock
+/// is always written outside dry-run mode (partial state included).
 let private runFull
-    (deps         : OrcAIDeps)
-    (input        : RunInput)
-    (config       : JobConfig)
-    (yamlHash     : string)
-    (templateHash : string)
+    (deps                : OrcAIDeps)
+    (input               : RunInput)
+    (config              : JobConfig)
+    (yamlHash            : string)
+    (templateHash        : string)
+    (priorLock           : LockFile option)
+    (yamlHashChanged     : bool)
+    (templateHashChanged : bool)
     : Result<RunResult, string> =
 
     let tokenResult =
@@ -419,33 +491,53 @@ let private runFull
     | Ok project ->
 
     // 2. Process all repos in parallel
-    let processParams = resolveProcessParams deps input config project
-    let repoResults =
+    let processParams = resolveProcessParams deps input config project yamlHashChanged templateHashChanged
+
+    let priorFailuresByRepo =
+        priorLock
+        |> Option.map (fun l ->
+            l.Failures |> List.groupBy (fun f -> f.Repo) |> Map.ofList)
+        |> Option.defaultValue Map.empty
+
+    let repoOutcomes =
         config.Repos
-        |> List.map (processRepo deps processParams)
+        |> List.map (fun repo ->
+            let priorFailures = Map.tryFind repo priorFailuresByRepo |> Option.defaultValue []
+            processRepo deps processParams priorFailures repo)
         |> Async.Parallel
         |> Async.RunSynchronously
 
-    let allResults = repoResults |> Array.choose id |> Array.toList
+    let allResults = repoOutcomes |> Array.choose (fun o -> o.Result) |> Array.toList
     let archivedRepos =
         allResults
         |> List.filter (fun r -> r.Outcome = SkippedArchived)
         |> List.map (fun r -> r.Issue.Repo)
     let successes = allResults |> List.filter (fun r -> r.Outcome <> SkippedArchived)
-    let failures  = repoResults |> Array.filter Option.isNone |> Array.length
+
+    let now = DateTimeOffset.UtcNow
+
+    let attempted =
+        List.zip config.Repos (List.ofArray repoOutcomes)
+        |> List.collect (fun (repo, o) ->
+            o.Attempted |> List.map (fun (cat, res) -> repo, cat, res))
+
+    let previousFailures =
+        priorLock |> Option.map (fun l -> l.Failures) |> Option.defaultValue []
+
+    let newFailures = LockFile.mergeFailures previousFailures attempted now
 
     let lock : LockFile =
-        { LockedAt     = DateTimeOffset.UtcNow
+        { LockedAt     = now
           YamlHash     = yamlHash
           TemplateHash = templateHash
           Project      = project
           Repos        = config.Repos
           Issues       = successes |> List.map (fun r -> r.Issue)
           PullRequests = []
-          SkippedRepos = archivedRepos }
+          SkippedRepos = archivedRepos
+          Failures     = newFailures }
 
-    // Only write the lock file if every repo succeeded (and not a dry run)
-    if failures = 0 && not input.DryRun then
+    if not input.DryRun then
         LockFile.write deps.FileSystem input.YamlPath lock
 
     Ok { Lock = lock; Results = allResults; Source = FullRun }
@@ -469,13 +561,13 @@ let private recreateStaleIssues
     else
         let recreated =
             staleRepos
-            |> List.map (processRepo deps params')
+            |> List.map (fun repo -> processRepo deps params' [] repo)
             |> Async.Parallel
             |> Async.RunSynchronously
             |> Array.toList
         let recreatedByRepo =
             List.zip staleRepos recreated
-            |> List.choose (fun (repo, opt) -> opt |> Option.map (fun r -> repo, r))
+            |> List.choose (fun (repo, outcome) -> outcome.Result |> Option.map (fun r -> repo, r))
             |> Map.ofList
         let newRefByRepo =
             recreatedByRepo |> Map.map (fun _ r -> r.Issue)
@@ -501,10 +593,12 @@ let private recreateStaleIssues
 /// Stale errors during the refresh (issue deleted/transferred between `runFull` and the
 /// body write) are recovered via `recreateStaleIssues`.
 let private refreshBodies
-    (deps       : OrcAIDeps)
-    (input      : RunInput)
-    (config     : JobConfig)
-    (fullResult : RunResult)
+    (deps                : OrcAIDeps)
+    (input               : RunInput)
+    (config              : JobConfig)
+    (fullResult          : RunResult)
+    (yamlHashChanged     : bool)
+    (templateHashChanged : bool)
     : Result<RunResult, string> =
     let toRefresh =
         fullResult.Results
@@ -512,40 +606,68 @@ let private refreshBodies
     if List.isEmpty toRefresh then
         Ok fullResult
     else
-        let refreshed =
+        // Prior failures from the lock (which already includes runFull's merged failures)
+        // drive the per-repo UpdateBody skip decision.
+        let priorFailuresByRepo =
+            fullResult.Lock.Failures
+            |> List.groupBy (fun f -> f.Repo)
+            |> Map.ofList
+
+        let maxAttempts = config.MaxAttempts |> Option.defaultValue defaultMaxAttempts
+
+        let shouldUpdate (repo: RepoName) : bool =
+            let priorEntry =
+                priorFailuresByRepo
+                |> Map.tryFind repo
+                |> Option.bind (fun fs -> fs |> List.tryFind (fun f -> f.Category = UpdateBody))
+            match priorEntry with
+            | Some e when e.Attempts >= maxAttempts -> false
+            | Some e when e.Cause = UserError       -> templateHashChanged
+            | _                                     -> true
+
+        let refreshOutcomes =
             toRefresh
             |> List.map (fun r ->
                 async {
+                    let (RepoName repoStr)   = r.Issue.Repo
+                    let (IssueNumber issueN) = r.Issue.Number
                     if input.DryRun then
-                        let (RepoName repoStr) = r.Issue.Repo
                         if input.Verbose then eprintfn "[%s] Would refresh issue body (dry run)" repoStr
-                        return { Issue = r.Issue; Outcome = DryRunWouldUpdate }
+                        return { Issue = r.Issue; Outcome = DryRunWouldUpdate }, None
+                    elif not (shouldUpdate r.Issue.Repo) then
+                        if input.Verbose then eprintfn "[%s] Skipping UpdateBody (prior failure not retryable)" repoStr
+                        return r, None
                     else
-                        let (RepoName repoStr) = r.Issue.Repo
-                        let (IssueNumber issueN) = r.Issue.Number
                         match! deps.GhClient.UpdateIssue r.Issue.Repo r.Issue.Number config.IssueTitle config.IssueBody with
                         | Ok () ->
                             let newOutcome =
                                 match r.Outcome with
                                 | Reopened -> Reopened   // keep distinction in summary
                                 | _        -> Updated
-                            return { Issue = r.Issue; Outcome = newOutcome }
+                            return { Issue = r.Issue; Outcome = newOutcome },
+                                   Some (r.Issue.Repo, UpdateBody, Ok ())
                         | Error e when isStaleIssue e ->
                             eprintfn "[%s] Stale issue #%d during body refresh — will recreate." repoStr issueN
-                            return { Issue = r.Issue; Outcome = StaleIssueRecreated }
+                            return { Issue = r.Issue; Outcome = StaleIssueRecreated }, None
                         | Error e ->
                             eprintfn "[%s] Error refreshing issue body: %s" repoStr e
-                            return { Issue = r.Issue; Outcome = UpdateFailed e }
+                            return { Issue = r.Issue; Outcome = UpdateFailed e },
+                                   Some (r.Issue.Repo, UpdateBody, Error e)
                 })
             |> Async.Parallel
             |> Async.RunSynchronously
             |> Array.toList
+
+        let refreshed    = refreshOutcomes |> List.map fst
+        let attemptedUB  = refreshOutcomes |> List.choose snd
+
         let hasStale = refreshed |> List.exists (fun r -> r.Outcome = StaleIssueRecreated)
         let recoveredRefreshed, newRefByRepo =
             if not hasStale then
                 refreshed, Map.empty
             else
-                let processParams = resolveProcessParams deps input config fullResult.Lock.Project
+                let processParams =
+                    resolveProcessParams deps input config fullResult.Lock.Project yamlHashChanged templateHashChanged
                 recreateStaleIssues deps processParams refreshed
         let refreshedByRepo =
             recoveredRefreshed |> List.map (fun r -> r.Issue.Repo, r) |> Map.ofList
@@ -561,8 +683,19 @@ let private refreshBodies
                 match Map.tryFind i.Repo newRefByRepo with
                 | Some newRef -> newRef
                 | None        -> i)
-        let finalLock = { fullResult.Lock with Issues = finalIssues }
-        if not (Map.isEmpty newRefByRepo) && not input.DryRun then
+
+        let now = DateTimeOffset.UtcNow
+        let mergedFailures = LockFile.mergeFailures fullResult.Lock.Failures attemptedUB now
+
+        let finalLock =
+            { fullResult.Lock with
+                Issues   = finalIssues
+                Failures = mergedFailures }
+
+        let lockChanged =
+            not (Map.isEmpty newRefByRepo)
+            || not (List.isEmpty attemptedUB)
+        if lockChanged && not input.DryRun then
             LockFile.write deps.FileSystem input.YamlPath finalLock
         Ok { fullResult with Lock = finalLock; Results = finalResults }
 
@@ -596,29 +729,40 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
 
     if input.SkipLock then
         if input.Verbose then eprintfn "--skip-lock set, bypassing lock file."
-        match runFull deps input mergedConfig yamlHash templateHash with
+        match runFull deps input mergedConfig yamlHash templateHash None true true with
         | Error e       -> Error e
-        | Ok fullResult -> refreshBodies deps input mergedConfig fullResult
+        | Ok fullResult -> refreshBodies deps input mergedConfig fullResult true true
     else
 
     match LockFile.tryRead deps.FileSystem input.YamlPath with
-    | Some lock when lock.YamlHash = yamlHash && lock.TemplateHash = templateHash ->
+    | Some lock when
+        lock.YamlHash = yamlHash
+        && lock.TemplateHash = templateHash
+        && List.isEmpty lock.Failures ->
         if input.Verbose then eprintfn "Lock file found and hashes match — nothing to do."
         let results = lock.Issues |> List.map (fun i -> { Issue = i; Outcome = AlreadyExisted })
         Ok { Lock = lock; Results = results; Source = FromLockFile }
 
     | Some lock ->
-        if input.Verbose then eprintfn "Lock file found but hashes changed — re-running."
-        match runFull deps input mergedConfig yamlHash templateHash with
+        let yamlHashChanged     = lock.YamlHash <> yamlHash
+        let templateHashChanged = lock.TemplateHash <> templateHash
+        if input.Verbose then
+            if yamlHashChanged || templateHashChanged then
+                eprintfn "Lock file found but hashes changed — re-running."
+            else
+                eprintfn "Lock file has prior failures — retrying."
+        match runFull deps input mergedConfig yamlHash templateHash (Some lock) yamlHashChanged templateHashChanged with
         | Error e -> Error e
-        | Ok fullResult when lock.TemplateHash = templateHash ->
-            // YAML changed but template didn't — no body refresh needed.
+        | Ok fullResult when not templateHashChanged
+                             && not (fullResult.Lock.Failures
+                                     |> List.exists (fun f -> f.Category = UpdateBody)) ->
+            // No template change and no UpdateBody failures pending — skip body refresh.
             Ok fullResult
         | Ok fullResult ->
-            refreshBodies deps input mergedConfig fullResult
+            refreshBodies deps input mergedConfig fullResult yamlHashChanged templateHashChanged
 
     | None ->
-        runFull deps input mergedConfig yamlHash templateHash
+        runFull deps input mergedConfig yamlHash templateHash None true true
 
 /// Execute the run command over a list of resolved file paths.
 /// Returns a Map from file path to Result<RunResult, string>.

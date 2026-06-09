@@ -483,9 +483,9 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
             async {
                 let (OrgName orgStr) = project.Org
                 // Idempotent: if the item is already in the project the gh CLI succeeds silently.
-                // We intentionally ignore non-zero exits here (e.g. "already exists" variants).
-                let! _ = runGhApi bucket retries ghToken $"project item-add {project.Number} --owner {orgStr} --url {issue.Url}"
-                return Ok ()
+                match! runGhApi bucket retries ghToken $"project item-add {project.Number} --owner {orgStr} --url {issue.Url}" with
+                | Ok _    -> return Ok ()
+                | Error e -> return Error e
             }
 
         member _.AssignIssue repo issue assignee =

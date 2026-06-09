@@ -68,12 +68,46 @@ type JobConfig =
       Assign        : AssignConfig option
       Nudge         : NudgeConfig option
       Notify        : NotifyConfig option
-      JobOwner      : string option }
+      JobOwner      : string option
+      /// Max retry attempts per (repo, category) failure before the step is skipped.
+      /// None → use the built-in default.
+      MaxAttempts   : int option }
 
 /// Replace {key} placeholders in a template string.
 /// Tokens not present in vars are left unreplaced.
 let renderTemplate (vars: Map<string, string>) (tmpl: string) =
     vars |> Map.fold (fun (s: string) k v -> s.Replace("{" + k + "}", v)) tmpl
+
+/// Which step a recorded failure belongs to. Each (repo, category) is unique
+/// within the lock file's `Failures` list.
+type RepoFailureCategory =
+    | FindIssue
+    | CreateIssue
+    | ReopenIssue
+    | AssignIssue
+    | AddToProject
+    | UpdateBody
+
+/// Classified reason for a failure, derived from the raw `gh` error message.
+/// Drives retry/skip decisions on subsequent runs.
+type RepoFailureCause =
+    | RateLimit
+    | NotFound
+    | Permission
+    | UserError
+    | NetworkTransient
+    | Unknown
+
+/// A persistent record of a failed step. Survives across runs so the tool can
+/// count attempts, branch on cause, and skip steps that have exhausted retries.
+type RepoFailure =
+    { Repo          : RepoName
+      Category      : RepoFailureCategory
+      Cause         : RepoFailureCause
+      Attempts      : int
+      FirstFailedAt : DateTimeOffset
+      LastFailedAt  : DateTimeOffset
+      LastMessage   : string }
 
 /// Snapshot of a completed job, persisted as a lock file.
 type LockFile =
@@ -85,4 +119,6 @@ type LockFile =
       Issues       : IssueRef list
       PullRequests : PullRequestRef list
       /// Repos skipped during the run because they are archived (read-only).
-      SkippedRepos : RepoName list }
+      SkippedRepos : RepoName list
+      /// Per-step failures persisted across runs; drives retry decisions.
+      Failures     : RepoFailure list }
