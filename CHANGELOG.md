@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `verbose` flag on `orcai verify` command — prints detailed per-repo validation results to stderr
+
+### Changed
+
+- `orcai verify` does a single call now to check repositories but will ignore those already in the lock file
+ 
 ## [0.8.0] - 2026-06-09
 
 ### Added

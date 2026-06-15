@@ -922,6 +922,8 @@ let main argv =
             let noParallel      = args.Contains(ValidateArgs.No_Parallel)
             let maxConcurrency  = args.TryGetResult(ValidateArgs.Max_Concurrency) |> Option.defaultValue 4
             let continueOnError = args.Contains(ValidateArgs.Continue_On_Error)
+            let skipLock        = args.Contains(ValidateArgs.Skip_Lock)
+            let verbose         = args.Contains(ValidateArgs.Verbose)
             let json            = args.Contains(ValidateArgs.Json)
             let cwd             = System.Environment.CurrentDirectory
             match OrcAI.Core.FileGlob.expand cwd pattern with
@@ -941,7 +943,8 @@ let main argv =
                     { YamlPath        = ""  // overridden per-file in execute
                       NoParallel      = noParallel
                       MaxConcurrency  = effectiveMaxConcurrency
-                      ContinueOnError = effectiveContinueOnError }
+                      ContinueOnError = effectiveContinueOnError
+                      SkipLock        = skipLock }
                 let results =
                     OrcAI.Core.ValidateCommand.execute deps paths input
                     |> Async.RunSynchronously
@@ -950,9 +953,11 @@ let main argv =
                         results
                         |> List.map (fun (path, r) ->
                             path,
-                            {| valid        = r.IsValid
-                               configErrors = r.ConfigErrors
-                               repoErrors   =
+                            {| valid         = r.IsValid
+                               configErrors  = r.ConfigErrors
+                               reposTrusted  = r.ReposTrusted  |> List.map (fun (RepoName rn) -> rn)
+                               repoSuccesses = r.RepoSuccesses |> List.map (fun (RepoName rn) -> rn)
+                               repoErrors    =
                                    r.RepoErrors
                                    |> List.map (fun (RepoName rn, e) -> {| repo = rn; error = e |}) |})
                         |> dict
@@ -961,9 +966,14 @@ let main argv =
                     for (path, r) in results do
                         printfn "--- %s ---" path
                         for e in r.ConfigErrors do
-                            AnsiConsole.MarkupLine($"  [red]{Markup.Escape(e)}[/]")
+                            AnsiConsole.MarkupLine($"  [red][[error]][/] {Markup.Escape(e)}")
+                        if verbose then
+                            for RepoName rn in r.ReposTrusted do
+                                AnsiConsole.MarkupLine($"  [grey][[skipped]][/] {Markup.Escape(rn)}")
+                            for RepoName rn in r.RepoSuccesses do
+                                AnsiConsole.MarkupLine($"  [green][[success]][/] {Markup.Escape(rn)}")
                         for (RepoName rn, e) in r.RepoErrors do
-                            AnsiConsole.MarkupLine($"  [red]{Markup.Escape(rn)}: {Markup.Escape(e)}[/]")
+                            AnsiConsole.MarkupLine($"  [red][[failure]][/] {Markup.Escape(rn)}: {Markup.Escape(e)}")
                         if r.IsValid then
                             AnsiConsole.MarkupLine("  [green]Valid[/]")
                 let allValid = results |> List.forall (fun (_, r) -> r.IsValid)

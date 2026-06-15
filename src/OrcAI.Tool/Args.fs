@@ -179,6 +179,8 @@ type ValidateArgs =
     | No_Parallel
     | Max_Concurrency of n: int
     | Continue_On_Error
+    | Skip_Lock
+    | Verbose
     | Json
     interface IArgParserTemplate with
         member a.Usage =
@@ -187,6 +189,8 @@ type ValidateArgs =
             | No_Parallel       -> "Check repositories sequentially instead of in parallel."
             | Max_Concurrency _ -> "Maximum number of config files validated concurrently (default: 4)."
             | Continue_On_Error -> "Continue validating remaining files when one fails."
+            | Skip_Lock         -> "Bypass the lock file and check all repos live (slow; use to force a full re-check)."
+            | Verbose           -> "Print each repository check result as it completes."
             | Json              -> "Emit machine-readable JSON output to stdout."
 
 [<CliPrefix(CliPrefix.None)>]

@@ -94,9 +94,10 @@ module A =
 
     module ValidateInput =
         let defaults path : OrcAI.Core.ValidateCommand.ValidateInput =
-            { YamlPath = path; NoParallel = false; MaxConcurrency = 4; ContinueOnError = false }
+            { YamlPath = path; NoParallel = false; MaxConcurrency = 4; ContinueOnError = false; SkipLock = false }
 
         let withNoParallel v (i: OrcAI.Core.ValidateCommand.ValidateInput) = { i with NoParallel = v }
+        let withSkipLock   v (i: OrcAI.Core.ValidateCommand.ValidateInput) = { i with SkipLock = v }
 
 /// Pre-populated state builders for test setup.
 module Given =

@@ -28,6 +28,7 @@ type Handlers =
       GetIssueState    : RepoName    -> IssueNumber -> Async<string option>
       ListRepos        : OrgName                   -> Async<Result<string list, string>>
       RepoExists       : RepoName                  -> Async<Result<unit, string>>
+      ReposExist       : RepoName list             -> Async<Map<RepoName, Result<unit, string>>>
       IsArchived       : RepoName                  -> Async<Result<bool, string>>
       FetchCodeowners  : RepoName                  -> Async<string option> }
 
@@ -65,6 +66,7 @@ let defaults : Handlers =
       GetIssueState     = fun _ _        -> async { return Some "OPEN" }
       ListRepos         = fun _          -> async { return failwith "ListRepos not expected" }
       RepoExists        = fun _          -> async { return Ok () }
+      ReposExist        = fun repos      -> async { return repos |> List.map (fun r -> r, Ok ()) |> Map.ofList }
       IsArchived        = fun _          -> async { return Ok false }
       FetchCodeowners   = fun _          -> async { return None } }
 
@@ -86,6 +88,7 @@ let neverCalledHandlers : Handlers =
         GetPrState        = fun _ _        -> async { return failwith "GhClient should not be called" }
         GetIssueState     = fun _ _        -> async { return failwith "GhClient should not be called" }
         RepoExists        = fun _          -> async { return failwith "GhClient should not be called" }
+        ReposExist        = fun _          -> async { return failwith "GhClient should not be called" }
         // IsArchived is the per-repo pre-check in processRepo. Callers that expect no
         // write activity should still allow this read to succeed.
         IsArchived        = fun _          -> async { return Ok false }
@@ -115,6 +118,7 @@ let from (h: Handlers) : IGhClient =
         member _.GetIssueState repo iss     = h.GetIssueState repo iss
         member _.ListRepos org              = h.ListRepos org
         member _.RepoExists repo            = h.RepoExists repo
+        member _.ReposExist repos           = h.ReposExist repos
         member _.IsArchived repo            = h.IsArchived repo
         member _.FetchCodeowners repo       = h.FetchCodeowners repo }
 

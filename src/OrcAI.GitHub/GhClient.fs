@@ -42,6 +42,45 @@ let private runGh (token: string) (args: string) : Async<Result<string, string>>
             return Error $"failed to run 'gh {args}': {ex.Message}"
     }
 
+// GraphQL responses with partial failures exit with code 1 but still contain
+// valid JSON in stdout. This variant recovers stdout from the exception so the
+// caller can parse data+errors from a single response.
+// Async.AwaitTask may wrap the inner exception in AggregateException, so we
+// unwrap one level before checking for ExitCodeReadException.
+let private runGhGraphQL (token: string) (args: string) : Async<Result<string, string>> =
+    async {
+        try
+            let! (stdout, _stderr) =
+                Command.ReadAsync(
+                    "gh", args,
+                    configureEnvironment = Action<Collections.Generic.IDictionary<string,string>>(fun env ->
+                        env.["GH_TOKEN"] <- token))
+                |> Async.AwaitTask
+            return Ok (stdout.Trim())
+        with
+        | :? ExitCodeReadException as ex ->
+            let stdout = ex.StandardOutput.Trim()
+            if stdout.Length > 0 then return Ok stdout
+            else
+                let stderr = ex.StandardError.Trim()
+                return Error (if stderr.Length > 0 then stderr else $"gh exited with code {ex.ExitCode}")
+        | :? AggregateException as aex ->
+            let found = aex.Flatten().InnerExceptions |> Seq.tryFind (fun e -> e :? ExitCodeReadException)
+            match found with
+            | Some (:? ExitCodeReadException as ex) ->
+                let stdout = ex.StandardOutput.Trim()
+                if stdout.Length > 0 then return Ok stdout
+                else
+                    let stderr = ex.StandardError.Trim()
+                    return Error (if stderr.Length > 0 then stderr else $"gh exited with code {ex.ExitCode}")
+            | _ ->
+                return Error $"failed to run 'gh {args}': {aex.Message}"
+        | :? ExitCodeException as ex ->
+            return Error $"gh exited with code {ex.ExitCode}"
+        | ex ->
+            return Error $"failed to run 'gh {args}': {ex.Message}"
+    }
+
 // ------------------------------------------------------------------
 // Rate limiting and retry helpers
 // ------------------------------------------------------------------
@@ -126,6 +165,18 @@ let private runGhApi (bucket: ApiBucket) (retries: int) (token: string) (args: s
         }
         do! waitForToken ()
         return! runGh token args
+    })
+
+let private runGhApiGraphQL (bucket: ApiBucket) (retries: int) (token: string) (args: string) : Async<Result<string, string>> =
+    withRetry retries (fun () -> async {
+        let rec waitForToken () = async {
+            let waitMs = bucket.Acquire()
+            if waitMs > 0 then
+                do! Async.Sleep waitMs
+                return! waitForToken ()
+        }
+        do! waitForToken ()
+        return! runGhGraphQL token args
     })
 
 // ------------------------------------------------------------------
@@ -554,6 +605,72 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                 match! runGhApi bucket retries ghToken $"repo view {repoStr} --json name" with
                 | Ok _    -> return Ok ()
                 | Error e -> return Error e
+            }
+
+        member _.ReposExist repos =
+            async {
+                if List.isEmpty repos then
+                    return Map.empty
+                else
+
+                let results = System.Collections.Generic.Dictionary<RepoName, Result<unit, string>>()
+
+                for chunk in List.chunkBySize 100 repos do
+                    // Build one aliased field per repo: r0: repository(owner:"o",name:"n"){id}
+                    let fields =
+                        chunk
+                        |> List.mapi (fun i (RepoName r) ->
+                            let parts = r.Split('/', 2)
+                            $"r{i}: repository(owner:\"{parts.[0]}\",name:\"{parts.[1]}\"){{id}}")
+                        |> String.concat " "
+                    let query = $"{{ {fields} }}"
+
+                    let tmpFile = System.IO.Path.GetTempFileName()
+                    try
+                        System.IO.File.WriteAllText(tmpFile, JsonSerializer.Serialize({| query = query |}))
+                        match! runGhApiGraphQL bucket retries ghToken $"api graphql --input \"{tmpFile}\"" with
+                        | Error e ->
+                            for repo in chunk do results.[repo] <- Error e
+                        | Ok json ->
+                            let doc  = JsonDocument.Parse(json).RootElement
+                            let data =
+                                match doc.TryGetProperty("data") with
+                                | true, d -> Some d
+                                | _       -> None
+                            // Collect error messages keyed by alias ("r0", "r1", …)
+                            let errorsByAlias =
+                                match doc.TryGetProperty("errors") with
+                                | true, arr ->
+                                    arr.EnumerateArray()
+                                    |> Seq.choose (fun err ->
+                                        let alias =
+                                            match err.TryGetProperty("path") with
+                                            | true, p -> p.EnumerateArray() |> Seq.tryHead |> Option.map (fun e -> e.GetString())
+                                            | _ -> None
+                                        let msg =
+                                            match err.TryGetProperty("message") with
+                                            | true, m -> m.GetString()
+                                            | _ -> "inaccessible"
+                                        alias |> Option.map (fun a -> a, msg))
+                                    |> Map.ofSeq
+                                | _ -> Map.empty
+                            chunk |> List.iteri (fun i repo ->
+                                let alias = $"r{i}"
+                                let isNull =
+                                    match data with
+                                    | Some d ->
+                                        match d.TryGetProperty(alias) with
+                                        | true, v -> v.ValueKind = JsonValueKind.Null
+                                        | _       -> true
+                                    | None -> true
+                                results.[repo] <-
+                                    if isNull then
+                                        Error (Map.tryFind alias errorsByAlias |> Option.defaultValue "not found or inaccessible")
+                                    else Ok ())
+                    finally
+                        if System.IO.File.Exists(tmpFile) then System.IO.File.Delete(tmpFile)
+
+                return results |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
             }
 
         member _.IsArchived repo =
