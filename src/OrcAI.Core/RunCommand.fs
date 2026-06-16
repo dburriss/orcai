@@ -110,6 +110,12 @@ let private archivedPlaceholder (repo: RepoName) : IssueRef =
     let (RepoName r) = repo
     { Repo = repo; Number = IssueNumber 0; Url = $"https://github.com/{r}"; Assignees = [] }
 
+/// Returns true when a FetchReposState error definitively means the repo does not exist
+/// (as opposed to a transient network/API failure where falling back to individual calls is valid).
+let private isRepoNotFoundError (e: string) =
+    e = "not found or inaccessible" ||
+    e.Contains("Could not resolve to a Repository")
+
 /// Placeholder IssueRef for a repo where a dry run would have created a new issue.
 /// Number is 0 and URL points to a non-existent /issues/0 path.
 let private dryRunCreatePlaceholder (repo: RepoName) : IssueRef =
@@ -245,10 +251,11 @@ type private RepoOutcome =
 /// `priorFailures` drives the per-step skip decisions (max-attempts cap, UserError
 /// causes locked behind a hash change).
 let private processRepo
-    (deps          : OrcAIDeps)
-    (p             : ProcessParams)
-    (priorFailures : RepoFailure list)
-    (repo          : RepoName)
+    (deps            : OrcAIDeps)
+    (p               : ProcessParams)
+    (priorFailures   : RepoFailure list)
+    (prefetchedState : RepoState option)
+    (repo            : RepoName)
     : Async<RepoOutcome> =
     async {
         let client = deps.GhClient
@@ -270,12 +277,16 @@ let private processRepo
         let record cat result = attempted.Add(cat, result)
         let outcome r = { Result = r; Attempted = List.ofSeq attempted }
 
-        // -1. Pre-check: skip repos that are archived (read-only). Errors from the
-        //     pre-check itself are non-fatal — fall through and let the write fail.
-        let! archivedResult = client.IsArchived repo
+        // -1. Pre-check: skip repos that are archived (read-only). Uses prefetched state
+        //     when available; falls back to an individual API call (e.g. recreateStaleIssues).
+        //     Errors from the pre-check itself are non-fatal — fall through and let the write fail.
+        let! archivedResult =
+            match prefetchedState with
+            | Some s -> async { return Ok s.IsArchived }
+            | None   -> client.IsArchived repo
         match archivedResult with
         | Ok true ->
-            eprintfn "[%s] Repo is archived — skipping." repoStr
+            if verbose then eprintfn "[%s] Repo is archived — skipping." repoStr
             return outcome (Some { Issue = archivedPlaceholder repo; Outcome = SkippedArchived })
         | Ok false
         | Error _ ->
@@ -298,7 +309,11 @@ let private processRepo
                 if not (shouldAttempt p priorFailures FindIssue) then
                     return Error "FindIssue skipped (prior failure not retryable)"
                 else
-                match! client.FindIssue repo config.IssueTitle with
+                let findOpen =
+                    match prefetchedState with
+                    | Some s -> async { return Ok s.OpenIssue }
+                    | None   -> client.FindIssue repo config.IssueTitle
+                match! findOpen with
                 | Error e ->
                     record FindIssue (Error e)
                     return Error $"Failed to check for existing open issue: {e}"
@@ -308,7 +323,11 @@ let private processRepo
                     return Ok (issue, AlreadyExisted)
                 | Ok None ->
                     record FindIssue (Ok ())
-                    match! client.FindClosedIssue repo config.IssueTitle with
+                    let findClosed =
+                        match prefetchedState with
+                        | Some s -> async { return Ok s.ClosedIssue }
+                        | None   -> client.FindClosedIssue repo config.IssueTitle
+                    match! findClosed with
                     | Error e ->
                         record FindIssue (Error e)
                         return Error $"Failed to check for existing closed issue: {e}"
@@ -357,7 +376,7 @@ let private processRepo
 
         match issueResult with
         | Error e ->
-            eprintfn "[%s] Error finding/creating issue: %s" repoStr e
+            if verbose then eprintfn "[%s] Error finding/creating issue: %s" repoStr e
             return outcome None
         | Ok (issue, issueOutcome) ->
 
@@ -378,7 +397,7 @@ let private processRepo
 
         // 3. Add to project (idempotent — gh CLI succeeds silently when the item is already present).
         if shouldAttempt p priorFailures AddToProject then
-            if verbose then eprintfn "[%s] Adding issue to project" repoStr
+            if verbose && issueOutcome <> AlreadyExisted then eprintfn "[%s] Adding issue to project" repoStr
             match! client.AddIssueToProject project issue with
             | Ok ()   -> record AddToProject (Ok ())
             | Error e ->
@@ -499,11 +518,26 @@ let private runFull
             l.Failures |> List.groupBy (fun f -> f.Repo) |> Map.ofList)
         |> Option.defaultValue Map.empty
 
+    // Bulk-prefetch isArchived, open issue, and closed issue for all repos in one
+    // GraphQL call instead of N×3 individual REST calls inside processRepo.
+    let prefetchedStates =
+        deps.GhClient.FetchReposState config.Repos config.IssueTitle
+        |> Async.RunSynchronously
+
     let repoOutcomes =
         config.Repos
         |> List.map (fun repo ->
-            let priorFailures = Map.tryFind repo priorFailuresByRepo |> Option.defaultValue []
-            processRepo deps processParams priorFailures repo)
+            let priorFailures  = Map.tryFind repo priorFailuresByRepo |> Option.defaultValue []
+            match Map.tryFind repo prefetchedStates with
+            | Some (Error e) when isRepoNotFoundError e ->
+                // Repo definitively not found — skip without further API calls.
+                // Transient errors (where isRepoNotFoundError is false) fall through to individual calls.
+                let (RepoName r) = repo
+                if input.Verbose then eprintfn "[%s] Repository not found or inaccessible — skipping." r
+                async { return { Result = None; Attempted = [FindIssue, Error e] } }
+            | fetchedResult ->
+                let prefetchedState = fetchedResult |> Option.bind Result.toOption
+                processRepo deps processParams priorFailures prefetchedState repo)
         |> Async.Parallel
         |> Async.RunSynchronously
 
@@ -561,7 +595,7 @@ let private recreateStaleIssues
     else
         let recreated =
             staleRepos
-            |> List.map (fun repo -> processRepo deps params' [] repo)
+            |> List.map (fun repo -> processRepo deps params' [] None repo)
             |> Async.Parallel
             |> Async.RunSynchronously
             |> Array.toList

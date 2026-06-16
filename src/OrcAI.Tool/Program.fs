@@ -449,37 +449,48 @@ let main argv =
                                             | OrcAI.Core.Domain.Unknown          -> "Unknown"
                                         let status = if f.Attempts >= cap then "SKIPPED" else $"attempt {f.Attempts}/{cap}"
                                         printfn "    [%s] %s %s %s — %s" r catStr causeStr status f.LastMessage
-                            if verbose && not result.Results.IsEmpty then
+                            if not result.Lock.Repos.IsEmpty then
                                 AnsiConsole.WriteLine()
                                 let table = Table()
                                 table.Border <- TableBorder.Rounded
                                 table.AddColumn(TableColumn("[bold]Repo[/]"))             |> ignore
                                 table.AddColumn(TableColumn("[bold]Issue[/]").Centered()) |> ignore
                                 table.AddColumn(TableColumn("[bold]Status[/]"))           |> ignore
-                                for r in result.Results do
-                                    let (RepoName repo)    = r.Issue.Repo
-                                    let (IssueNumber num)  = r.Issue.Number
-                                    let repoUrl            = $"https://github.com/{repo}"
-                                    let statusMarkup =
-                                        match r.Outcome with
-                                        | OrcAI.Core.RunCommand.Created             -> "[green]created[/]"
-                                        | OrcAI.Core.RunCommand.AlreadyExisted      -> "[grey]already existed[/]"
-                                        | OrcAI.Core.RunCommand.Reopened            -> "[yellow]reopened[/]"
-                                        | OrcAI.Core.RunCommand.Skipped             -> "[grey]skipped[/]"
-                                        | OrcAI.Core.RunCommand.Updated             -> "[green]updated[/]"
-                                        | OrcAI.Core.RunCommand.UpdateFailed _      -> "[red]update failed[/]"
-                                        | OrcAI.Core.RunCommand.SkippedArchived     -> "[grey]skipped (archived)[/]"
-                                        | OrcAI.Core.RunCommand.StaleIssueRecreated -> "[yellow]stale — recreated[/]"
-                                        | OrcAI.Core.RunCommand.DryRunWouldCreate   -> "[dim]would create (dry run)[/]"
-                                        | OrcAI.Core.RunCommand.DryRunWouldReopen   -> "[dim]would reopen (dry run)[/]"
-                                        | OrcAI.Core.RunCommand.DryRunWouldUpdate   -> "[dim]would update (dry run)[/]"
-                                    let issueCell =
-                                        if num = 0 then Markup("[dim]-[/]")
-                                        else Markup($"[yellow]#{num}[/]")
-                                    table.AddRow(
-                                        [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repo)}[/][/]") :> Rendering.IRenderable
-                                           issueCell
-                                           Markup(statusMarkup) |]) |> ignore
+                                let resultsByRepo =
+                                    result.Results
+                                    |> List.map (fun r -> r.Issue.Repo, r)
+                                    |> Map.ofList
+                                for repo in result.Lock.Repos do
+                                    let (RepoName repoStr) = repo
+                                    let repoUrl = $"https://github.com/{repoStr}"
+                                    match Map.tryFind repo resultsByRepo with
+                                    | Some r ->
+                                        let (IssueNumber num) = r.Issue.Number
+                                        let statusMarkup =
+                                            match r.Outcome with
+                                            | OrcAI.Core.RunCommand.Created             -> "[green]created[/]"
+                                            | OrcAI.Core.RunCommand.AlreadyExisted      -> "[grey]already existed[/]"
+                                            | OrcAI.Core.RunCommand.Reopened            -> "[yellow]reopened[/]"
+                                            | OrcAI.Core.RunCommand.Skipped             -> "[grey]skipped[/]"
+                                            | OrcAI.Core.RunCommand.Updated             -> "[green]updated[/]"
+                                            | OrcAI.Core.RunCommand.UpdateFailed _      -> "[red]update failed[/]"
+                                            | OrcAI.Core.RunCommand.SkippedArchived     -> "[grey]skipped (archived)[/]"
+                                            | OrcAI.Core.RunCommand.StaleIssueRecreated -> "[yellow]stale — recreated[/]"
+                                            | OrcAI.Core.RunCommand.DryRunWouldCreate   -> "[dim]would create (dry run)[/]"
+                                            | OrcAI.Core.RunCommand.DryRunWouldReopen   -> "[dim]would reopen (dry run)[/]"
+                                            | OrcAI.Core.RunCommand.DryRunWouldUpdate   -> "[dim]would update (dry run)[/]"
+                                        let issueCell =
+                                            if num = 0 then Markup("[dim]-[/]")
+                                            else Markup($"[yellow]#{num}[/]")
+                                        table.AddRow(
+                                            [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repoStr)}[/][/]") :> Rendering.IRenderable
+                                               issueCell
+                                               Markup(statusMarkup) |]) |> ignore
+                                    | None ->
+                                        table.AddRow(
+                                            [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repoStr)}[/][/]") :> Rendering.IRenderable
+                                               Markup("[dim]-[/]")
+                                               Markup("[red]failed[/]") |]) |> ignore
                                 AnsiConsole.Write(table)
                 let anyError = results |> Map.exists (fun _ r -> match r with Error _ -> true | Ok _ -> false)
                 if anyError then 1 else 0)

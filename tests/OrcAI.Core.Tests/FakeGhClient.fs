@@ -30,6 +30,7 @@ type Handlers =
       RepoExists       : RepoName                  -> Async<Result<unit, string>>
       ReposExist       : RepoName list             -> Async<Map<RepoName, Result<unit, string>>>
       IsArchived       : RepoName                  -> Async<Result<bool, string>>
+      FetchReposState  : RepoName list -> string   -> Async<Map<RepoName, Result<RepoState, string>>>
       FetchCodeowners  : RepoName                  -> Async<string option> }
 
 /// Returns a default-shaped IssueRef for repo + issue number.
@@ -68,6 +69,7 @@ let defaults : Handlers =
       RepoExists        = fun _          -> async { return Ok () }
       ReposExist        = fun repos      -> async { return repos |> List.map (fun r -> r, Ok ()) |> Map.ofList }
       IsArchived        = fun _          -> async { return Ok false }
+      FetchReposState   = fun repos _    -> async { return repos |> List.map (fun r -> r, Ok { IsArchived = false; OpenIssue = None; ClosedIssue = None }) |> Map.ofList }
       FetchCodeowners   = fun _          -> async { return None } }
 
 /// Handlers where every method throws — use for tests that assert GitHub is never called.
@@ -89,9 +91,10 @@ let neverCalledHandlers : Handlers =
         GetIssueState     = fun _ _        -> async { return failwith "GhClient should not be called" }
         RepoExists        = fun _          -> async { return failwith "GhClient should not be called" }
         ReposExist        = fun _          -> async { return failwith "GhClient should not be called" }
-        // IsArchived is the per-repo pre-check in processRepo. Callers that expect no
-        // write activity should still allow this read to succeed.
+        // IsArchived / FetchReposState are the per-repo pre-checks in processRepo.
+        // Callers that expect no write activity should still allow these reads to succeed.
         IsArchived        = fun _          -> async { return Ok false }
+        FetchReposState   = fun repos _    -> async { return repos |> List.map (fun r -> r, Ok { IsArchived = false; OpenIssue = None; ClosedIssue = None }) |> Map.ofList }
         FetchCodeowners   = fun _          -> async { return failwith "GhClient should not be called" } }
 
 /// Wraps a Handlers record in an IGhClient interface.
@@ -119,8 +122,9 @@ let from (h: Handlers) : IGhClient =
         member _.ListRepos org              = h.ListRepos org
         member _.RepoExists repo            = h.RepoExists repo
         member _.ReposExist repos           = h.ReposExist repos
-        member _.IsArchived repo            = h.IsArchived repo
-        member _.FetchCodeowners repo       = h.FetchCodeowners repo }
+        member _.IsArchived repo              = h.IsArchived repo
+        member _.FetchReposState repos title  = h.FetchReposState repos title
+        member _.FetchCodeowners repo         = h.FetchCodeowners repo }
 
 /// Returns a handler for AssignIssue that records calls by `label`.
 let trackingAssign (label: string) (calls: ConcurrentBag<string>) =
@@ -139,3 +143,20 @@ let trackingAssignUnit (calls: ConcurrentBag<unit>) =
     fun (_ : RepoName) (_ : IssueNumber) (_ : string) ->
         calls.Add(())
         async { return Ok () }
+
+// ---------------------------------------------------------------------------
+// FetchReposState helpers — concise overrides for common test scenarios
+// ---------------------------------------------------------------------------
+
+let repoStateDefault  = { IsArchived = false; OpenIssue = None; ClosedIssue = None }
+let repoStateArchived = { IsArchived = true;  OpenIssue = None; ClosedIssue = None }
+
+let repoStateWithOpen (repo: RepoName) (num: int) =
+    { repoStateDefault with OpenIssue = Some (issueFor repo num) }
+
+let repoStateWithClosed (repo: RepoName) (num: int) =
+    { repoStateDefault with ClosedIssue = Some (issueFor repo num) }
+
+/// Builds a FetchReposState handler where every repo gets the state returned by `f`.
+let fetchReposStateReturning (f: RepoName -> RepoState) : RepoName list -> string -> Async<Map<RepoName, Result<RepoState, string>>> =
+    fun repos _ -> async { return repos |> List.map (fun r -> r, Ok (f r)) |> Map.ofList }

@@ -45,5 +45,6 @@ type IGhClient =
     abstract ListRepos        : org:OrgName -> Async<Result<string list, string>>
     abstract RepoExists       : repo:RepoName -> Async<Result<unit, string>>
     abstract ReposExist       : repos:RepoName list -> Async<Map<RepoName, Result<unit, string>>>
-    abstract IsArchived       : repo:RepoName -> Async<Result<bool, string>>
-    abstract FetchCodeowners  : repo:RepoName -> Async<string option>
+    abstract IsArchived        : repo:RepoName -> Async<Result<bool, string>>
+    abstract FetchReposState   : repos:RepoName list -> title:string -> Async<Map<RepoName, Result<RepoState, string>>>
+    abstract FetchCodeowners   : repo:RepoName -> Async<string option>

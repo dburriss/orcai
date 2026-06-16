@@ -9,7 +9,9 @@
 ### Changed
 
 - `orcai verify` does a single call now to check repositories but will ignore those already in the lock file
- 
+- performance improvements to `orcai verify` by using GraphQL to fetch multiple repositories in a single request instead of one request per repository
+- performance improvements to `orcai run` by using GraphQL to fetch multiple repositories in a single request instead of one request per repository
+
 ## [0.8.0] - 2026-06-09
 
 ### Added

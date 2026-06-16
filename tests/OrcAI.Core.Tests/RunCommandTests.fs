@@ -243,7 +243,7 @@ let ``processRepo skips assignment entirely when skipCopilot=true regardless of 
 let private closedIssueClient () =
     FakeGhClient.from
         { FakeGhClient.defaults with
-            FindClosedIssue = fun repo _ -> async { return Ok (Some (FakeGhClient.issueFor repo 7)) }
+            FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithClosed r 7)
             ReopenIssue     = fun repo _ -> async { return Ok (FakeGhClient.issueFor repo 7) }
             CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue should not be called" } }
 
@@ -282,7 +282,7 @@ let ``skip action returns Skipped outcome without creating or reopening`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindClosedIssue   = fun repo _ -> async { return Ok (Some (FakeGhClient.issueFor repo 7)) }
+                FetchReposState   = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithClosed r 7)
                 CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
                 AddIssueToProject = FakeGhClient.trackingAddIssue pc
                 AssignIssue       = FakeGhClient.trackingAssignUnit ac }
@@ -306,7 +306,7 @@ let ``skip action does not add issue to project or assign copilot`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindClosedIssue   = fun repo _ -> async { return Ok (Some (FakeGhClient.issueFor repo 7)) }
+                FetchReposState   = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithClosed r 7)
                 CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
                 AddIssueToProject = FakeGhClient.trackingAddIssue pc
                 AssignIssue       = FakeGhClient.trackingAssignUnit ac }
@@ -328,7 +328,7 @@ let ``fail action returns error and does not create or reopen`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindClosedIssue   = fun repo _ -> async { return Ok (Some (FakeGhClient.issueFor repo 7)) }
+                FetchReposState   = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithClosed r 7)
                 CreateIssue       = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" }
                 AddIssueToProject = fun _ _     -> async { return failwith "AddIssueToProject not expected" }
                 AssignIssue       = fun _ _ _   -> async { return failwith "AssignIssue not expected" } }
@@ -353,8 +353,8 @@ let ``FindIssue Error does not create a new issue`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindIssue       = fun _ _ -> async { return Error "API rate limit exceeded" }
-                FindClosedIssue = fun _ _ -> async { return failwith "FindClosedIssue should not be called when FindIssue errors" }
+                FetchReposState = fun repos _ -> async { return repos |> List.map (fun r -> r, Error "API rate limit exceeded") |> Map.ofList }
+                FindIssue       = fun _ _     -> async { return Error "API rate limit exceeded" }
                 CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue must not be called on lookup error" } }
     let deps = Given.deps fs client
 
@@ -372,8 +372,9 @@ let ``FindClosedIssue Error does not create a new issue`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindIssue       = fun _ _ -> async { return Ok None }
-                FindClosedIssue = fun _ _ -> async { return Error "secondary rate limit" }
+                FetchReposState = fun repos _ -> async { return repos |> List.map (fun r -> r, Error "secondary rate limit") |> Map.ofList }
+                FindIssue       = fun _ _     -> async { return Ok None }
+                FindClosedIssue = fun _ _     -> async { return Error "secondary rate limit" }
                 CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue must not be called on closed-issue lookup error" } }
     let deps  = Given.deps fs client
     let input = A.RunInput.defaults () |> A.RunInput.withOnClosedIssue (Some Reopen)
@@ -396,10 +397,10 @@ let ``processRepo returns SkippedArchived outcome when IsArchived=true`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                IsArchived  = fun _ -> async { return Ok true }
-                FindIssue   = fun _ _ -> async { return failwith "FindIssue not expected for archived repo" }
-                CreateIssue = fun _ _ _ _ -> async { return failwith "CreateIssue not expected for archived repo" }
-                UpdateIssue = fun _ _ _ _ -> async { return failwith "UpdateIssue not expected for archived repo" } }
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun _ -> FakeGhClient.repoStateArchived)
+                FindIssue       = fun _ _ -> async { return failwith "FindIssue not expected for archived repo" }
+                CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue not expected for archived repo" }
+                UpdateIssue     = fun _ _ _ _ -> async { return failwith "UpdateIssue not expected for archived repo" } }
     let deps = Given.deps fs client
 
     let results = execute deps [path] (A.RunInput.defaults ()) |> Async.RunSynchronously
@@ -416,7 +417,7 @@ let ``runFull writes SkippedArchived repos to lock.SkippedRepos and not lock.Iss
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                IsArchived = fun _ -> async { return Ok true } }
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun _ -> FakeGhClient.repoStateArchived) }
     let deps  = Given.deps fs client
     let input = { A.RunInput.defaults () with SkipLock = false }
 
@@ -439,8 +440,9 @@ let ``IsArchived error is non-fatal and processRepo proceeds`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                IsArchived  = fun _ -> async { return Error "transient network error" }
-                CreateIssue = fun repo _ _ _ ->
+                FetchReposState = fun repos _ -> async { return repos |> List.map (fun r -> r, Error "transient network error") |> Map.ofList }
+                IsArchived      = fun _       -> async { return Error "transient network error" }
+                CreateIssue     = fun repo _ _ _ ->
                     createCalls.Add(())
                     async { return Ok (FakeGhClient.issueFor repo 42) } }
     let deps = Given.deps fs client
@@ -522,11 +524,11 @@ let ``template change triggers runFull and refreshes body of existing open issue
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindIssue   = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 42)) }
-                UpdateIssue = fun _ _ _ _ ->
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                UpdateIssue     = fun _ _ _ _ ->
                     updateCalls.Add(())
                     async { return Ok () }
-                CreateIssue = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" } }
+                CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" } }
     let deps  = Given.deps fs client
     let input = { A.RunInput.defaults () with SkipLock = false }
 
@@ -549,8 +551,8 @@ let ``YAML-only change runs runFull but does NOT refresh issue bodies`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindIssue   = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 42)) }
-                UpdateIssue = fun _ _ _ _ ->
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                UpdateIssue     = fun _ _ _ _ ->
                     updateCalls.Add(())
                     async { return Ok () } }
     let deps  = Given.deps fs client
@@ -573,11 +575,11 @@ let ``--skip-lock refreshes bodies of existing open issues even with no edits`` 
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindIssue   = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 42)) }
-                UpdateIssue = fun _ _ _ _ ->
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                UpdateIssue     = fun _ _ _ _ ->
                     updateCalls.Add(())
                     async { return Ok () }
-                CreateIssue = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" } }
+                CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue not expected" } }
     let deps  = Given.deps fs client
     let input = { A.RunInput.defaults () with SkipLock = true }
 
@@ -600,8 +602,7 @@ let ``template change + onClosedIssue=skip does not edit closed issue body`` () 
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindIssue       = fun _ _ -> async { return Ok None }
-                FindClosedIssue = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 7)) }
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithClosed r 7)
                 UpdateIssue     = fun _ _ _ _ ->
                     updateCalls.Add(())
                     async { return Ok () }
@@ -631,8 +632,7 @@ let ``template change + onClosedIssue=reopen reopens and refreshes body`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindIssue       = fun _ _ -> async { return Ok None }
-                FindClosedIssue = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 7)) }
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithClosed r 7)
                 ReopenIssue     = fun r _ -> async { return Ok (FakeGhClient.issueFor r 7) }
                 UpdateIssue     = fun _ _ _ _ ->
                     updateCalls.Add(())
@@ -659,18 +659,15 @@ let ``refreshBodies recreates issue when UpdateIssue returns stale error`` () =
     let repo = RepoName "myorg/repo-a"
     givenStaleTemplateLock fs path repo 42
 
-    // Stateful FindIssue: returns the original on first call (during runFull → AlreadyExisted),
-    // then None on second call (during recreateStaleIssues' processRepo) so it falls through to
-    // CreateIssue.
-    let findCallCount = ref 0
-    let createCalls   = ConcurrentBag<unit>()
+    // FetchReposState returns the open issue for the runFull pass (→ AlreadyExisted).
+    // recreateStaleIssues uses the individual fallback path (processRepo None) where
+    // FindIssue/FindClosedIssue return None, falling through to CreateIssue.
+    let createCalls = ConcurrentBag<unit>()
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindIssue       = fun r _ ->
-                    let n = System.Threading.Interlocked.Increment(findCallCount)
-                    if n = 1 then async { return Ok (Some (FakeGhClient.issueFor r 42)) }
-                    else          async { return Ok None }
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                FindIssue       = fun _ _ -> async { return Ok None }
                 FindClosedIssue = fun _ _ -> async { return Ok None }
                 UpdateIssue     = fun _ _ _ _ ->
                     async { return Error "GraphQL: Could not resolve to an issue or pull request with the number of 42. (updateIssue)" }
@@ -782,7 +779,7 @@ let ``dry-run skips ReopenIssue and returns DryRunWouldReopen outcome`` () =
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindClosedIssue = fun repo _ -> async { return Ok (Some (FakeGhClient.issueFor repo 7)) }
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithClosed r 7)
                 ReopenIssue     = fun _ _ ->
                     reopenCalls.Add(())
                     async { return failwith "ReopenIssue must not be called in dry-run" } }
@@ -811,8 +808,8 @@ let ``dry-run skips UpdateIssue in refreshBodies and returns DryRunWouldUpdate``
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindIssue   = fun r _ -> async { return Ok (Some (FakeGhClient.issueFor r 42)) }
-                UpdateIssue = fun _ _ _ _ ->
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                UpdateIssue     = fun _ _ _ _ ->
                     updateCalls.Add(())
                     async { return failwith "UpdateIssue must not be called in dry-run" } }
     let deps  = Given.deps fs client
@@ -844,25 +841,21 @@ let ``dry-run does not write the lock file`` () =
     Assert.False((fs :> System.IO.Abstractions.IFileSystem).File.Exists(lockPath))
 
 [<Fact>]
-let ``dry-run still performs read-only lookups (FindIssue, FindClosedIssue, ListLabels)`` () =
+let ``dry-run still performs read-only lookups (FetchReposState, ListLabels)`` () =
     let fs              = MockFileSystem()
     let yaml =
         "job:\n  title: \"T\"\n  org: \"myorg\"\n" +
         "repos:\n  - \"repo-a\"\n" +
         "issue:\n  template: \"./template.md\"\n  labels: [\"bug\"]\n"
     let path            = Given.yamlFile fs yaml "# body"
-    let findCalls       = ConcurrentBag<unit>()
-    let findClosedCalls = ConcurrentBag<unit>()
+    let fetchStateCalls = ConcurrentBag<unit>()
     let listLabelsCalls = ConcurrentBag<unit>()
     let client =
         FakeGhClient.from
             { FakeGhClient.defaults with
-                FindIssue       = fun _ _ ->
-                    findCalls.Add(())
-                    async { return Ok None }
-                FindClosedIssue = fun _ _ ->
-                    findClosedCalls.Add(())
-                    async { return Ok None }
+                FetchReposState = fun repos _ ->
+                    fetchStateCalls.Add(())
+                    async { return repos |> List.map (fun r -> r, Ok FakeGhClient.repoStateDefault) |> Map.ofList }
                 ListLabels      = fun _ ->
                     listLabelsCalls.Add(())
                     async { return Ok [] } }
@@ -874,6 +867,5 @@ let ``dry-run still performs read-only lookups (FindIssue, FindClosedIssue, List
 
     execute deps [path] input |> Async.RunSynchronously |> ignore
 
-    Assert.NotEmpty(findCalls)
-    Assert.NotEmpty(findClosedCalls)
+    Assert.NotEmpty(fetchStateCalls)
     Assert.NotEmpty(listLabelsCalls)

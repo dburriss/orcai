@@ -30,6 +30,13 @@ type IssueRef =
       Url       : string
       Assignees : string list }
 
+/// Pre-fetched per-repo state returned by FetchReposState.
+/// Collapses IsArchived, FindIssue, and FindClosedIssue into one bulk GraphQL call.
+type RepoState =
+    { IsArchived  : bool
+      OpenIssue   : IssueRef option
+      ClosedIssue : IssueRef option }
+
 type PullRequestRef =
     { Repo        : RepoName
       Number      : PrNumber
