@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-16
+
 ### Added
 
 - `verbose` flag on `orcai verify` command — prints detailed per-repo validation results to stderr
