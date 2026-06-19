@@ -47,7 +47,20 @@ let private executeSingle (deps: OrcAIDeps) (skipLock: bool) (path: string) : As
             return { ConfigErrors = [e]; ReposTrusted = []; RepoSuccesses = []; RepoErrors = []; IsValid = false }
         | Ok config ->
 
-        // Step 3: determine which repos need a live accessibility check.
+        // Step 3 (optional): validate depends_on entries — check that upstream files
+        // exist and that there are no circular references. Both are static (no API).
+        let depErrors =
+            if config.DependsOn.IsEmpty then []
+            else
+                match DependencyResolution.resolveOrder deps.FileSystem path with
+                | Ok _      -> []
+                | Error msg -> [ msg ]
+
+        if not depErrors.IsEmpty then
+            return { ConfigErrors = depErrors; ReposTrusted = []; RepoSuccesses = []; RepoErrors = []; IsValid = false }
+        else
+
+        // Step 4: determine which repos need a live accessibility check.
         // With --skip-lock, or on first run (no lock file), all repos are checked.
         // When a lock file exists, only repos new to the YAML (not yet in the lock)
         // need checking — repos already in the lock were verified by a prior run.

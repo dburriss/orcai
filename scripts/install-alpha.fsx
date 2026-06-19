@@ -7,7 +7,8 @@
 // installs it as a global dotnet tool — useful for dog-fooding in-progress work.
 //
 // Version logic: reads <Version> from OrcAI.Tool.fsproj, strips any existing suffix,
-// increments the patch segment, and appends "-alpha"  (e.g. 0.7.5 -> 0.7.6-alpha).
+// increments the patch segment, then scans the nupkg dir to find the next alpha counter
+// (e.g. first run: 0.7.6-alpha.1, second run: 0.7.6-alpha.2, ...).
 //
 // Arguments:
 //   --dry-run    Print what would happen without building or installing.
@@ -81,14 +82,35 @@ let numericPart =
     | idx -> versionString.[..idx-1]
 
 let currentVersion = Version.Parse(numericPart)
-let nextPatch = Version(currentVersion.Major, currentVersion.Minor, currentVersion.Build + 1)
-let alphaVersion = sprintf "%O-alpha" nextPatch
+let baseVersion = Version(currentVersion.Major, currentVersion.Minor, currentVersion.Build + 1)
+
+let nupkgDir = Path.Combine(rootPath, "src/OrcAI.Tool/nupkg")
+// nupkg filename format: orcai.tool.0.8.2-alpha.1.nupkg
+let alphaInfix = sprintf "%O-alpha." baseVersion
+let existingAlphaNumbers =
+    if Directory.Exists(nupkgDir) then
+        Directory.GetFiles(nupkgDir, "*.nupkg")
+        |> Array.choose (fun f ->
+            let name = Path.GetFileNameWithoutExtension(f).ToLower()
+            let needle = alphaInfix.ToLower()
+            match name.IndexOf(needle) with
+            | -1 -> None
+            | idx ->
+                let rest = name.[idx + needle.Length ..]
+                match Int32.TryParse(rest) with
+                | true, n -> Some n
+                | _ -> None)
+    else [||]
+
+let nextAlpha =
+    if existingAlphaNumbers.Length = 0 then 1
+    else Array.max existingAlphaNumbers + 1
+
+let alphaVersion = sprintf "%O-alpha.%d" baseVersion nextAlpha
 
 printfn "fsproj version : %s" versionString
 printfn "alpha version  : %s" alphaVersion
 printfn ""
-
-let nupkgDir = Path.Combine(rootPath, "src/OrcAI.Tool/nupkg")
 
 // Pack
 if isDryRun then

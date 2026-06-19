@@ -212,6 +212,110 @@ let ``parse sets SkipCopilot true when job.skipCopilot is true`` () =
     | Ok cfg  -> Assert.True(cfg.SkipCopilot)
 
 // ---------------------------------------------------------------------------
+// dependsOn — pure parse
+// ---------------------------------------------------------------------------
+
+let private baseYamlForDeps =
+    "job:\n  title: \"T\"\n  org: \"o\"\n" +
+    "repos:\n  - \"r\"\n" +
+    "issue:\n  template: \"./t.md\"\n"
+
+[<Fact>]
+let ``parse parses a valid dependsOn entry with defaults`` () =
+    let yaml =
+        baseYamlForDeps +
+        "dependsOn:\n" +
+        "  - job: ./upstream.yml\n" +
+        "    condition: pr_merged\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  ->
+        Assert.Equal(1, cfg.DependsOn.Length)
+        let dep = cfg.DependsOn.[0]
+        Assert.Equal("./upstream.yml", dep.Job)
+        Assert.Equal(PrMerged, dep.Condition)
+        Assert.Equal(PerRepo, dep.Scope)
+        Assert.Equal(UntrackedReposBehavior.Include, dep.UntrackedRepos)
+
+[<Fact>]
+let ``parse parses dependsOn with issue_closed condition`` () =
+    let yaml =
+        baseYamlForDeps +
+        "dependsOn:\n" +
+        "  - job: ./up.yml\n" +
+        "    condition: issue_closed\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(IssueClosed, cfg.DependsOn.[0].Condition)
+
+[<Fact>]
+let ``parse parses dependsOn with all_repos scope`` () =
+    let yaml =
+        baseYamlForDeps +
+        "dependsOn:\n" +
+        "  - job: ./up.yml\n" +
+        "    condition: pr_merged\n" +
+        "    scope: all_repos\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(AllRepos, cfg.DependsOn.[0].Scope)
+
+[<Fact>]
+let ``parse parses dependsOn with untrackedRepos skip`` () =
+    let yaml =
+        baseYamlForDeps +
+        "dependsOn:\n" +
+        "  - job: ./up.yml\n" +
+        "    condition: pr_merged\n" +
+        "    untrackedRepos: skip\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(UntrackedReposBehavior.Skip, cfg.DependsOn.[0].UntrackedRepos)
+
+[<Fact>]
+let ``parse parses multiple dependsOn entries`` () =
+    let yaml =
+        baseYamlForDeps +
+        "dependsOn:\n" +
+        "  - job: ./a.yml\n" +
+        "    condition: pr_merged\n" +
+        "  - job: ./b.yml\n" +
+        "    condition: issue_closed\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  ->
+        Assert.Equal(2, cfg.DependsOn.Length)
+        Assert.Equal("./a.yml", cfg.DependsOn.[0].Job)
+        Assert.Equal("./b.yml", cfg.DependsOn.[1].Job)
+
+[<Fact>]
+let ``parse returns error for unknown dependsOn condition`` () =
+    let yaml =
+        baseYamlForDeps +
+        "dependsOn:\n" +
+        "  - job: ./up.yml\n" +
+        "    condition: unknown_condition\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+[<Fact>]
+let ``parse returns error for unknown dependsOn scope`` () =
+    let yaml =
+        baseYamlForDeps +
+        "dependsOn:\n" +
+        "  - job: ./up.yml\n" +
+        "    condition: pr_merged\n" +
+        "    scope: unknown_scope\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+[<Fact>]
+let ``parse returns error for dependsOn entry missing job field`` () =
+    let yaml =
+        baseYamlForDeps +
+        "dependsOn:\n" +
+        "  - condition: pr_merged\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+// ---------------------------------------------------------------------------
 // hashBytes — pure
 // ---------------------------------------------------------------------------
 

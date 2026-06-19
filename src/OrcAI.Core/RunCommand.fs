@@ -14,6 +14,7 @@ module OrcAI.Core.RunCommand
 // ---------------------------------------------------------------------------
 
 open System
+open System.IO
 open OrcAI.Core.Domain
 open OrcAI.Core.GhClient
 open OrcAI.Core.Deps
@@ -68,9 +69,11 @@ type RunSource = | FromLockFile | FullRun
 
 /// The result returned to the CLI for display.
 type RunResult =
-    { Lock    : LockFile
-      Results : RepoResult list
-      Source  : RunSource }
+    { Lock      : LockFile
+      Results   : RepoResult list
+      Source    : RunSource
+      /// Set when an all_repos dependency gate was not met; no repos were processed.
+      BlockedBy : string option }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -97,6 +100,26 @@ let labelsToCreate (existing: string list) (requested: string list) : string lis
 let isLabelAlreadyExists (e: string) =
     e.Contains("already exists", StringComparison.OrdinalIgnoreCase)
     || e.Contains("already been taken", StringComparison.OrdinalIgnoreCase)
+
+/// Construct a RunResult signalling that an all_repos dependency gate was not met.
+/// No repos are processed and no lock file is written.
+let private blockedResult (config: JobConfig) (reason: string) : RunResult =
+    let dummyProject =
+        { Org    = config.Org
+          Number = 0
+          Title  = config.ProjectTitle
+          Url    = "" }
+    let dummyLock =
+        { LockedAt     = DateTimeOffset.MinValue
+          YamlHash     = ""
+          TemplateHash = ""
+          Project      = dummyProject
+          Repos        = []
+          Issues       = []
+          PullRequests = []
+          SkippedRepos = []
+          Failures     = [] }
+    { Lock = dummyLock; Results = []; Source = FullRun; BlockedBy = Some reason }
 
 /// True if the error string from `gh issue edit` indicates the issue no longer exists
 /// (deleted, transferred, or never existed). Lock entries that hit this are recoverable
@@ -574,7 +597,7 @@ let private runFull
     if not input.DryRun then
         LockFile.write deps.FileSystem input.YamlPath lock
 
-    Ok { Lock = lock; Results = allResults; Source = FullRun }
+    Ok { Lock = lock; Results = allResults; Source = FullRun; BlockedBy = None }
 
 /// For each `StaleIssueRecreated` entry in `results`, run `processRepo` against the
 /// same repo so a fresh issue is created in place of the stale one. Returns a new
@@ -755,6 +778,25 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
             let extraLabels   = input.DefaultLabels |> List.filter (fun l -> not (Set.contains (l.ToLowerInvariant()) existingLower))
             { config with Labels = config.Labels @ extraLabels }
 
+    // Apply depends_on repo filtering: gate all_repos conditions or narrow per_repo repos.
+    let depFilter =
+        if mergedConfig.DependsOn.IsEmpty then
+            None
+        else
+            let yamlDir = Path.GetDirectoryName(Path.GetFullPath(input.YamlPath)) |> Option.ofObj |> Option.defaultValue "."
+            DependencyResolution.filterRepos deps.GhClient deps.FileSystem mergedConfig yamlDir
+            |> Async.RunSynchronously
+            |> Some
+
+    match depFilter with
+    | Some (Error reason) -> Ok (blockedResult mergedConfig reason)
+    | _ ->
+
+    let mergedConfig =
+        match depFilter with
+        | Some (Ok filteredRepos) -> { mergedConfig with Repos = filteredRepos }
+        | _                       -> mergedConfig
+
     let yamlHash     = YamlConfig.computeHash deps.FileSystem input.YamlPath
     let templateHash =
         match YamlConfig.resolveTemplatePath deps.FileSystem input.YamlPath with
@@ -775,7 +817,7 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
         && List.isEmpty lock.Failures ->
         if input.Verbose then eprintfn "Lock file found and hashes match — nothing to do."
         let results = lock.Issues |> List.map (fun i -> { Issue = i; Outcome = AlreadyExisted })
-        Ok { Lock = lock; Results = results; Source = FromLockFile }
+        Ok { Lock = lock; Results = results; Source = FromLockFile; BlockedBy = None }
 
     | Some lock ->
         let yamlHashChanged     = lock.YamlHash <> yamlHash
@@ -806,6 +848,39 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
 /// with ContinueOnError all files are attempted and per-file errors are collected.
 let execute (deps: OrcAIDeps) (paths: string list) (input: RunInput) : Async<Map<string, Result<RunResult, string>>> =
     async {
+        // Resolve the full dependency chain: expand, dedup, and topologically order all paths.
+        match DependencyResolution.resolveChain deps.FileSystem paths with
+        | Error e ->
+            let firstPath = paths |> List.tryHead |> Option.defaultValue ""
+            return Map.ofList [ firstPath, Error e ]
+        | Ok resolvedChain ->
+
+        // If the resolved chain differs from the input (deps were added or ordering changed),
+        // run the full chain sequentially so each job's lock is written before dependents start.
+        let resolvedAbsPaths = resolvedChain |> List.map fst
+        let inputAbsPaths    = paths |> List.map Path.GetFullPath
+        let hasOrdering      = resolvedAbsPaths <> inputAbsPaths
+
+        if hasOrdering then
+            let results = System.Collections.Generic.Dictionary<string, Result<RunResult, string>>()
+            let mutable stop = false
+            for (absPath, isDep) in resolvedChain do
+                if not stop then
+                    let yamlPath =
+                        paths
+                        |> List.tryFind (fun p -> Path.GetFullPath(p) = absPath)
+                        |> Option.defaultValue absPath
+                    if isDep then
+                        printfn "Running dependency: %s" (Path.GetFileName(absPath))
+                    let singleInput = { input with YamlPath = yamlPath }
+                    let r = executeSingle deps singleInput
+                    results.[yamlPath] <- r
+                    match r with
+                    | Error _ when not input.ContinueOnError -> stop <- true
+                    | _ -> ()
+            return results |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+        else
+
         if input.NoParallel then
             // Sequential — stop on first error unless ContinueOnError
             let results = System.Collections.Generic.Dictionary<string, Result<RunResult, string>>()

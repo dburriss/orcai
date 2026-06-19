@@ -57,14 +57,22 @@ type YamlFailures =
     { maxAttempts : System.Nullable<int> }
 
 [<CLIMutable>]
+type YamlDependsOn =
+    { job            : string
+      condition      : string
+      scope          : string
+      untrackedRepos : string }
+
+[<CLIMutable>]
 type YamlRoot =
-    { job:      YamlJob
-      repos:    System.Collections.Generic.List<string>
-      issue:    YamlIssue
-      assign:   YamlAssign
-      nudge:    YamlNudge
-      notify:   YamlNotify
-      failures: YamlFailures }
+    { job:       YamlJob
+      repos:     System.Collections.Generic.List<string>
+      issue:     YamlIssue
+      assign:    YamlAssign
+      nudge:     YamlNudge
+      notify:    YamlNotify
+      failures:  YamlFailures
+      dependsOn: System.Collections.Generic.List<YamlDependsOn> }
 
 let private deserializer =
     DeserializerBuilder()
@@ -120,6 +128,28 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                 if isNull (box root.failures) then None
                 elif root.failures.maxAttempts.HasValue then Some root.failures.maxAttempts.Value
                 else None
+            let parseDependsOnEntry (dto: YamlDependsOn) : DependsOnConfig =
+                if String.IsNullOrWhiteSpace(dto.job) then
+                    failwith "A depends_on entry is missing the required 'job' field."
+                let condition =
+                    match dto.condition with
+                    | null | "" | "pr_merged" -> PrMerged
+                    | "issue_closed"          -> IssueClosed
+                    | other                   -> failwith $"Unknown depends_on condition: '{other}'. Valid values: pr_merged, issue_closed."
+                let scope =
+                    match dto.scope with
+                    | null | "" | "per_repo" -> PerRepo
+                    | "all_repos"            -> AllRepos
+                    | other                  -> failwith $"Unknown depends_on scope: '{other}'. Valid values: per_repo, all_repos."
+                let untrackedRepos =
+                    match dto.untrackedRepos with
+                    | null | "" | "include" -> UntrackedReposBehavior.Include
+                    | "skip"                -> UntrackedReposBehavior.Skip
+                    | other                 -> failwith $"Unknown depends_on untracked_repos: '{other}'. Valid values: include, skip."
+                { Job = dto.job; Condition = condition; Scope = scope; UntrackedRepos = untrackedRepos }
+            let dependsOnList =
+                if isNull (box root.dependsOn) then []
+                else root.dependsOn |> Seq.map parseDependsOnEntry |> List.ofSeq
             Ok { Org           = OrgName root.job.org
                  ProjectTitle  = root.job.title
                  Repos         = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
@@ -132,7 +162,8 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                  Nudge         = nudgeConfig
                  Notify        = notifyConfig
                  JobOwner      = nullStr root.job.owner
-                 MaxAttempts   = maxAttempts }
+                 MaxAttempts   = maxAttempts
+                 DependsOn     = dependsOnList }
     with ex ->
         Error $"Failed to parse YAML: {ex.Message}"
 

@@ -215,3 +215,77 @@ let ``validate with skip-lock checks all repos regardless of lock file`` () =
     Assert.False(result.IsValid)
     Assert.Empty(result.ConfigErrors)
     Assert.Equal(1, result.RepoErrors.Length)
+
+// ---------------------------------------------------------------------------
+// dependsOn validation tests
+// ---------------------------------------------------------------------------
+
+let private depYaml (upstreamRelPath: string) =
+    "job:\n  title: \"T\"\n  org: \"myorg\"\n" +
+    "repos:\n  - \"repo-a\"\n" +
+    "issue:\n  template: \"./template.md\"\n  labels: []\n" +
+    "dependsOn:\n" +
+    $"  - job: {upstreamRelPath}\n" +
+    "    condition: pr_merged\n"
+
+[<Fact>]
+let ``validate passes when dependsOn references an existing upstream file`` () =
+    let fs = MockFileSystem()
+    fs.Directory.CreateDirectory("/work") |> ignore
+    fs.File.WriteAllText("/work/template.md", "# body")
+    fs.File.WriteAllText("/work/upstream.yml",
+        "job:\n  title: \"U\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"./template.md\"\n  labels: []\n")
+    let downPath = "/work/downstream.yml"
+    fs.File.WriteAllText(downPath, depYaml "./upstream.yml")
+    let deps  = Given.deps fs (validateClient Map.empty)
+    let input = A.ValidateInput.defaults downPath |> A.ValidateInput.withSkipLock true
+
+    let results = execute deps [downPath] input |> Async.RunSynchronously
+
+    let (_, result) = List.exactlyOne results
+    Assert.True(result.IsValid)
+    Assert.Empty(result.ConfigErrors)
+
+[<Fact>]
+let ``validate fails when dependsOn references a missing upstream file`` () =
+    let fs = MockFileSystem()
+    fs.Directory.CreateDirectory("/work") |> ignore
+    fs.File.WriteAllText("/work/template.md", "# body")
+    let downPath = "/work/downstream.yml"
+    fs.File.WriteAllText(downPath, depYaml "./missing.yml")
+    let deps  = Given.deps fs (neverCalledClient ())
+    let input = A.ValidateInput.defaults downPath
+
+    let results = execute deps [downPath] input |> Async.RunSynchronously
+
+    let (_, result) = List.exactlyOne results
+    Assert.False(result.IsValid)
+    Assert.NotEmpty(result.ConfigErrors)
+    Assert.Contains("missing.yml", result.ConfigErrors.[0])
+
+[<Fact>]
+let ``validate fails when dependsOn contains a circular reference`` () =
+    let fs = MockFileSystem()
+    fs.Directory.CreateDirectory("/work") |> ignore
+    fs.File.WriteAllText("/work/template.md", "# body")
+    let cycleYaml (otherPath: string) =
+        "job:\n  title: \"T\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"./template.md\"\n  labels: []\n" +
+        "dependsOn:\n" +
+        $"  - job: {otherPath}\n" +
+        "    condition: pr_merged\n"
+    fs.File.WriteAllText("/work/b.yml", cycleYaml "./a.yml")
+    let pathA = "/work/a.yml"
+    fs.File.WriteAllText(pathA, cycleYaml "./b.yml")
+    let deps  = Given.deps fs (neverCalledClient ())
+    let input = A.ValidateInput.defaults pathA
+
+    let results = execute deps [pathA] input |> Async.RunSynchronously
+
+    let (_, result) = List.exactlyOne results
+    Assert.False(result.IsValid)
+    Assert.NotEmpty(result.ConfigErrors)
+    Assert.Contains("Circular", result.ConfigErrors.[0])

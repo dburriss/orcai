@@ -46,6 +46,18 @@ type PullRequestRef =
 
 type ClosedIssueAction = | Create | Reopen | Skip | Fail
 
+type DependencyCondition    = | IssueClosed | PrMerged
+type DependencyScope        = | PerRepo | AllRepos
+
+[<RequireQualifiedAccess>]
+type UntrackedReposBehavior = | Include | Skip
+
+type DependsOnConfig =
+    { Job            : string
+      Condition      : DependencyCondition
+      Scope          : DependencyScope
+      UntrackedRepos : UntrackedReposBehavior }
+
 /// How nudge handles an issue whose only related PRs are closed without merging.
 /// "skip" (default) | "nudge" | "fail"
 [<RequireQualifiedAccess>]
@@ -84,7 +96,8 @@ type JobConfig =
       JobOwner      : string option
       /// Max retry attempts per (repo, category) failure before the step is skipped.
       /// None → use the built-in default.
-      MaxAttempts   : int option }
+      MaxAttempts   : int option
+      DependsOn     : DependsOnConfig list }
 
 /// Replace {key} placeholders in a template string.
 /// Tokens not present in vars are left unreplaced.

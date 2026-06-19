@@ -19,6 +19,7 @@ Complete reference for all `orcai` commands, flags, configuration, and output fo
 - [validate](#validate)
 - [info](#info)
 - [cleanup](#cleanup)
+- [graph](#graph)
 - [YAML configuration](#yaml-configuration)
 - [Layered configuration](#layered-configuration)
 - [Lock file format](#lock-file-format)
@@ -40,6 +41,7 @@ Complete reference for all `orcai` commands, flags, configuration, and output fo
 | `orcai validate` | Validate YAML configs and verify repository access |
 | `orcai info` | Display the current state of a job |
 | `orcai cleanup` | Tear down everything created by `run` |
+| `orcai graph` | Render the `dependsOn` job dependency graph as ASCII |
 
 ---
 
@@ -536,6 +538,59 @@ Dry run complete. No changes were made.
 
 ---
 
+## graph
+
+Render the `dependsOn` dependency graph for a YAML job config as an ASCII tree. No GitHub API calls are made — the command is file-system only.
+
+```
+orcai graph <yaml_file> [--json]
+```
+
+### Flags
+
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `<yaml_file>` | path | Yes | Path to the root YAML job config to graph. |
+| `--json` | flag | No | Emit machine-readable JSON output to stdout. |
+
+### Behavior
+
+1. Parses the root YAML and its transitive `dependsOn` chain.
+2. Renders each job as a node; edges show the `condition`, `scope`, and (when not the default) `untrackedRepos` setting.
+3. Cycles are detected and marked `(↑ cycle)` instead of causing infinite recursion.
+
+### Output
+
+```
+upgrade.yml
+└── dotnet10.yml  (pr_merged · per_repo)
+    └── baseline.yml  (issue_closed · all_repos)
+```
+
+### JSON output
+
+```json
+{
+  "lines": [
+    "upgrade.yml",
+    "└── dotnet10.yml  (pr_merged · per_repo)",
+    "    └── baseline.yml  (issue_closed · all_repos)"
+  ]
+}
+```
+
+### Examples
+
+```bash
+# ASCII tree for a job
+orcai graph upgrade.yml
+
+# Machine-readable output
+orcai graph upgrade.yml --json
+```
+
+---
+
 ## YAML configuration
 
 ```yaml
@@ -564,6 +619,12 @@ issue:
 # nudge:
 #   mode: reassign          # reassign | comment-only | comment-and-reassign
 #   comment: ""             # nudge comment; supports {assignee}, {job.owner}, {repo.codeowners}
+
+# dependsOn:
+#   - job: ./upstream-job.yml   # relative path to upstream YAML (required)
+#     condition: pr_merged      # pr_merged (default) | issue_closed
+#     scope: per_repo           # per_repo (default) | all_repos
+#     untrackedRepos: include   # include (default) | skip
 ```
 
 `job.title` and `job.org` are required. `repos` must be a non-empty list. `issue.template` must point to a real Markdown file relative to the YAML. Missing labels will cause an error during `run` unless `--auto-create-labels` is supplied. `job.owner` is optional — it sets the `{job.owner}` token in comment templates; if omitted, OrcAI falls back to the catch-all owner in the local CODEOWNERS file.
@@ -571,6 +632,19 @@ issue:
 `job.onClosedIssue` controls what `orcai run` does when an issue with the same title already exists in the repo but is closed (matching is exact and case-sensitive). Valid values: `create` (default — open a new issue alongside the closed one), `reopen` (reopen the closed issue), `skip` (leave the repo untouched and report `skipped`), `fail` (treat the closed match as a hard error). The `--on-closed-issue` CLI flag overrides this field when supplied.
 
 The `assign` and `nudge` blocks are optional — omitting them keeps the default behaviour (assign `@copilot`, nudge by reassignment). Per-job YAML values take precedence over the global/local JSON config. See [Layered configuration](#layered-configuration).
+
+The `dependsOn` block gates this job on the completion state of one or more upstream jobs. Multiple entries use AND logic — all must be satisfied. `orcai run` automatically resolves the full dependency chain in topological order, so passing only the downstream YAML is sufficient.
+
+**`dependsOn` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `job` | relative path | — (required) | Path to the upstream YAML config, relative to this file. |
+| `condition` | `pr_merged` \| `issue_closed` | `pr_merged` | The completion condition to check for each repo. |
+| `scope` | `per_repo` \| `all_repos` | `per_repo` | `per_repo` filters this job's repo list to only repos where the condition is met. `all_repos` is an all-or-nothing gate: if any upstream repo has not met the condition, the entire downstream run is skipped (the result has `blocked: true`). |
+| `untrackedRepos` | `include` \| `skip` | `include` | What to do with repos in this job that do not appear in the upstream lock. `include` treats them as eligible; `skip` excludes them. |
+
+Use `orcai validate <yaml>` to check for missing upstream files and circular references. Use `orcai graph <yaml>` to visualise the dependency tree.
 
 **OpenCode example:**
 

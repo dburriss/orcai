@@ -4,6 +4,10 @@
 
 ### Added
 
+- `dependsOn` YAML field — gates a downstream job on the completion state of one or more upstream jobs. Each entry specifies a `job` (relative path), `condition` (`pr_merged` | `issue_closed`), `scope` (`per_repo` | `all_repos`), and `untrackedRepos` (`include` | `skip`). Multiple entries use AND logic.
+- `orcai run` now resolves `dependsOn` chains in topological order before executing. Passing a downstream YAML is sufficient — upstream dependencies are discovered and run automatically. The `scope: all_repos` option blocks the entire downstream run when any upstream repo has not met the condition; `scope: per_repo` (default) filters the downstream repo list individually.
+- `orcai graph <yaml>` — new command that renders the `dependsOn` dependency tree as an ASCII diagram. File-system only; no GitHub API calls. Supports `--json` output.
+- `orcai validate` now detects circular `dependsOn` references and missing upstream files, reporting them as configuration errors.
 - `orcai nudge --on-closed-pr` — controls what happens when the only PRs found for an issue are closed without merging. Values: `skip` (default — don't nudge), `nudge` (re-trigger the assignee anyway), `fail` (report as a failure). Merged PRs are always treated as done and never trigger this flag.
 
 ### Changed

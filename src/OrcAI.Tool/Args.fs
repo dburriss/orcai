@@ -195,6 +195,16 @@ type ValidateArgs =
             | Verbose           -> "Print each repository check result as it completes."
             | Json              -> "Emit machine-readable JSON output to stdout."
 
+[<CliPrefix(CliPrefix.DoubleDash)>]
+type GraphArgs =
+    | [<MainCommand; Mandatory>] Yaml_File of path: string
+    | Json
+    interface IArgParserTemplate with
+        member a.Usage =
+            match a with
+            | Yaml_File _ -> "Path to the YAML job configuration file."
+            | Json        -> "Emit machine-readable JSON output to stdout."
+
 [<CliPrefix(CliPrefix.None)>]
 type OrcAIArgs =
     | [<SubCommand>] Run      of ParseResults<RunArgs>
@@ -205,6 +215,7 @@ type OrcAIArgs =
     | [<SubCommand>] Auth     of ParseResults<AuthArgs>
     | [<SubCommand>] Generate of ParseResults<GenerateArgs>
     | [<SubCommand>] Validate of ParseResults<ValidateArgs>
+    | [<SubCommand>] Graph    of ParseResults<GraphArgs>
     interface IArgParserTemplate with
         member a.Usage =
             match a with
@@ -216,3 +227,4 @@ type OrcAIArgs =
             | Auth _     -> "Configure authentication for OrcAI."
             | Generate _ -> "Generate a YAML job config from a name, org, and optional repo list."
             | Validate _ -> "Validate a YAML job config and verify all repos are accessible."
+            | Graph _    -> "Render the depends_on dependency graph for a YAML job config."

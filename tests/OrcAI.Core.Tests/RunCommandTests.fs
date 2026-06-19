@@ -869,3 +869,216 @@ let ``dry-run still performs read-only lookups (FetchReposState, ListLabels)`` (
 
     Assert.NotEmpty(fetchStateCalls)
     Assert.NotEmpty(listLabelsCalls)
+
+// ---------------------------------------------------------------------------
+// Two-run template-update flow (mirrors the integration test scenario)
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``re-run after template file content changes calls UpdateIssue with new body`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+
+    // First run: no existing issue, so CreateIssue is called and the lock is written.
+    let firstClient =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun _ -> FakeGhClient.repoStateDefault)
+                CreateIssue     = fun r _ _ _ -> async { return Ok (FakeGhClient.issueFor r 42) } }
+    execute (Given.deps fs firstClient) [path] { A.RunInput.defaults () with SkipLock = false }
+    |> Async.RunSynchronously |> ignore
+
+    // Change the template content on disk — simulates what the integration test does.
+    (fs :> System.IO.Abstractions.IFileSystem).File.WriteAllText("/work/template.md", "## Updated body")
+
+    // Second run: issue #42 is open; the template hash now differs from the lock.
+    let updateBodies = System.Collections.Concurrent.ConcurrentBag<string>()
+    let secondClient =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                CreateIssue     = fun _ _ _ _ -> async { return failwith "CreateIssue not expected on second run" }
+                UpdateIssue     = fun _ _ _ body ->
+                    updateBodies.Add(body)
+                    async { return Ok () } }
+    let results =
+        execute (Given.deps fs secondClient) [path] { A.RunInput.defaults () with SkipLock = false }
+        |> Async.RunSynchronously
+
+    Assert.NotEmpty(updateBodies)
+    Assert.Contains("Updated body", updateBodies |> Seq.head)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result -> Assert.Contains(result.Results, fun r -> r.Outcome = Updated)
+
+[<Fact>]
+let ``re-run without template change does not call UpdateIssue`` () =
+    let fs   = MockFileSystem()
+    let path = Given.namedYamlFile fs "job.yml"
+
+    // First run: creates issue and writes lock.
+    let firstClient =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun _ -> FakeGhClient.repoStateDefault)
+                CreateIssue     = fun r _ _ _ -> async { return Ok (FakeGhClient.issueFor r 42) } }
+    execute (Given.deps fs firstClient) [path] { A.RunInput.defaults () with SkipLock = false }
+    |> Async.RunSynchronously |> ignore
+
+    // Second run: template unchanged, so hashes match — UpdateIssue must not be called.
+    let updateCalls = System.Collections.Concurrent.ConcurrentBag<unit>()
+    let secondClient =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                UpdateIssue     = fun _ _ _ _ ->
+                    updateCalls.Add(())
+                    async { return failwith "UpdateIssue must not be called when template is unchanged" } }
+    let results =
+        execute (Given.deps fs secondClient) [path] { A.RunInput.defaults () with SkipLock = false }
+        |> Async.RunSynchronously
+
+    Assert.Empty(updateCalls)
+    match results.[path] with
+    | Error e -> Assert.Fail($"Expected Ok but got: {e}")
+    | Ok result -> Assert.Contains(result.Results, fun r -> r.Outcome = AlreadyExisted)
+
+// ---------------------------------------------------------------------------
+// dependsOn integration tests
+// ---------------------------------------------------------------------------
+
+let private repoA = RepoName "myorg/repo-a"
+let private repoB = RepoName "myorg/repo-b"
+
+/// Write a bare-minimum valid YAML (no deps) and return its path.
+let private writeUpstream (fs: MockFileSystem) (name: string) =
+    let dir = "/work"
+    fs.Directory.CreateDirectory(dir) |> ignore
+    if not ((fs :> System.IO.Abstractions.IFileSystem).File.Exists($"{dir}/template.md")) then
+        fs.File.WriteAllText($"{dir}/template.md", "# body")
+    let yaml =
+        "job:\n  title: \"Upstream\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n  - \"repo-b\"\n" +
+        "issue:\n  template: \"./template.md\"\n  labels: []\n"
+    let path = $"{dir}/{name}"
+    fs.File.WriteAllText(path, yaml)
+    path
+
+/// Write a downstream YAML that depends on `upstreamRelPath` with the given scope.
+let private writeDownstream (fs: MockFileSystem) (name: string) (upstreamRelPath: string) (scope: string) =
+    let dir = "/work"
+    let yaml =
+        "job:\n  title: \"Downstream\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n  - \"repo-b\"\n" +
+        "issue:\n  template: \"./template.md\"\n  labels: []\n" +
+        "dependsOn:\n" +
+        $"  - job: {upstreamRelPath}\n" +
+        "    condition: pr_merged\n" +
+        $"    scope: {scope}\n"
+    let path = $"{dir}/{name}"
+    fs.File.WriteAllText(path, yaml)
+    path
+
+/// Write a lock file for an upstream job. Returns the YAML path for convenience.
+let private writeLockFor
+    (fs: MockFileSystem)
+    (yamlPath: string)
+    (repos: RepoName list)
+    (issues: (RepoName * int) list)
+    (prs: (RepoName * int * int * string) list)
+    =
+    let project = { Org = OrgName "myorg"; Number = 1; Title = "Upstream"; Url = "" }
+    let lock : LockFile =
+        { LockedAt     = System.DateTimeOffset.MinValue
+          YamlHash     = "h"
+          TemplateHash = "h"
+          Project      = project
+          Repos        = repos
+          Issues       = issues |> List.map (fun (repo, num) ->
+                             let (RepoName r) = repo
+                             { Repo = repo; Number = IssueNumber num
+                               Url  = $"https://github.com/{r}/issues/{num}"
+                               Assignees = [] })
+          PullRequests  = prs |> List.map (fun (repo, prNum, issueNum, state) ->
+                              let (RepoName r) = repo
+                              { Repo        = repo
+                                Number      = PrNumber prNum
+                                Url         = $"https://github.com/{r}/pull/{prNum}"
+                                ClosesIssue = IssueNumber issueNum
+                                State       = state })
+          SkippedRepos  = []
+          Failures      = [] }
+    OrcAI.Core.LockFile.write (fs :> System.IO.Abstractions.IFileSystem) yamlPath lock
+
+[<Fact>]
+let ``execute per_repo dep filter runs only eligible repos`` () =
+    let fs       = MockFileSystem()
+    let upPath   = writeUpstream fs "upstream.yml"
+    // Lock shows repo-a has a merged PR; repo-b does not.
+    writeLockFor fs upPath
+        [ repoA; repoB ]
+        [ (repoA, 10); (repoB, 20) ]
+        [ (repoA, 1, 10, "MERGED") ]
+    let downPath = writeDownstream fs "downstream.yml" "./upstream.yml" "per_repo"
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindPrsForIssue = fun _ _ -> async { return [] } }
+    let deps  = Given.deps fs client
+    // DryRun = true prevents the chain from overwriting the pre-written upstream lock.
+    let input = A.RunInput.defaults () |> A.RunInput.withDryRun true
+
+    let results = execute deps [downPath] input |> Async.RunSynchronously
+
+    match results.[downPath] with
+    | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+    | Ok result ->
+        Assert.Null(result.BlockedBy |> Option.toObj)
+        // Only repo-a should be processed; repo-b is filtered by the dep condition.
+        let processedRepos = result.Results |> List.map (fun r -> r.Issue.Repo)
+        Assert.Contains(repoA, processedRepos)
+        Assert.DoesNotContain(repoB, processedRepos)
+
+[<Fact>]
+let ``execute all_repos dep gate sets BlockedBy when condition not met`` () =
+    let fs       = MockFileSystem()
+    let upPath   = writeUpstream fs "upstream.yml"
+    // Lock shows repo-a exists but has no merged PR → all_repos gate fails.
+    writeLockFor fs upPath
+        [ repoA ]
+        [ (repoA, 10) ]
+        []   // no merged PRs
+    let downPath = writeDownstream fs "downstream.yml" "./upstream.yml" "all_repos"
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindPrsForIssue = fun _ _ -> async { return [] } }
+    let deps  = Given.deps fs client
+    let input = A.RunInput.defaults ()
+
+    let results = execute deps [downPath] input |> Async.RunSynchronously
+
+    match results.[downPath] with
+    | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+    | Ok result ->
+        Assert.True(result.BlockedBy.IsSome, "Expected BlockedBy to be set")
+        Assert.Empty(result.Results)
+
+[<Fact>]
+let ``execute dependency chain runs dep before downstream`` () =
+    let fs = MockFileSystem()
+    let depPath  = writeUpstream fs "dep.yml"
+    let mainPath = writeDownstream fs "main.yml" "./dep.yml" "per_repo"
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FindPrsForIssue = fun _ _ -> async { return [] } }
+    let deps  = Given.deps fs client
+    let input = A.RunInput.defaults ()
+
+    // Pass only the downstream YAML; the dep should be resolved automatically.
+    let results = execute deps [mainPath] input |> Async.RunSynchronously
+
+    // Both the dep and the downstream should appear in the result map.
+    Assert.True(results.ContainsKey(depPath),  "dep.yml should appear in results")
+    Assert.True(results.ContainsKey(mainPath), "main.yml should appear in results")

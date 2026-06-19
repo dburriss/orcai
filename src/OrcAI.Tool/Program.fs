@@ -53,7 +53,7 @@ let resolveAuthContextWith (getEnv: string -> string option) : Result<OrcAI.Core
                         |> Async.RunSynchronously
                     let token = token.Trim()
                     if token.Length > 0 then
-                        printfn "Using gh CLI authentication."
+                        eprintfn "Using gh CLI authentication."
                         Ok ({ new OrcAI.Core.AuthContext.IAuthContext with
                                   member _.GetToken() = async { return Ok token } })
                     else
@@ -242,6 +242,8 @@ let private printRunJsonMulti (results: Map<string, Result<OrcAI.Core.RunCommand
                 match r with
                 | Error e ->
                     box {| error = e |}
+                | Ok result when result.BlockedBy.IsSome ->
+                    box {| blocked = true; blockedBy = result.BlockedBy.Value |}
                 | Ok result ->
                     let created       = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.Created)             |> List.length
                     let existing      = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.AlreadyExisted)      |> List.length
@@ -272,7 +274,8 @@ let private printRunJsonMulti (results: Map<string, Result<OrcAI.Core.RunCommand
                                 | OrcAI.Core.RunCommand.DryRunWouldUpdate   -> "dryRunWouldUpdate"
                             {| repo = repo; issueNumber = num; status = status |})
                     box
-                        {| created             = created
+                        {| blocked             = false
+                           created             = created
                            alreadyExisted      = existing
                            reopened            = reopened
                            skipped             = skipped
@@ -394,6 +397,10 @@ let main argv =
                         | Error e ->
                             eprintfn "  Error: %s" e
                         | Ok result ->
+                            match result.BlockedBy with
+                            | Some reason ->
+                                AnsiConsole.MarkupLine($"  [yellow][[blocked]][/] {Markup.Escape(reason)}")
+                            | None ->
                             match result.Source with
                             | OrcAI.Core.RunCommand.FromLockFile ->
                                 printfn "  Nothing to do — lock file is up to date."
@@ -1004,6 +1011,22 @@ let main argv =
                     0
                 else
                     1)
+        | Graph args ->
+            let yamlPath = args.GetResult(GraphArgs.Yaml_File)
+            let json     = args.Contains(GraphArgs.Json)
+            withClient (fun deps _ ->
+                let input : OrcAI.Core.GraphCommand.GraphInput = { YamlPath = yamlPath }
+                match OrcAI.Core.GraphCommand.execute deps input with
+                | Error e ->
+                    eprintfn "Error: %s" e
+                    1
+                | Ok result ->
+                    if json then
+                        printfn "%s" (JsonSerializer.Serialize({| lines = result.Lines |}, jsonOptions))
+                    else
+                        for line in result.Lines do
+                            printfn "%s" line
+                    0)
     with
     | :? ArguParseException as ex ->
         eprintfn "%s" ex.Message
