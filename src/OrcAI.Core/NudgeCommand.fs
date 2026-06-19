@@ -23,11 +23,13 @@ type NudgeInput =
       Verbose          : bool
       SaveLock         : bool
       MaxConcurrency   : int
-      IsPrimaryAuthApp : bool }
+      IsPrimaryAuthApp : bool
+      OnClosedPr       : ClosedPrAction }
 
 type NudgeOutcome =
     | Skipped
     | PrFoundLive
+    | SkippedClosedPr
     | NudgeSent
     | DryRunWouldNudge
     | NudgeFailed of reason: string
@@ -115,46 +117,68 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
 
                     let hasPrInLock =
                         lock.PullRequests
-                        |> List.exists (fun pr -> pr.Repo = issue.Repo && pr.ClosesIssue = issue.Number)
+                        |> List.exists (fun pr -> pr.Repo = issue.Repo && pr.ClosesIssue = issue.Number && pr.State = "OPEN")
 
                     if hasPrInLock then
                         if input.Verbose then eprintfn "[%s] PR already in lock file, skipping" repoStr
                         return { Repo = issue.Repo; Issue = issue.Number; Outcome = Skipped; LivePrs = [] }
                     else
                         let! prs = client.FindPrsForIssue issue.Repo issue.Number
-                        if not (List.isEmpty prs) then
-                            if input.Verbose then eprintfn "[%s] PR found on GitHub, no nudge needed" repoStr
-                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = PrFoundLive; LivePrs = prs }
-                        else
-                            if input.DryRun then
-                                if input.Verbose then eprintfn "[%s] DRY RUN: would nudge %s" repoStr assignTo
-                                return { Repo = issue.Repo; Issue = issue.Number; Outcome = DryRunWouldNudge; LivePrs = [] }
-                            else
-                                // Post nudge comment when mode includes comment
-                                if nudgeMode = "comment-only" || nudgeMode = "comment-and-reassign" then
-                                    match nudgeComment with
-                                    | Some tmpl ->
-                                        do! Comments.postTemplatedComment client issue.Repo issue.Number assignTo jobOwner tmpl input.Verbose "nudge" Map.empty
-                                    | None -> ()
+                        let openOrMergedPrs = prs |> List.filter (fun pr -> pr.State = "OPEN" || pr.State = "MERGED")
+                        let closedPrs       = prs |> List.filter (fun pr -> pr.State = "CLOSED")
 
-                                // Unassign + reassign when mode includes reassign.
-                                // Capture failures so the result reflects what actually happened.
-                                let mutable failure : string option = None
-                                if modeReassigns then
-                                    if input.Verbose then eprintfn "[%s] Nudging %s (unassign + reassign)" repoStr assignTo
-                                    match! assignClient.UnassignIssue issue.Repo issue.Number assignTo with
+                        if not (List.isEmpty openOrMergedPrs) then
+                            if input.Verbose then eprintfn "[%s] PR found on GitHub, no nudge needed" repoStr
+                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = PrFoundLive; LivePrs = openOrMergedPrs }
+                        else
+
+                        // Compute an early-exit result when only closed PRs exist.
+                        // None means "proceed to nudge" (Nudge action, or no PRs at all).
+                        let closedPrExit =
+                            if not (List.isEmpty closedPrs) then
+                                match input.OnClosedPr with
+                                | ClosedPrAction.Skip ->
+                                    if input.Verbose then eprintfn "[%s] Closed PR found, skipping (--on-closed-pr skip)" repoStr
+                                    Some { Repo = issue.Repo; Issue = issue.Number; Outcome = SkippedClosedPr; LivePrs = closedPrs }
+                                | ClosedPrAction.Fail ->
+                                    Some { Repo = issue.Repo; Issue = issue.Number; Outcome = NudgeFailed "closed PR exists (use --on-closed-pr nudge to re-trigger)"; LivePrs = [] }
+                                | ClosedPrAction.Nudge ->
+                                    None
+                            else None
+
+                        match closedPrExit with
+                        | Some result -> return result
+                        | None ->
+
+                        if input.DryRun then
+                            if input.Verbose then eprintfn "[%s] DRY RUN: would nudge %s" repoStr assignTo
+                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = DryRunWouldNudge; LivePrs = [] }
+                        else
+                            // Post nudge comment when mode includes comment
+                            if nudgeMode = "comment-only" || nudgeMode = "comment-and-reassign" then
+                                match nudgeComment with
+                                | Some tmpl ->
+                                    do! Comments.postTemplatedComment client issue.Repo issue.Number assignTo jobOwner tmpl input.Verbose "nudge" Map.empty
+                                | None -> ()
+
+                            // Unassign + reassign when mode includes reassign.
+                            // Capture failures so the result reflects what actually happened.
+                            let mutable failure : string option = None
+                            if modeReassigns then
+                                if input.Verbose then eprintfn "[%s] Nudging %s (unassign + reassign)" repoStr assignTo
+                                match! assignClient.UnassignIssue issue.Repo issue.Number assignTo with
+                                | Error e -> failure <- Some (nudgeFailureMessage assignTo e)
+                                | Ok ()   -> ()
+                                if failure.IsNone then
+                                    match! assignClient.AssignIssue issue.Repo issue.Number assignTo with
                                     | Error e -> failure <- Some (nudgeFailureMessage assignTo e)
                                     | Ok ()   -> ()
-                                    if failure.IsNone then
-                                        match! assignClient.AssignIssue issue.Repo issue.Number assignTo with
-                                        | Error e -> failure <- Some (nudgeFailureMessage assignTo e)
-                                        | Ok ()   -> ()
 
-                                let outcome =
-                                    match failure with
-                                    | Some reason -> NudgeFailed reason
-                                    | None        -> NudgeSent
-                                return { Repo = issue.Repo; Issue = issue.Number; Outcome = outcome; LivePrs = [] }
+                            let outcome =
+                                match failure with
+                                | Some reason -> NudgeFailed reason
+                                | None        -> NudgeSent
+                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = outcome; LivePrs = [] }
                 finally
                     semaphore.Release() |> ignore
             })

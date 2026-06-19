@@ -37,7 +37,10 @@ module A =
             { Repo        = repo
               Number      = PrNumber prNum
               Url         = $"https://github.com/{r}/pull/{prNum}"
-              ClosesIssue = IssueNumber issueNum }
+              ClosesIssue = IssueNumber issueNum
+              State       = "OPEN" }
+
+        let withState s (pr: PullRequestRef) = { pr with State = s }
 
     module LockFile =
         let private repoA = RepoName "myorg/repo-a"
@@ -91,6 +94,9 @@ module A =
         let withContinueOnError v (i: OrcAI.Core.RunCommand.RunInput)     = { i with ContinueOnError = v }
         let withAutoCreateLabels v (i: OrcAI.Core.RunCommand.RunInput)    = { i with AutoCreateLabels = v }
         let withDryRun v (i: OrcAI.Core.RunCommand.RunInput)              = { i with DryRun = v }
+
+    module NudgeInput =
+        let withOnClosedPr a (i: OrcAI.Core.NudgeCommand.NudgeInput) = { i with OnClosedPr = a }
 
     module ValidateInput =
         let defaults path : OrcAI.Core.ValidateCommand.ValidateInput =

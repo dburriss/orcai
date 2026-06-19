@@ -41,9 +41,15 @@ type PullRequestRef =
     { Repo        : RepoName
       Number      : PrNumber
       Url         : string
-      ClosesIssue : IssueNumber }
+      ClosesIssue : IssueNumber
+      State       : string }
 
 type ClosedIssueAction = | Create | Reopen | Skip | Fail
+
+/// How nudge handles an issue whose only related PRs are closed without merging.
+/// "skip" (default) | "nudge" | "fail"
+[<RequireQualifiedAccess>]
+type ClosedPrAction = Nudge | Skip | Fail
 
 /// How the assignee is triggered on a new issue.
 /// "assign" (default) | "comment" | "comment-and-assign"

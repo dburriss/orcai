@@ -558,6 +558,14 @@ let main argv =
             let saveLock       = args.Contains(NudgeArgs.Save_Lock)
             let verbose        = args.Contains(NudgeArgs.Verbose)
             let maxConcurrency = args.TryGetResult(NudgeArgs.Max_Concurrency) |> Option.defaultValue 4
+            let onClosedPr =
+                match args.TryGetResult(NudgeArgs.On_Closed_Pr) with
+                | None | Some "skip"  -> OrcAI.Core.Domain.ClosedPrAction.Skip
+                | Some "nudge"        -> OrcAI.Core.Domain.ClosedPrAction.Nudge
+                | Some "fail"         -> OrcAI.Core.Domain.ClosedPrAction.Fail
+                | Some other          ->
+                    eprintfn "Unknown --on-closed-pr value '%s'. Valid values: skip, nudge, fail." other
+                    OrcAI.Core.Domain.ClosedPrAction.Skip
             withClient (fun deps isPrimaryAuthApp ->
                 let input : OrcAI.Core.NudgeCommand.NudgeInput =
                     { YamlPath         = yamlFile
@@ -565,7 +573,8 @@ let main argv =
                       Verbose          = verbose
                       SaveLock         = saveLock
                       MaxConcurrency   = maxConcurrency
-                      IsPrimaryAuthApp = isPrimaryAuthApp }
+                      IsPrimaryAuthApp = isPrimaryAuthApp
+                      OnClosedPr       = onClosedPr }
                 match OrcAI.Core.NudgeCommand.execute deps input with
                 | Error e ->
                     eprintfn "Error: %s" e
@@ -579,11 +588,12 @@ let main argv =
                         match r.Outcome with
                         | OrcAI.Core.NudgeCommand.NudgeFailed e -> Some e
                         | _ -> None
-                    let nudged     = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.NudgeSent)        |> List.length
-                    let prFound    = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.PrFoundLive)      |> List.length
-                    let skipped    = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.Skipped)          |> List.length
-                    let wouldNudge = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.DryRunWouldNudge) |> List.length
-                    let failed     = results |> List.filter isFailure |> List.length
+                    let nudged      = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.NudgeSent)        |> List.length
+                    let prFound     = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.PrFoundLive)      |> List.length
+                    let skipped     = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.Skipped)          |> List.length
+                    let wouldNudge  = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.DryRunWouldNudge) |> List.length
+                    let closedPr    = results |> List.filter (fun r -> r.Outcome = OrcAI.Core.NudgeCommand.SkippedClosedPr)  |> List.length
+                    let failed      = results |> List.filter isFailure |> List.length
                     if not results.IsEmpty then
                         AnsiConsole.WriteLine()
                         let table = Table()
@@ -599,6 +609,7 @@ let main argv =
                                 match r.Outcome with
                                 | OrcAI.Core.NudgeCommand.Skipped          -> "[grey]skipped (PR in lock)[/]"
                                 | OrcAI.Core.NudgeCommand.PrFoundLive      -> "[green]PR found live[/]"
+                                | OrcAI.Core.NudgeCommand.SkippedClosedPr  -> "[grey]skipped (closed PR)[/]"
                                 | OrcAI.Core.NudgeCommand.NudgeSent        -> "[yellow]nudged[/]"
                                 | OrcAI.Core.NudgeCommand.DryRunWouldNudge -> "[dim]would nudge (dry run)[/]"
                                 | OrcAI.Core.NudgeCommand.NudgeFailed _    -> "[red]failed[/]"
@@ -627,7 +638,7 @@ let main argv =
                         printfn "Dry run: %d issue(s) would be nudged." wouldNudge
                         0
                     else
-                        printfn "Done. %d nudged, %d already have PRs, %d skipped, %d failed." nudged prFound skipped failed
+                        printfn "Done. %d nudged, %d already have PRs, %d skipped, %d closed PR skipped, %d failed." nudged prFound skipped closedPr failed
                         if failed > 0 then 1 else 0)
         | Notify args ->
             let yamlFile  = args.GetResult(NotifyArgs.Yaml_File)

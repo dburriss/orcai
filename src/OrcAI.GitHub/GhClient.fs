@@ -394,10 +394,12 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                 let toRef (el: JsonElement) =
                     match intProp el "number", strProp el "url" with
                     | Some n, Some url ->
+                        let state = strProp el "state" |> Option.defaultValue "OPEN"
                         Some { Repo        = repo
                                Number      = PrNumber n
                                Url         = url
-                               ClosesIssue = issue }
+                               ClosesIssue = issue
+                               State       = state }
                     | _ -> None
                 return
                     (closingNodes @ crossRefNodes)

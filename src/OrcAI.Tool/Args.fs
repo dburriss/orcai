@@ -142,6 +142,7 @@ type NudgeArgs =
     | Save_Lock
     | Verbose
     | Max_Concurrency of n: int
+    | On_Closed_Pr of action: string
     interface IArgParserTemplate with
         member a.Usage =
             match a with
@@ -150,6 +151,7 @@ type NudgeArgs =
             | Save_Lock         -> "Write discovered PRs back to the lock file."
             | Verbose           -> "Enable verbose output."
             | Max_Concurrency _ -> "Maximum number of issues processed concurrently (default: 4). Note: high values may hit GitHub rate limits."
+            | On_Closed_Pr _    -> "What to do when a closed (unmerged) PR already exists: skip (default), nudge, or fail."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type NotifyArgs =

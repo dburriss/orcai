@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- `orcai nudge --on-closed-pr` — controls what happens when the only PRs found for an issue are closed without merging. Values: `skip` (default — don't nudge), `nudge` (re-trigger the assignee anyway), `fail` (report as a failure). Merged PRs are always treated as done and never trigger this flag.
+
+### Changed
+
+- `orcai nudge` now surfaces PR state when checking for existing PRs. The `state` field (`OPEN`, `CLOSED`, `MERGED`) is stored on PR entries in the lock file; old lock files without the field default to `OPEN` on load.
+- `orcai nudge` no longer treats a closed PR in the lock file as "PR exists — skip". Only open PRs in the lock suppress the live check. Closed PR entries (e.g. written by `orcai info --save-lock`) are now ignored by the lock-file fast-path, so nudge correctly proceeds to a live GitHub check for those issues.
+- `orcai nudge --save-lock` now persists all discovered PRs with their state to the lock file, so closed PRs are visible via `orcai info`.
+
 ## [0.8.1] - 2026-06-16
 
 ### Added

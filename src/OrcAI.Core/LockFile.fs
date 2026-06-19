@@ -37,7 +37,8 @@ type PullRequestRefDto =
     { [<JsonPropertyName("repo")>]        repo:        string
       [<JsonPropertyName("number")>]      number:      int
       [<JsonPropertyName("url")>]         url:         string
-      [<JsonPropertyName("closesIssue")>] closesIssue: int }
+      [<JsonPropertyName("closesIssue")>] closesIssue: int
+      [<JsonPropertyName("state")>]       state:       string }
 
 [<CLIMutable>]
 type RepoFailureDto =
@@ -211,7 +212,8 @@ let private toDto (lock: LockFile) : LockFileDto =
               { repo        = r
                 number      = n
                 url         = pr.Url
-                closesIssue = c })
+                closesIssue = c
+                state       = pr.State })
           |> Array.ofList
       skippedRepos =
           lock.SkippedRepos
@@ -256,7 +258,8 @@ let private ofDto (dto: LockFileDto) : LockFile =
               { Repo        = RepoName pr.repo
                 Number      = PrNumber pr.number
                 Url         = pr.url
-                ClosesIssue = IssueNumber pr.closesIssue })
+                ClosesIssue = IssueNumber pr.closesIssue
+                State       = if isNull pr.state || pr.state = "" then "OPEN" else pr.state })
       SkippedRepos =
           if isNull dto.skippedRepos then []
           else dto.skippedRepos |> Array.toList |> List.map RepoName

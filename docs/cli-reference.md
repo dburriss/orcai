@@ -271,15 +271,20 @@ orcai nudge <yaml_file> [--dryrun] [--save-lock] [--verbose]
 | `--dryrun` | flag | No | false | Show what would be nudged without making any changes. |
 | `--save-lock` | flag | No | false | If live PR checks discover new PRs, write them to the lock file. |
 | `--verbose` | flag | No | false | Emit per-issue status messages to stderr. |
+| `--on-closed-pr` | string | No | `skip` | What to do when the only PRs found for an issue are closed (unmerged): `skip` (default — don't nudge), `nudge` (re-trigger the assignee anyway), or `fail` (report as a failure). Merged PRs are always treated as done and never trigger this flag. |
 
 ### Behavior
 
 For each issue in the lock file:
 
-1. If a PR is already recorded in the lock file, the issue is **skipped** (no network call).
-2. Otherwise, checks GitHub live via `Issue.closingPullRequests`.
-3. If a PR is found, the issue is marked **PR found live** (optionally saved to the lock with `--save-lock`).
-4. If no PR exists, re-triggers the assignee according to the `nudge` config block:
+1. If an **open** PR is already recorded in the lock file, the issue is **skipped** (no network call). Closed PRs in the lock do not suppress the live check.
+2. Otherwise, checks GitHub live via `Issue.closingPullRequests` and cross-referenced timeline events (both return the PR state).
+3. If an **open or merged** PR is found, the issue is marked **PR found live** (optionally saved to the lock with `--save-lock`). Closed PRs discovered via `--on-closed-pr skip` are also saved to the lock so their state is visible in `orcai info`.
+4. If only **closed** (unmerged) PRs are found, behaviour is controlled by `--on-closed-pr` (default `skip`):
+   - `skip` — report `skipped (closed PR)` and take no action.
+   - `nudge` — treat as if no PR exists and re-trigger the assignee.
+   - `fail` — report as a failure.
+5. If no PR exists at all, re-triggers the assignee according to the `nudge` config block:
    - `mode: reassign` (default) — unassigns then reassigns.
    - `mode: comment-only` — posts the configured comment only.
    - `mode: comment-and-reassign` — posts a comment and reassigns.
@@ -294,9 +299,10 @@ A table with Repo / Issue / Status columns:
 
 ```
  Repo                     Issue  Status
- my-org/repo-one          #7     nudge sent
- my-org/repo-two          #12    skipped (pr exists)
- my-org/repo-three        #5     pr found live
+ my-org/repo-one          #7     nudged
+ my-org/repo-two          #12    skipped (PR in lock)
+ my-org/repo-three        #5     PR found live
+ my-org/repo-four         #9     skipped (closed PR)
 ```
 
 ### Examples
@@ -305,6 +311,8 @@ A table with Repo / Issue / Status columns:
 orcai nudge jobs/my-upgrade.yml
 orcai nudge jobs/my-upgrade.yml --dryrun
 orcai nudge jobs/my-upgrade.yml --save-lock --verbose
+orcai nudge jobs/my-upgrade.yml --on-closed-pr nudge   # re-trigger even if a closed PR exists
+orcai nudge jobs/my-upgrade.yml --on-closed-pr fail    # error out when a closed PR is found
 ```
 
 ---

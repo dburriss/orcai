@@ -22,7 +22,8 @@ let private defaultInput yamlPath : NudgeInput =
       Verbose          = false
       SaveLock         = false
       MaxConcurrency   = 4
-      IsPrimaryAuthApp = false }
+      IsPrimaryAuthApp = false
+      OnClosedPr       = ClosedPrAction.Skip }
 
 let private writeLock (fs: MockFileSystem) (yamlPath: string) (lock: LockFile) =
     OrcAI.Core.LockFile.write (fs :> System.IO.Abstractions.IFileSystem) yamlPath lock
@@ -186,5 +187,169 @@ let ``failed UnassignIssue surfaces as NudgeFailed and skips assign`` () =
         match results.[0].Outcome with
         | NudgeFailed "boom" -> ()
         | other -> failwith $"expected NudgeFailed boom, got {other}"
+        Assert.Equal(0, assignCalls.Count)
+    | Error e -> failwith $"expected Ok, got Error: {e}"
+
+// -----------------------------------------------------------------------
+// ClosedPrAction tests
+// -----------------------------------------------------------------------
+
+let private lockWithIssuAndClosedPr () =
+    let repo   = RepoName "myorg/repo-a"
+    let closedPr = A.PullRequestRef.defaults repo 3 7 |> A.PullRequestRef.withState "CLOSED"
+    A.LockFile.defaults ()
+    |> A.LockFile.withRepos   [ repo ]
+    |> A.LockFile.withIssues  [ A.IssueRef.defaults repo 7 ]
+    |> fun lf -> { lf with PullRequests = [ closedPr ] }
+
+[<Fact>]
+let ``closed PR in lock does not block live check (hasPrInLock only matches OPEN)`` () =
+    let fs   = MockFileSystem()
+    let yaml = Given.yamlFile fs nudgeYaml "# body"
+    writeLock fs yaml (lockWithIssuAndClosedPr ())
+
+    let assignCalls = ConcurrentBag<unit>()
+    let handlers =
+        { FakeGhClient.defaults with
+            FindPrsForIssue = fun _ _ -> async { return [] }
+            UnassignIssue   = fun _ _ _ -> async { return Ok () }
+            AssignIssue     = fun _ _ _ -> assignCalls.Add(()); async { return Ok () } }
+    let deps  = Given.deps fs (FakeGhClient.from handlers)
+    let input = { defaultInput yaml with OnClosedPr = ClosedPrAction.Nudge }
+
+    let result = execute deps input
+
+    match result with
+    | Ok results ->
+        Assert.Equal(1, results.Length)
+        Assert.Equal(NudgeSent, results.[0].Outcome)
+        Assert.Equal(1, assignCalls.Count)
+    | Error e -> failwith $"expected Ok, got Error: {e}"
+
+[<Fact>]
+let ``skip (default) — closed PR found live produces SkippedClosedPr; no assign called`` () =
+    let fs   = MockFileSystem()
+    let yaml = Given.yamlFile fs nudgeYaml "# body"
+    writeLock fs yaml (lockWithUnpairedIssue ())
+
+    let repo     = RepoName "myorg/repo-a"
+    let closedPr = A.PullRequestRef.defaults repo 3 7 |> A.PullRequestRef.withState "CLOSED"
+    let assignCalls = ConcurrentBag<unit>()
+    let handlers =
+        { FakeGhClient.defaults with
+            FindPrsForIssue = fun _ _ -> async { return [ closedPr ] }
+            AssignIssue     = fun _ _ _ -> assignCalls.Add(()); async { return Ok () } }
+    let deps  = Given.deps fs (FakeGhClient.from handlers)
+    let input = { defaultInput yaml with OnClosedPr = ClosedPrAction.Skip }
+
+    let result = execute deps input
+
+    match result with
+    | Ok results ->
+        Assert.Equal(1, results.Length)
+        Assert.Equal(SkippedClosedPr, results.[0].Outcome)
+        Assert.Equal(0, assignCalls.Count)
+    | Error e -> failwith $"expected Ok, got Error: {e}"
+
+[<Fact>]
+let ``nudge action — closed PR found live proceeds to reassign`` () =
+    let fs   = MockFileSystem()
+    let yaml = Given.yamlFile fs nudgeYaml "# body"
+    writeLock fs yaml (lockWithUnpairedIssue ())
+
+    let repo     = RepoName "myorg/repo-a"
+    let closedPr = A.PullRequestRef.defaults repo 3 7 |> A.PullRequestRef.withState "CLOSED"
+    let assignCalls = ConcurrentBag<unit>()
+    let handlers =
+        { FakeGhClient.defaults with
+            FindPrsForIssue = fun _ _ -> async { return [ closedPr ] }
+            UnassignIssue   = fun _ _ _ -> async { return Ok () }
+            AssignIssue     = fun _ _ _ -> assignCalls.Add(()); async { return Ok () } }
+    let deps  = Given.deps fs (FakeGhClient.from handlers)
+    let input = { defaultInput yaml with OnClosedPr = ClosedPrAction.Nudge }
+
+    let result = execute deps input
+
+    match result with
+    | Ok results ->
+        Assert.Equal(1, results.Length)
+        Assert.Equal(NudgeSent, results.[0].Outcome)
+        Assert.Equal(1, assignCalls.Count)
+    | Error e -> failwith $"expected Ok, got Error: {e}"
+
+[<Fact>]
+let ``fail action — closed PR found live produces NudgeFailed`` () =
+    let fs   = MockFileSystem()
+    let yaml = Given.yamlFile fs nudgeYaml "# body"
+    writeLock fs yaml (lockWithUnpairedIssue ())
+
+    let repo     = RepoName "myorg/repo-a"
+    let closedPr = A.PullRequestRef.defaults repo 3 7 |> A.PullRequestRef.withState "CLOSED"
+    let assignCalls = ConcurrentBag<unit>()
+    let handlers =
+        { FakeGhClient.defaults with
+            FindPrsForIssue = fun _ _ -> async { return [ closedPr ] }
+            AssignIssue     = fun _ _ _ -> assignCalls.Add(()); async { return Ok () } }
+    let deps  = Given.deps fs (FakeGhClient.from handlers)
+    let input = { defaultInput yaml with OnClosedPr = ClosedPrAction.Fail }
+
+    let result = execute deps input
+
+    match result with
+    | Ok results ->
+        Assert.Equal(1, results.Length)
+        match results.[0].Outcome with
+        | NudgeFailed reason -> Assert.Contains("closed PR exists", reason)
+        | other -> failwith $"expected NudgeFailed, got {other}"
+        Assert.Equal(0, assignCalls.Count)
+    | Error e -> failwith $"expected Ok, got Error: {e}"
+
+[<Fact>]
+let ``merged PR found live produces PrFoundLive regardless of OnClosedPr`` () =
+    let fs   = MockFileSystem()
+    let yaml = Given.yamlFile fs nudgeYaml "# body"
+    writeLock fs yaml (lockWithUnpairedIssue ())
+
+    let repo     = RepoName "myorg/repo-a"
+    let mergedPr = A.PullRequestRef.defaults repo 3 7 |> A.PullRequestRef.withState "MERGED"
+    let assignCalls = ConcurrentBag<unit>()
+    let handlers =
+        { FakeGhClient.defaults with
+            FindPrsForIssue = fun _ _ -> async { return [ mergedPr ] }
+            AssignIssue     = fun _ _ _ -> assignCalls.Add(()); async { return Ok () } }
+    let deps  = Given.deps fs (FakeGhClient.from handlers)
+    let input = { defaultInput yaml with OnClosedPr = ClosedPrAction.Nudge }
+
+    let result = execute deps input
+
+    match result with
+    | Ok results ->
+        Assert.Equal(1, results.Length)
+        Assert.Equal(PrFoundLive, results.[0].Outcome)
+        Assert.Equal(0, assignCalls.Count)
+    | Error e -> failwith $"expected Ok, got Error: {e}"
+
+[<Fact>]
+let ``open PR found live produces PrFoundLive (unchanged behaviour)`` () =
+    let fs   = MockFileSystem()
+    let yaml = Given.yamlFile fs nudgeYaml "# body"
+    writeLock fs yaml (lockWithUnpairedIssue ())
+
+    let repo   = RepoName "myorg/repo-a"
+    let openPr = A.PullRequestRef.defaults repo 3 7
+    let assignCalls = ConcurrentBag<unit>()
+    let handlers =
+        { FakeGhClient.defaults with
+            FindPrsForIssue = fun _ _ -> async { return [ openPr ] }
+            AssignIssue     = fun _ _ _ -> assignCalls.Add(()); async { return Ok () } }
+    let deps  = Given.deps fs (FakeGhClient.from handlers)
+    let input = defaultInput yaml
+
+    let result = execute deps input
+
+    match result with
+    | Ok results ->
+        Assert.Equal(1, results.Length)
+        Assert.Equal(PrFoundLive, results.[0].Outcome)
         Assert.Equal(0, assignCalls.Count)
     | Error e -> failwith $"expected Ok, got Error: {e}"
