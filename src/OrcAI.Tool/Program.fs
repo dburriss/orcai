@@ -333,6 +333,19 @@ let main argv =
     let parser = ArgumentParser.Create<OrcAIArgs>(programName = "orcai")
     try
         let results = parser.ParseCommandLine(inputs = argv, raiseOnUsage = true)
+        if results.Contains(OrcAIArgs.Version) then
+            let asm   = System.Reflection.Assembly.GetEntryAssembly()
+            let attrs = asm.GetCustomAttributes(typeof<System.Reflection.AssemblyInformationalVersionAttribute>, false)
+            let infoVersion =
+                if attrs.Length > 0 then
+                    (attrs.[0] :?> System.Reflection.AssemblyInformationalVersionAttribute).InformationalVersion
+                else
+                    string (asm.GetName().Version)
+            let parts = infoVersion.Split('+')
+            printfn "%s" parts.[0]
+            if parts.Length > 1 then printfn "commit: %s" parts.[1]
+            0
+        else
         match results.GetSubCommand() with
         | Run args ->
             let pattern         = args.GetResult(RunArgs.Yaml_File)
@@ -1027,6 +1040,7 @@ let main argv =
                         for line in result.Lines do
                             printfn "%s" line
                     0)
+        | Version -> 0
     with
     | :? ArguParseException as ex ->
         eprintfn "%s" ex.Message

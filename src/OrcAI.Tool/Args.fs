@@ -216,6 +216,7 @@ type OrcAIArgs =
     | [<SubCommand>] Generate of ParseResults<GenerateArgs>
     | [<SubCommand>] Validate of ParseResults<ValidateArgs>
     | [<SubCommand>] Graph    of ParseResults<GraphArgs>
+    | Version
     interface IArgParserTemplate with
         member a.Usage =
             match a with
@@ -228,3 +229,4 @@ type OrcAIArgs =
             | Generate _ -> "Generate a YAML job config from a name, org, and optional repo list."
             | Validate _ -> "Validate a YAML job config and verify all repos are accessible."
             | Graph _    -> "Render the depends_on dependency graph for a YAML job config."
+            | Version    -> "Print the OrcAI version and exit."
