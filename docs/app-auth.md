@@ -188,7 +188,7 @@ If `ORCAI_PAT` is not set, OrcAI skips `@copilot` assignment and prints:
 Warning: assigning @copilot requires a PAT. Set ORCAI_PAT or add a 'pat' profile to auth.json.
 ```
 
-To suppress the warning and intentionally skip Copilot assignment, pass `--skip-copilot` or set `skipCopilot: true` in your job config.
+To suppress the warning and intentionally skip Copilot assignment, set `action: { type: noop }` in your job YAML config.
 
 ---
 

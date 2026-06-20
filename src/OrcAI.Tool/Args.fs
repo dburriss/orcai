@@ -12,7 +12,6 @@ type RunArgs =
     | [<MainCommand; Mandatory>] Yaml_File of path: string
     | Verbose
     | Auto_Create_Labels
-    | Skip_Copilot
     | Skip_Lock
     | Max_Concurrency of n: int
     | No_Parallel
@@ -26,7 +25,6 @@ type RunArgs =
             | Yaml_File _        -> "Path or glob pattern for YAML job configuration file(s). Quote glob patterns to prevent shell expansion (e.g. \"configs/*.yaml\")."
             | Verbose            -> "Enable verbose output."
             | Auto_Create_Labels -> "Create any labels that don't exist in a repo before adding them to issues."
-            | Skip_Copilot       -> "Skip assigning @copilot to issues."
             | Skip_Lock          -> "Bypass the lock file and always fetch live state from GitHub."
             | Max_Concurrency _  -> "Maximum number of config files processed concurrently (default: 4). Note: high values may hit GitHub rate limits."
             | No_Parallel        -> "Disable all parallelism — files are processed sequentially and repo checks within each file run sequentially. Overrides --max-concurrency."
@@ -119,21 +117,19 @@ type AuthArgs =
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type GenerateArgs =
-    | Name         of name: string
-    | Org          of org:  string
-    | Repo         of repo: string
-    | Output       of path: string
-    | Skip_Copilot
+    | Name        of name: string
+    | Org         of org:  string
+    | Repo        of repo: string
+    | Output      of path: string
     | Interactive
     interface IArgParserTemplate with
         member a.Usage =
             match a with
-            | Name _        -> "Job name (used as project title and issue title). Required unless --interactive."
-            | Org _         -> "GitHub organisation. Required unless --interactive."
-            | Repo _        -> "Repo short-name to include (repeatable, e.g. --repo my-repo). Optional."
-            | Output _      -> "Output YAML file path. Defaults to <slug>.yml in the current directory."
-            | Skip_Copilot  -> "Set skipCopilot: true in the generated config."
-            | Interactive   -> "Prompt for any missing values and select repos via an interactive TUI."
+            | Name _      -> "Job name (used as project title and issue title). Required unless --interactive."
+            | Org _       -> "GitHub organisation. Required unless --interactive."
+            | Repo _      -> "Repo short-name to include (repeatable, e.g. --repo my-repo). Optional."
+            | Output _    -> "Output YAML file path. Defaults to <slug>.yml in the current directory."
+            | Interactive -> "Prompt for any missing values and select repos via an interactive TUI."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type NudgeArgs =

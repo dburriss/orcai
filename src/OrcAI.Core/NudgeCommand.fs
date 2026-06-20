@@ -72,14 +72,11 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
         | Some c, true -> c
         | _            -> client
 
-    // Resolve effective assign/nudge config: YAML wins, then global/local config, then defaults.
-    let pickAssign f =
-        jobConfig.Assign |> Option.bind f
-        |> Option.orElse (deps.Config.Assign |> Option.bind f)
+    // Resolve effective nudge config: YAML wins, then global/local config, then defaults.
     let pickNudge f =
         jobConfig.Nudge |> Option.bind f
         |> Option.orElse (deps.Config.Nudge |> Option.bind f)
-    let assignTo     = pickAssign (fun a -> a.To)      |> Option.defaultValue "@copilot"
+    let assignTo     = extractAssignee jobConfig.Action |> Option.defaultValue "@copilot"
     let nudgeMode    = pickNudge  (fun n -> n.Mode)    |> Option.defaultValue "reassign"
     let nudgeComment = pickNudge  (fun n -> n.Comment)
     let jobOwner =

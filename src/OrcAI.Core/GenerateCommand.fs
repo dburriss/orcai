@@ -10,13 +10,13 @@ open OrcAI.Core.Deps
 // ---------------------------------------------------------------------------
 
 type GenerateInput =
-    { Name        : string
-      Org         : string
+    { Name       : string
+      Org        : string
       /// Short repo names (no owner prefix). Empty list emits a placeholder.
-      Repos       : string list
+      Repos      : string list
       /// Resolved output path for the YAML file (e.g. "/cwd/my-job.yml").
-      OutputPath  : string
-      SkipCopilot : bool }
+      OutputPath : string
+      Noop       : bool }
 
 /// Convert a job name into a filesystem-friendly slug.
 /// "Add AGENTS.md" -> "add-agents-md"
@@ -37,21 +37,23 @@ let slugify (name: string) : string =
     |> fun s -> s.Trim('-')
 
 /// Build the YAML text for the job config.
-let private buildYaml (name: string) (org: string) (repos: string list) (slug: string) (skipCopilot: bool) : string =
+let private buildYaml (name: string) (org: string) (repos: string list) (slug: string) (noop: bool) : string =
     let reposSection =
         if repos.IsEmpty then
             "  # TODO: add repo short-names (without the org/ prefix)\n  # - my-repo"
         else
             repos |> List.map (fun r -> $"  - \"{r}\"") |> String.concat "\n"
 
-    let skipCopilotLine =
-        if skipCopilot then "  skipCopilot: true\n"
-        else "  # skipCopilot: true  # uncomment to disable assignment\n"
+    let actionBlock =
+        if noop then
+            "action:\n  type: noop\n  # No assignment — remove this block to assign @copilot\n"
+        else
+            "# action:\n#   type: assign-copilot  # default; omit this block to assign @copilot\n#   comment: \"\"  # optional trigger comment\n"
 
     $"""job:
   title: "{name}"
   org: "{org}"
-{skipCopilotLine}
+
 repos:
 {reposSection}
   # TODO: add more repos if needed
@@ -61,11 +63,7 @@ issue:
   labels: []
   # TODO: add label names, e.g. ["automated", "migration"]
 
-# assign:
-#   to: "@copilot"       # assignee handle (default: @copilot)
-#   via: assign          # assign | comment | comment-and-assign
-#   comment: ""          # trigger comment body; supports {{assignee}} placeholder
-
+{actionBlock}
 # nudge:
 #   mode: reassign       # reassign | comment-only | comment-and-reassign
 #   comment: ""          # nudge comment body; supports {{assignee}} placeholder
@@ -96,7 +94,7 @@ let execute (deps: OrcAIDeps) (input: GenerateInput) : Result<string * string, s
         let yamlPath = input.OutputPath
         let mdPath   = Path.Combine(Path.GetDirectoryName(yamlPath) |> Option.ofObj |> Option.defaultValue ".", $"{slug}.md")
 
-        let yaml = buildYaml input.Name input.Org input.Repos slug input.SkipCopilot
+        let yaml = buildYaml input.Name input.Org input.Repos slug input.Noop
         let md   = buildMarkdown input.Name
 
         try

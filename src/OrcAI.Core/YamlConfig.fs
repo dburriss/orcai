@@ -23,13 +23,14 @@ open OrcAI.Core.Domain
 //   issue:
 //     template: "./something.md"
 //     labels:   [...]
+//   action:
+//     type: assign-copilot   # | assign | comment | comment-and-assign | cmd | noop
 
 [<CLIMutable>]
 type YamlJob =
     { title:         string
       org:           string
       owner:         string
-      skipCopilot:   bool
       onClosedIssue: string }
 
 [<CLIMutable>]
@@ -38,10 +39,14 @@ type YamlIssue =
       labels:   System.Collections.Generic.List<string> }
 
 [<CLIMutable>]
-type YamlAssign =
-    { ``to``  : string
-      via     : string
-      comment : string }
+type YamlAction =
+    { ``type``  : string
+      comment   : string
+      ``to``    : string
+      execute   : string
+      run       : string
+      args      : System.Collections.Generic.List<string>
+      cwd       : string }
 
 [<CLIMutable>]
 type YamlNudge =
@@ -68,7 +73,7 @@ type YamlRoot =
     { job:       YamlJob
       repos:     System.Collections.Generic.List<string>
       issue:     YamlIssue
-      assign:    YamlAssign
+      action:    YamlAction
       nudge:     YamlNudge
       notify:    YamlNotify
       failures:  YamlFailures
@@ -90,6 +95,10 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
             Error "YAML file is empty or could not be parsed."
         elif isNull (box root.job) then
             Error "YAML is missing required 'job' section."
+        elif yamlText.Contains("skipCopilot:") then
+            Error "'job.skipCopilot' has been removed. Use 'action: { type: noop }' to skip assignment, or omit 'action:' to assign @copilot."
+        elif not (isNull (box (root :> obj))) && yamlText.Contains("\nassign:") || yamlText.StartsWith("assign:") then
+            Error "The 'assign:' field has been replaced by 'action:'. Migrate to: action: { type: assign-copilot, ... }"
         elif String.IsNullOrWhiteSpace(root.job.title) then
             Error "YAML 'job.title' is required."
         elif String.IsNullOrWhiteSpace(root.job.org) then
@@ -112,11 +121,41 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                 | "fail"               -> Fail
                 | other                -> failwith $"Unknown onClosedIssue value: '{other}'. Valid values: create, reopen, skip, fail."
             let nullStr (s: string) = match box s with | null -> None | _ -> Some s
-            let assignConfig =
-                if isNull (box root.assign) then None
-                else Some { To      = nullStr root.assign.``to``
-                            Via     = nullStr root.assign.via
-                            Comment = nullStr root.assign.comment }
+            let actionConfig =
+                if isNull (box root.action) then
+                    AssignCopilot None
+                else
+                    let actionArgs =
+                        if isNull (box root.action.args) then []
+                        else root.action.args |> Seq.toList
+                    match root.action.``type`` with
+                    | null | "" | "assign-copilot" ->
+                        AssignCopilot (nullStr root.action.comment)
+                    | "assign" ->
+                        match nullStr root.action.``to`` with
+                        | None   -> failwith "action type 'assign' requires a 'to' field."
+                        | Some t -> Assign(t, nullStr root.action.comment)
+                    | "comment" ->
+                        match nullStr root.action.comment with
+                        | None   -> failwith "action type 'comment' requires a 'comment' field."
+                        | Some c -> Comment c
+                    | "comment-and-assign" ->
+                        match nullStr root.action.``to``, nullStr root.action.comment with
+                        | None, _       -> failwith "action type 'comment-and-assign' requires a 'to' field."
+                        | _, None       -> failwith "action type 'comment-and-assign' requires a 'comment' field."
+                        | Some t, Some c -> CommentAndAssign(t, c)
+                    | "cmd" ->
+                        let hasExecute = not (String.IsNullOrWhiteSpace(root.action.execute))
+                        let hasRun     = not (String.IsNullOrWhiteSpace(root.action.run))
+                        if hasExecute && hasRun then
+                            failwith "action type 'cmd': 'execute' and 'run' are mutually exclusive — provide only one."
+                        elif not hasExecute && not hasRun then
+                            failwith "action type 'cmd' requires either 'execute' (script path) or 'run' (inline command)."
+                        else
+                            let source = if hasExecute then Script root.action.execute else Inline root.action.run
+                            Cmd(source, actionArgs, nullStr root.action.cwd)
+                    | "noop" -> Noop
+                    | other  -> failwith $"Unknown action type: '{other}'. Valid: assign-copilot, assign, comment, comment-and-assign, cmd, noop."
             let nudgeConfig =
                 if isNull (box root.nudge) then None
                 else Some { Mode    = nullStr root.nudge.mode
@@ -156,9 +195,8 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                  IssueTitle    = root.job.title
                  IssueBody     = templateContent
                  Labels        = labels
-                 SkipCopilot   = root.job.skipCopilot
+                 Action        = actionConfig
                  OnClosedIssue = closedIssueAction
-                 Assign        = assignConfig
                  Nudge         = nudgeConfig
                  Notify        = notifyConfig
                  JobOwner      = nullStr root.job.owner

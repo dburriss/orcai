@@ -179,10 +179,10 @@ let ``parse returns error when org is blank`` () =
     Assert.True(Result.isError (parse yaml "" ""))
 
 [<Fact>]
-let ``parse sets SkipCopilot false when not present in YAML`` () =
+let ``parse defaults to AssignCopilot None when action is absent`` () =
     match parse pureParsYaml "/any/path/issue.md" "body" with
     | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
-    | Ok cfg  -> Assert.False(cfg.SkipCopilot)
+    | Ok cfg  -> Assert.Equal(AssignCopilot None, cfg.Action)
 
 [<Fact>]
 let ``parse returns None for MaxAttempts when failures section absent`` () =
@@ -202,14 +202,16 @@ let ``parse reads failures.maxAttempts when set`` () =
     | Ok cfg  -> Assert.Equal(Some 5, cfg.MaxAttempts)
 
 [<Fact>]
-let ``parse sets SkipCopilot true when job.skipCopilot is true`` () =
+let ``parse returns error when skipCopilot is present`` () =
     let yaml =
         "job:\n  title: \"My Job\"\n  org: \"acme\"\n  skipCopilot: true\n" +
         "repos:\n  - \"svc-a\"\n" +
         "issue:\n  template: \"./issue.md\"\n"
-    match parse yaml "/any/path/issue.md" "body" with
-    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
-    | Ok cfg  -> Assert.True(cfg.SkipCopilot)
+    let result = parse yaml "/any/path/issue.md" "body"
+    Assert.True(Result.isError result)
+    match result with
+    | Error msg -> Assert.Contains("skipCopilot", msg)
+    | Ok _ -> ()
 
 // ---------------------------------------------------------------------------
 // dependsOn — pure parse
@@ -313,6 +315,86 @@ let ``parse returns error for dependsOn entry missing job field`` () =
         baseYamlForDeps +
         "dependsOn:\n" +
         "  - condition: pr_merged\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+// ---------------------------------------------------------------------------
+// action: field parsing
+// ---------------------------------------------------------------------------
+
+let private actionBaseYaml =
+    "job:\n  title: \"T\"\n  org: \"o\"\n" +
+    "repos:\n  - \"r\"\n" +
+    "issue:\n  template: \"./t.md\"\n"
+
+[<Fact>]
+let ``parse returns error when assign block is present`` () =
+    let yaml = actionBaseYaml + "assign:\n  to: \"@copilot\"\n"
+    let result = parse yaml "" "body"
+    Assert.True(Result.isError result)
+    match result with
+    | Error msg -> Assert.Contains("assign", msg)
+    | Ok _ -> ()
+
+[<Fact>]
+let ``parse parses action type assign-copilot with comment`` () =
+    let yaml = actionBaseYaml + "action:\n  type: assign-copilot\n  comment: \"hello\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(AssignCopilot (Some "hello"), cfg.Action)
+
+[<Fact>]
+let ``parse parses action type assign`` () =
+    let yaml = actionBaseYaml + "action:\n  type: assign\n  to: \"@alice\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(Assign("@alice", None), cfg.Action)
+
+[<Fact>]
+let ``parse parses action type comment`` () =
+    let yaml = actionBaseYaml + "action:\n  type: comment\n  comment: \"done\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(Comment "done", cfg.Action)
+
+[<Fact>]
+let ``parse parses action type noop`` () =
+    let yaml = actionBaseYaml + "action:\n  type: noop\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(Noop, cfg.Action)
+
+[<Fact>]
+let ``parse parses action type cmd with execute`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd\n  execute: \"./run.sh\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(Cmd(Script "./run.sh", [], None), cfg.Action)
+
+[<Fact>]
+let ``parse parses action type cmd with run`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd\n  run: \"echo hello\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(Cmd(Inline "echo hello", [], None), cfg.Action)
+
+[<Fact>]
+let ``parse returns error for cmd with both execute and run`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd\n  execute: \"./s.sh\"\n  run: \"echo hi\"\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+[<Fact>]
+let ``parse returns error for cmd with neither execute nor run`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+[<Fact>]
+let ``parse returns error for assign without to`` () =
+    let yaml = actionBaseYaml + "action:\n  type: assign\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+[<Fact>]
+let ``parse returns error for unknown action type`` () =
+    let yaml = actionBaseYaml + "action:\n  type: foobar\n"
     Assert.True(Result.isError (parse yaml "" "body"))
 
 // ---------------------------------------------------------------------------

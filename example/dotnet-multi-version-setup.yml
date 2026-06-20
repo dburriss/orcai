@@ -8,13 +8,11 @@ repos:
   - "unique"
   - "overboard"
   - "event-feed"
-  
+
 
 issue:
   template: "./dotnet-multi-version-setup.md"
   labels: ["setup", "automated"]
 
-copilot:
-  agent: "default"
-  run_args: []
-  max_runs: 1
+action:
+  type: assign-copilot

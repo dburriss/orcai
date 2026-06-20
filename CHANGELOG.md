@@ -4,6 +4,27 @@
 
 ### Added
 
+- `action:` YAML field — typed, explicit action to execute after issue creation. Supported types:
+  - `assign-copilot` (default when `action:` is absent) — assigns `@copilot`, with an optional trigger comment.
+  - `assign` — assigns any GitHub user or bot (`to` required, `comment` optional).
+  - `comment` — posts a comment only, no assignment (`comment` required).
+  - `comment-and-assign` — posts a comment then assigns (`to` and `comment` required).
+  - `cmd` — runs a shell command or script per repo (`execute` for a script path, `run` for an inline command; mutually exclusive). Supports `args` and `cwd`. Template variables use `{{var}}` syntax: `{{repo}}`, `{{org}}`, `{{issue_number}}`, `{{issue_url}}`, `{{job_title}}`, `{{issue_text}}`, `{{issue_hash}}`, `{{yaml_hash}}`, `{{project_number}}`, `{{run_datetime}}`.
+  - `noop` — skip the action step entirely (replaces `job.skipCopilot: true`).
+
+### Changed
+
+- **BREAKING**: `assign:` YAML block removed. Validation fails with a migration message when `assign:` is present. Migrate to `action: { type: assign-copilot, ... }` or the appropriate action type.
+- **BREAKING**: `job.skipCopilot` removed. Validation fails with a migration message when present. Use `action: { type: noop }` to skip assignment, or omit `action:` to assign `@copilot`.
+- **BREAKING**: `--skip-copilot` CLI flag removed from `orcai run` and `orcai generate`. Use `action: { type: noop }` in the YAML instead.
+- **BREAKING**: `skipCopilot` and `assign` fields removed from the global/local JSON config (`~/.config/orcai/config.json`). `action:` is per-job only.
+- `orcai generate` no longer generates a `skipCopilot` comment line; generates an `action:` comment block instead.
+- `orcai nudge` and `orcai notify` derive the `{assignee}` template variable from the job's `action:` type rather than `assign.to`.
+
+---
+
+### Added
+
 - `dependsOn` YAML field — gates a downstream job on the completion state of one or more upstream jobs. Each entry specifies a `job` (relative path), `condition` (`pr_merged` | `issue_closed`), `scope` (`per_repo` | `all_repos`), and `untrackedRepos` (`include` | `skip`). Multiple entries use AND logic.
 - `orcai run` now resolves `dependsOn` chains in topological order before executing. Passing a downstream YAML is sufficient — upstream dependencies are discovered and run automatically. The `scope: all_repos` option blocks the entire downstream run when any upstream repo has not met the condition; `scope: per_repo` (default) filters the downstream repo list individually.
 - `orcai graph <yaml>` — new command that renders the `dependsOn` dependency tree as an ASCII diagram. File-system only; no GitHub API calls. Supports `--json` output.

@@ -65,7 +65,7 @@ hasCopilot = issue.Assignees contains "copilot" (case-insensitive)
 | Condition | Action |
 |---|---|
 | `hasCopilot = true` | Skip assignment |
-| `--skip-copilot` flag or `skipCopilot: true` in YAML | Skip assignment |
+| `action: { type: noop }` in YAML | Skip assignment |
 | GitHub App auth without a PAT-based `CopilotClient` | Warn and skip (Apps cannot assign `@copilot`) |
 | Otherwise | Call `AssignIssue` |
 

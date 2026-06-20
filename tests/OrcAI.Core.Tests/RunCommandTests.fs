@@ -185,7 +185,7 @@ let ``processRepo uses CopilotClient when Some for AssignIssue`` () =
     let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
     let copilot     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "copilot"  assignCalls }
     let deps        = { Given.deps fs primary with CopilotClient = Some copilot }
-    let input       = A.RunInput.defaults () |> A.RunInput.withSkipCopilot false |> A.RunInput.withIsPrimaryAuthApp true
+    let input       = A.RunInput.defaults () |> A.RunInput.withIsPrimaryAuthApp true
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
@@ -200,7 +200,7 @@ let ``processRepo uses primary client for AssignIssue when CopilotClient is None
     let assignCalls = ConcurrentBag<string>()
     let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
     let deps        = Given.deps fs primary
-    let input       = A.RunInput.defaults () |> A.RunInput.withSkipCopilot false
+    let input       = A.RunInput.defaults ()
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
@@ -214,7 +214,7 @@ let ``processRepo skips assignment and does not call AssignIssue when CopilotCli
     let assignCalls = ConcurrentBag<string>()
     let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
     let deps        = Given.deps fs primary
-    let input       = A.RunInput.defaults () |> A.RunInput.withSkipCopilot false |> A.RunInput.withIsPrimaryAuthApp true
+    let input       = A.RunInput.defaults () |> A.RunInput.withIsPrimaryAuthApp true
 
     let results = execute deps [path] input |> Async.RunSynchronously
 
@@ -222,9 +222,9 @@ let ``processRepo skips assignment and does not call AssignIssue when CopilotCli
     Assert.Empty(assignCalls)
 
 [<Fact>]
-let ``processRepo skips assignment entirely when skipCopilot=true regardless of CopilotClient`` () =
+let ``processRepo skips assignment entirely when action is noop regardless of CopilotClient`` () =
     let fs          = MockFileSystem()
-    let path        = Given.namedYamlFile fs "job.yml"
+    let path        = Given.namedNoopYamlFile fs "job.yml"
     let assignCalls = ConcurrentBag<string>()
     let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
     let copilot     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "copilot"  assignCalls }
@@ -314,7 +314,6 @@ let ``skip action does not add issue to project or assign copilot`` () =
     let input =
         A.RunInput.defaults ()
         |> A.RunInput.withOnClosedIssue (Some Skip)
-        |> A.RunInput.withSkipCopilot false
 
     execute deps [path] input |> Async.RunSynchronously |> ignore
 
@@ -736,7 +735,6 @@ let ``dry-run does not call CreateIssue, AddIssueToProject, or AssignIssue`` () 
     let input =
         A.RunInput.defaults ()
         |> A.RunInput.withDryRun true
-        |> A.RunInput.withSkipCopilot false
 
     let results = execute deps [path] input |> Async.RunSynchronously
 

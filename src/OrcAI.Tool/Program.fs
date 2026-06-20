@@ -351,7 +351,6 @@ let main argv =
             let pattern         = args.GetResult(RunArgs.Yaml_File)
             let verbose         = args.Contains(RunArgs.Verbose)
             let autoCreateLabels= args.Contains(RunArgs.Auto_Create_Labels)
-            let skipCopilot     = args.Contains(RunArgs.Skip_Copilot)
             let skipLock        = args.Contains(RunArgs.Skip_Lock)
             let maxConcurrency  = args.TryGetResult(RunArgs.Max_Concurrency) |> Option.defaultValue 4
             let noParallel      = args.Contains(RunArgs.No_Parallel)
@@ -378,7 +377,6 @@ let main argv =
             | Ok paths ->
             withClient (fun deps isPrimaryAuthApp ->
                 // Apply config fallbacks — CLI flags win, then config, then built-in defaults.
-                let effectiveSkipCopilot     = skipCopilot     || (deps.Config.SkipCopilot      |> Option.defaultValue false)
                 let effectiveAutoCreateLabels = autoCreateLabels || (deps.Config.AutoCreateLabels |> Option.defaultValue false)
                 let effectiveContinueOnError  = continueOnError  || (deps.Config.ContinueOnError  |> Option.defaultValue false)
                 let effectiveMaxConcurrency   =
@@ -389,7 +387,6 @@ let main argv =
                     { YamlPath           = ""   // overridden per-file in execute
                       Verbose            = verbose
                       AutoCreateLabels   = effectiveAutoCreateLabels
-                      SkipCopilot        = effectiveSkipCopilot
                       SkipLock           = skipLock
                       MaxConcurrency     = effectiveMaxConcurrency
                       NoParallel         = noParallel
@@ -873,13 +870,10 @@ let main argv =
                             printfn "Active profile: %s" profileName
                             0
         | Generate args ->
-            let interactive  = args.Contains(GenerateArgs.Interactive)
-            let skipCopilot  = args.Contains(GenerateArgs.Skip_Copilot)
+            let interactive   = args.Contains(GenerateArgs.Interactive)
             let explicitRepos = args.GetResults(GenerateArgs.Repo)
 
             withClient (fun deps _ ->
-                let effectiveSkipCopilot =
-                    skipCopilot || (deps.Config.SkipCopilot |> Option.defaultValue false)
 
                 // --- Resolve name ---
                 let nameResult =
@@ -944,11 +938,11 @@ let main argv =
                             | None   -> System.IO.Path.Combine(System.Environment.CurrentDirectory, $"{slug}.yml")
 
                         let input : GenerateInput =
-                            { Name        = name
-                              Org         = org
-                              Repos       = repos
-                              OutputPath  = outputPath
-                              SkipCopilot = effectiveSkipCopilot }
+                            { Name       = name
+                              Org        = org
+                              Repos      = repos
+                              OutputPath = outputPath
+                              Noop       = false }
 
                         match execute deps input with
                         | Error e ->

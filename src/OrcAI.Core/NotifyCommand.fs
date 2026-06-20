@@ -49,11 +49,8 @@ let execute (deps: OrcAIDeps) (input: NotifyInput) : Result<NotifyResult list, s
     let pickNotify f =
         jobConfig.Notify |> Option.bind f
         |> Option.orElse (deps.Config.Notify |> Option.bind f)
-    let pickAssign f =
-        jobConfig.Assign |> Option.bind f
-        |> Option.orElse (deps.Config.Assign |> Option.bind f)
 
-    let assignTo         = pickAssign (fun a -> a.To) |> Option.defaultValue "@copilot"
+    let assignTo         = extractAssignee jobConfig.Action |> Option.defaultValue "@copilot"
     let effectiveTemplate =
         input.Template
         |> Option.orElse (pickNotify (fun n -> n.Comment))

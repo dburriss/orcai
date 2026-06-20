@@ -63,13 +63,6 @@ type DependsOnConfig =
 [<RequireQualifiedAccess>]
 type ClosedPrAction = Nudge | Skip | Fail
 
-/// How the assignee is triggered on a new issue.
-/// "assign" (default) | "comment" | "comment-and-assign"
-type AssignConfig =
-    { To      : string option
-      Via     : string option
-      Comment : string option }
-
 /// How the nudge command re-triggers the assignee on a stale issue.
 /// mode: "reassign" (default) | "comment-only" | "comment-and-reassign"
 type NudgeConfig =
@@ -80,6 +73,20 @@ type NudgeConfig =
 type NotifyConfig =
     { Comment : string option }
 
+/// Source for a cmd action — either a script path or an inline command string.
+type CmdSource =
+    | Script of path: string
+    | Inline of command: string
+
+/// The action to perform after an issue is created/found.
+type ActionConfig =
+    | AssignCopilot    of comment: string option
+    | Assign           of ``to``: string * comment: string option
+    | Comment          of comment: string
+    | CommentAndAssign of ``to``: string * comment: string
+    | Cmd              of source: CmdSource * args: string list * cwd: string option
+    | Noop
+
 /// Top-level job configuration parsed from the YAML file.
 type JobConfig =
     { Org           : OrgName
@@ -88,9 +95,8 @@ type JobConfig =
       IssueTitle    : string
       IssueBody     : string
       Labels        : string list
-      SkipCopilot   : bool
+      Action        : ActionConfig
       OnClosedIssue : ClosedIssueAction
-      Assign        : AssignConfig option
       Nudge         : NudgeConfig option
       Notify        : NotifyConfig option
       JobOwner      : string option
@@ -103,6 +109,20 @@ type JobConfig =
 /// Tokens not present in vars are left unreplaced.
 let renderTemplate (vars: Map<string, string>) (tmpl: string) =
     vars |> Map.fold (fun (s: string) k v -> s.Replace("{" + k + "}", v)) tmpl
+
+/// Replace {{key}} placeholders in a template string (used for action templates).
+/// Tokens not present in vars are left unreplaced.
+let renderActionTemplate (vars: Map<string, string>) (tmpl: string) =
+    vars |> Map.fold (fun (s: string) k v -> s.Replace("{{" + k + "}}", v)) tmpl
+
+/// Extract the target assignee handle from an action, if any.
+/// Used by nudge and notify to derive the assignee for templating.
+let extractAssignee (action: ActionConfig) : string option =
+    match action with
+    | AssignCopilot _             -> Some "@copilot"
+    | Assign(``to``, _)           -> Some ``to``
+    | CommentAndAssign(``to``, _) -> Some ``to``
+    | Comment _ | Cmd _ | Noop   -> None
 
 /// Which step a recorded failure belongs to. Each (repo, category) is unique
 /// within the lock file's `Failures` list.

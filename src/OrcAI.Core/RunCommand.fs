@@ -14,7 +14,9 @@ module OrcAI.Core.RunCommand
 // ---------------------------------------------------------------------------
 
 open System
+open System.Diagnostics
 open System.IO
+open System.Text
 open OrcAI.Core.Domain
 open OrcAI.Core.GhClient
 open OrcAI.Core.Deps
@@ -24,7 +26,6 @@ type RunInput =
     { YamlPath           : string
       Verbose            : bool
       AutoCreateLabels   : bool
-      SkipCopilot        : bool
       SkipLock           : bool
       MaxConcurrency     : int
       NoParallel         : bool
@@ -155,12 +156,9 @@ type private ProcessParams =
       Project             : ProjectInfo
       Verbose             : bool
       AutoCreateLabels    : bool
-      SkipCopilot         : bool
       IsPrimaryAuthApp    : bool
       ClosedIssueAction   : ClosedIssueAction
-      AssignTo            : string
-      AssignVia           : string
-      AssignComment       : string option
+      Action              : ActionConfig
       JobOwner            : string option
       DryRun              : bool
       MaxAttempts         : int
@@ -175,14 +173,7 @@ let private resolveProcessParams
     (yamlHashChanged     : bool)
     (templateHashChanged : bool)
     : ProcessParams =
-    let skipCopilot       = input.SkipCopilot || config.SkipCopilot
     let closedIssueAction = input.OnClosedIssue |> Option.defaultValue config.OnClosedIssue
-    let pickAssign f =
-        config.Assign |> Option.bind f
-        |> Option.orElse (deps.Config.Assign |> Option.bind f)
-    let assignTo      = pickAssign (fun a -> a.To)      |> Option.defaultValue "@copilot"
-    let assignVia     = pickAssign (fun a -> a.Via)     |> Option.defaultValue "assign"
-    let assignComment = pickAssign (fun a -> a.Comment)
     let jobOwner =
         config.JobOwner
         |> Option.orElseWith (fun () ->
@@ -195,12 +186,9 @@ let private resolveProcessParams
       Project             = project
       Verbose             = input.Verbose
       AutoCreateLabels    = input.AutoCreateLabels
-      SkipCopilot         = skipCopilot
       IsPrimaryAuthApp    = input.IsPrimaryAuthApp
       ClosedIssueAction   = closedIssueAction
-      AssignTo            = assignTo
-      AssignVia           = assignVia
-      AssignComment       = assignComment
+      Action              = config.Action
       JobOwner            = jobOwner
       DryRun              = input.DryRun
       MaxAttempts         = config.MaxAttempts |> Option.defaultValue defaultMaxAttempts
@@ -287,12 +275,9 @@ let private processRepo
         let project           = p.Project
         let verbose           = p.Verbose
         let autoCreateLabels  = p.AutoCreateLabels
-        let skipCopilot       = p.SkipCopilot
         let isPrimaryAuthApp  = p.IsPrimaryAuthApp
         let closedIssueAction = p.ClosedIssueAction
-        let assignTo          = p.AssignTo
-        let assignVia         = p.AssignVia
-        let assignComment     = p.AssignComment
+        let action            = p.Action
         let jobOwner          = p.JobOwner
         let dryRun            = p.DryRun
 
@@ -412,8 +397,8 @@ let private processRepo
         if dryRun then
             if verbose then
                 match issueOutcome with
-                | DryRunWouldCreate -> eprintfn "[%s] Would add issue to project and assign %s (dry run)" repoStr assignTo
-                | DryRunWouldReopen -> eprintfn "[%s] Would refresh project membership and assignment (dry run)" repoStr
+                | DryRunWouldCreate -> eprintfn "[%s] Would add issue to project and trigger action (dry run)" repoStr
+                | DryRunWouldReopen -> eprintfn "[%s] Would refresh project membership and trigger action (dry run)" repoStr
                 | _                 -> ()
             return outcome (Some { Issue = issue; Outcome = issueOutcome })
         else
@@ -429,52 +414,93 @@ let private processRepo
         elif verbose then
             eprintfn "[%s] Skipping AddToProject (prior failure not retryable)" repoStr
 
-        // 4. Trigger assignee: post comment and/or assign, controlled by assignVia.
-        //    When the primary auth is a GitHub App, use the CopilotClient (PAT-based)
-        //    for assignment — GitHub Apps cannot assign users directly.
-        //    If no CopilotClient is available and primary auth is App-based, warn and skip assignment.
+        // 4. Execute action
         let! finalIssue =
-            if skipCopilot then
-                if verbose then eprintfn "[%s] Skipping assignment (--skip-copilot)" repoStr
+            match action with
+            | Noop ->
+                if verbose then eprintfn "[%s] Skipping action (noop)" repoStr
                 async { return issue }
-            else
+            | Comment commentTmpl ->
                 async {
-                    // Post trigger comment when via includes "comment"
-                    if assignVia = "comment" || assignVia = "comment-and-assign" then
-                        match assignComment with
-                        | Some tmpl ->
-                            do! Comments.postTemplatedComment client repo issue.Number assignTo jobOwner tmpl verbose "trigger" Map.empty
-                        | None -> ()
-
-                    // Assign when via includes "assign" and not already assigned.
-                    // @copilot specifically requires a PAT (user-level token) to assign;
-                    // all other assignees work with GitHub App auth directly.
-                    let wantsAssign =
-                        (assignVia = "assign" || assignVia = "comment-and-assign")
-                        && not (hasAssignee assignTo issue)
-                    if not wantsAssign then
-                        return issue
-                    elif not (shouldAttempt p priorFailures AssignIssue) then
-                        if verbose then eprintfn "[%s] Skipping AssignIssue (prior failure not retryable)" repoStr
-                        return issue
-                    else
-                        let isCopilot = assignTo.TrimStart('@').Equals("copilot", StringComparison.OrdinalIgnoreCase)
-                        let assignClient =
-                            if isCopilot then deps.CopilotClient |> Option.defaultValue client
-                            else client
-                        if isCopilot && deps.CopilotClient.IsNone && isPrimaryAuthApp then
-                            eprintfn "[%s] Warning: assigning @copilot requires a PAT. Set ORCAI_PAT or add a 'pat' profile to auth.json." repoStr
+                    do! Comments.postTemplatedComment client repo issue.Number "@" jobOwner commentTmpl verbose "trigger" Map.empty
+                    return issue
+                }
+            | AssignCopilot _ | Assign _ | CommentAndAssign _ ->
+                let assignTo, wantsComment, commentTmpl =
+                    match action with
+                    | AssignCopilot c          -> "@copilot", c.IsSome, c |> Option.defaultValue ""
+                    | Assign(t, c)             -> t,          c.IsSome, c |> Option.defaultValue ""
+                    | CommentAndAssign(t, c)   -> t,          true,     c
+                    | _                        -> failwith "unreachable"
+                async {
+                    if wantsComment then
+                        do! Comments.postTemplatedComment client repo issue.Number assignTo jobOwner commentTmpl verbose "trigger" Map.empty
+                    if not (hasAssignee assignTo issue) then
+                        if not (shouldAttempt p priorFailures AssignIssue) then
+                            if verbose then eprintfn "[%s] Skipping AssignIssue (prior failure not retryable)" repoStr
                             return issue
                         else
-                            if verbose then eprintfn "[%s] Assigning %s" repoStr assignTo
-                            match! assignClient.AssignIssue repo issue.Number assignTo with
-                            | Error e ->
-                                record AssignIssue (Error e)
-                                eprintfn "[%s] Warning: failed to assign %s: %s" repoStr assignTo e
+                            let isCopilot = assignTo.TrimStart('@').Equals("copilot", StringComparison.OrdinalIgnoreCase)
+                            let assignClient =
+                                if isCopilot then deps.CopilotClient |> Option.defaultValue client
+                                else client
+                            if isCopilot && deps.CopilotClient.IsNone && isPrimaryAuthApp then
+                                eprintfn "[%s] Warning: assigning @copilot requires a PAT. Set ORCAI_PAT or add a 'pat' profile to auth.json." repoStr
                                 return issue
-                            | Ok () ->
-                                record AssignIssue (Ok ())
-                                return { issue with Assignees = issue.Assignees @ [assignTo.TrimStart('@')] }
+                            else
+                                if verbose then eprintfn "[%s] Assigning %s" repoStr assignTo
+                                match! assignClient.AssignIssue repo issue.Number assignTo with
+                                | Error e ->
+                                    record AssignIssue (Error e)
+                                    eprintfn "[%s] Warning: failed to assign %s: %s" repoStr assignTo e
+                                    return issue
+                                | Ok () ->
+                                    record AssignIssue (Ok ())
+                                    return { issue with Assignees = issue.Assignees @ [assignTo.TrimStart('@')] }
+                    else
+                        return issue
+                }
+            | Cmd(source, cmdArgs, cwd) ->
+                async {
+                    let (IssueNumber issueNum) = issue.Number
+                    let (OrgName orgStr) = config.Org
+                    let vars =
+                        Map.ofList [
+                            "repo",           repoStr
+                            "org",            orgStr
+                            "issue_number",   string issueNum
+                            "issue_url",      issue.Url
+                            "job_title",      config.ProjectTitle
+                            "issue_text",     config.IssueBody
+                            "project_number", string project.Number
+                            "run_datetime",   DateTimeOffset.UtcNow.ToString("o")
+                            "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBody))
+                            "yaml_hash",      ""
+                        ]
+                    let render (s: string) = renderActionTemplate vars s
+                    let executable, allArgs =
+                        match source with
+                        | Script path ->
+                            render path, cmdArgs |> List.map render
+                        | Inline cmd ->
+                            let rendered = render cmd
+                            let idx = rendered.IndexOf(' ')
+                            if idx < 0 then rendered, []
+                            else rendered.[..idx-1], [rendered.[idx+1..]]
+                    let workingDir = cwd |> Option.map render |> Option.defaultValue "."
+                    if verbose then
+                        eprintfn "[%s] Executing: %s %s" repoStr executable (String.concat " " allArgs)
+                    let psi = Diagnostics.ProcessStartInfo(executable, allArgs |> String.concat " ")
+                    psi.WorkingDirectory       <- workingDir
+                    psi.RedirectStandardOutput <- true
+                    psi.RedirectStandardError  <- true
+                    psi.UseShellExecute        <- false
+                    use proc = Diagnostics.Process.Start(psi)
+                    let! _ = proc.WaitForExitAsync() |> Async.AwaitTask
+                    if proc.ExitCode <> 0 then
+                        let err = proc.StandardError.ReadToEnd()
+                        eprintfn "[%s] Warning: cmd exited with code %d: %s" repoStr proc.ExitCode err
+                    return issue
                 }
 
         return outcome (Some { Issue = finalIssue; Outcome = issueOutcome })

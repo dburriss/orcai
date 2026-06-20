@@ -50,7 +50,7 @@ Complete reference for all `orcai` commands, flags, configuration, and output fo
 Scaffold a new YAML job definition and a Markdown issue template. This is the recommended starting point for any job.
 
 ```
-orcai generate --name <name> --org <org> [--repo <repo>...] [--output <path>] [--skip-copilot] [--interactive]
+orcai generate --name <name> --org <org> [--repo <repo>...] [--output <path>] [--interactive]
 ```
 
 ### Flags
@@ -61,7 +61,6 @@ orcai generate --name <name> --org <org> [--repo <repo>...] [--output <path>] [-
 | `--org` | string | Conditional | — | GitHub organization slug. Required unless `--interactive`. |
 | `--repo` | string | No | — | Repository short-name to include (exclude the `org/` prefix). Repeatable. |
 | `--output` | string | No | `<slug>.yml` | Output YAML path. Defaults to the slugified job name in the current directory. |
-| `--skip-copilot` | flag | No | false | Set `skipCopilot: true` in the generated config to avoid assigning `@copilot`. |
 | `--interactive` | flag | No | false | Prompt for missing values and present an interactive Spectre.Console picker to choose repositories. |
 
 ### Output
@@ -189,7 +188,7 @@ Switch only succeeds if the target profile exists in the config file. Use `orcai
 Execute a bulk upgrade job defined in one or more YAML files. Globs are supported when quoted (e.g. `"jobs/*.yml"`).
 
 ```
-orcai run <yaml_file_or_glob> [--verbose] [--auto-create-labels] [--skip-copilot]
+orcai run <yaml_file_or_glob> [--verbose] [--auto-create-labels]
          [--skip-lock] [--max-concurrency <n>] [--no-parallel] [--continue-on-error]
          [--on-closed-issue <action>] [--dryrun] [--json]
 ```
@@ -201,7 +200,6 @@ orcai run <yaml_file_or_glob> [--verbose] [--auto-create-labels] [--skip-copilot
 | `<yaml_file_or_glob>` | positional | Yes | — | YAML job file path or quoted glob (e.g. `"jobs/*.yml"`). |
 | `--verbose` | flag | No | false | Emit per-repo status messages to stderr. |
 | `--auto-create-labels` | flag | No | false | Create missing labels in each repo before applying them. |
-| `--skip-copilot` | flag | No | false | Skip the assignment step entirely. Honored even if `job.skipCopilot` is set. |
 | `--skip-lock` | flag | No | false | Always fetch live state from GitHub instead of using the lock file. |
 | `--max-concurrency` | int | No | `4` | Maximum number of config files processed concurrently. High values may hit GitHub rate limits. |
 | `--no-parallel` | flag | No | false | Disable all parallelism — files and repo checks run sequentially. Overrides `--max-concurrency`. |
@@ -217,7 +215,7 @@ For each repository listed in every config file (processed concurrently by defau
 1. Finds or creates the GitHub Project (idempotent).
 2. Finds or creates an issue using `job.title` and the issue template. Open issues are matched by exact title. If no open match is found, closed issues are checked next — what happens then is controlled by `--on-closed-issue` / `job.onClosedIssue` (defaults to `create`, which opens a new issue even when a closed duplicate exists).
 3. Adds the issue to the project.
-4. Triggers the assignee according to the `assign` config block (defaults to assigning `@copilot`). See [YAML configuration](#yaml-configuration) and [Layered configuration](#layered-configuration).
+4. Executes the `action` defined in the YAML config. Defaults to assigning `@copilot` when no `action:` block is present. See [YAML configuration](#yaml-configuration).
 
 When processing multiple files, the human-readable output prints `--- <filename> ---` before each file's summary.
 
@@ -249,7 +247,7 @@ The output is a filename-keyed JSON object:
 
 ```sh
 orcai run jobs/my-upgrade.yml
-orcai run jobs/my-upgrade.yml --auto-create-labels --skip-copilot
+orcai run jobs/my-upgrade.yml --auto-create-labels
 orcai run "jobs/*.yml" --continue-on-error --json
 orcai run "jobs/*.yml" --max-concurrency 2
 orcai run "jobs/*.yml" --no-parallel
@@ -293,7 +291,7 @@ For each issue in the lock file:
 
 ### PAT requirement for `@copilot`
 
-GitHub Apps cannot assign `@copilot` to issues. When `assign.to` is `@copilot` (the default) and `nudge.mode` includes reassignment (`reassign` or `comment-and-reassign`), a PAT must be available — either via `ORCAI_PAT` or a stored `pat` profile (`orcai auth pat`). If primary auth is a GitHub App and no PAT is configured, `orcai nudge` refuses upfront with an error rather than unassigning `@copilot` and failing to reassign. `mode: comment-only` is unaffected.
+GitHub Apps cannot assign `@copilot` to issues. When the job's `action:` is `assign-copilot` (the default) and `nudge.mode` includes reassignment (`reassign` or `comment-and-reassign`), a PAT must be available — either via `ORCAI_PAT` or a stored `pat` profile (`orcai auth pat`). If primary auth is a GitHub App and no PAT is configured, `orcai nudge` refuses upfront with an error rather than unassigning `@copilot` and failing to reassign. `mode: comment-only` is unaffected.
 
 ### Output
 
@@ -346,7 +344,7 @@ The comment template supports `{key}` placeholders. Built-in variables are resol
 
 | Variable | Source |
 |----------|--------|
-| `{assignee}` | `assign.to` from YAML/config, default `@copilot` |
+| `{assignee}` | Assignee derived from the job's `action:` type; defaults to `@copilot` |
 | `{job.owner}` | `job.owner` from YAML, or catch-all `*` owner from local CODEOWNERS |
 | `{repo.codeowners}` | Catch-all `*` owner from the target repo's CODEOWNERS (fetched from GitHub) |
 | `{<key>}` | Any key supplied via `--data key=value` or `--json-data` |
@@ -598,7 +596,6 @@ job:
   title: "My Project Title"
   org:   "my-github-org"
   # owner: "@platform-team"  # optional: used as {job.owner} in comment templates
-  # skipCopilot: true        # superseded by assign.via
   # onClosedIssue: reopen    # create (default) | reopen | skip | fail
 
 repos:
@@ -611,14 +608,13 @@ issue:
     - "migration"
     - "automated"
 
-# assign:
-#   to: "@copilot"          # assignee handle (default: @copilot)
-#   via: assign             # assign | comment | comment-and-assign
-#   comment: ""             # trigger comment; supports {assignee}, {job.owner}, {repo.codeowners}
+# action:
+#   type: assign-copilot     # default when action: is omitted
+#   comment: ""              # optional trigger comment
 
 # nudge:
-#   mode: reassign          # reassign | comment-only | comment-and-reassign
-#   comment: ""             # nudge comment; supports {assignee}, {job.owner}, {repo.codeowners}
+#   mode: reassign           # reassign | comment-only | comment-and-reassign
+#   comment: ""              # nudge comment; supports {assignee}, {job.owner}, {repo.codeowners}
 
 # dependsOn:
 #   - job: ./upstream-job.yml   # relative path to upstream YAML (required)
@@ -631,7 +627,69 @@ issue:
 
 `job.onClosedIssue` controls what `orcai run` does when an issue with the same title already exists in the repo but is closed (matching is exact and case-sensitive). Valid values: `create` (default — open a new issue alongside the closed one), `reopen` (reopen the closed issue), `skip` (leave the repo untouched and report `skipped`), `fail` (treat the closed match as a hard error). The `--on-closed-issue` CLI flag overrides this field when supplied.
 
-The `assign` and `nudge` blocks are optional — omitting them keeps the default behaviour (assign `@copilot`, nudge by reassignment). Per-job YAML values take precedence over the global/local JSON config. See [Layered configuration](#layered-configuration).
+### `action:` block
+
+The `action:` block controls what happens after the issue is created. If omitted, the default is `assign-copilot`.
+
+| Type | Required params | Optional params | Description |
+|------|----------------|-----------------|-------------|
+| `assign-copilot` | — | `comment` | Assign `@copilot` to the issue (default). Optionally post a trigger comment first. |
+| `assign` | `to` | `comment` | Assign any user or bot. `to` is the GitHub handle (e.g. `@alice`). |
+| `comment` | `comment` | — | Post a comment only — no assignment. |
+| `comment-and-assign` | `to`, `comment` | — | Post a comment and then assign. |
+| `cmd` | `execute` or `run` | `args`, `cwd` | Run a shell command per repo. `execute` is a script path; `run` is an inline command string. Mutually exclusive. |
+| `noop` | — | — | Do nothing after issue creation. |
+
+**Template variables for `cmd`** (use `{{var}}` double-brace syntax):
+
+| Variable | Value |
+|----------|-------|
+| `{{repo}}` | `owner/repo` |
+| `{{org}}` | Organisation name |
+| `{{issue_number}}` | Issue number |
+| `{{issue_url}}` | Full GitHub URL of the issue |
+| `{{job_title}}` | Value of `job.title` |
+| `{{issue_text}}` | Rendered issue body |
+| `{{issue_hash}}` | SHA-256 of the issue template content |
+| `{{yaml_hash}}` | SHA-256 of the YAML file |
+| `{{project_number}}` | GitHub project number |
+| `{{run_datetime}}` | ISO-8601 datetime of the run |
+
+**Examples:**
+
+```yaml
+# Assign @copilot (default — same as omitting the action: block)
+action:
+  type: assign-copilot
+  comment: "Please work on this issue"
+
+# Assign a specific user
+action:
+  type: assign
+  to: "@alice"
+
+# Post a comment to trigger an agent via slash command
+action:
+  type: comment
+  comment: "/opencode please work on this issue"
+
+# Do nothing (was: job.skipCopilot: true)
+action:
+  type: noop
+
+# Run a script per repo
+action:
+  type: cmd
+  execute: "./scripts/setup.sh"
+  args: ["--repo", "{{repo}}"]
+
+# Run an inline command
+action:
+  type: cmd
+  run: "gh issue comment {{issue_number}} --repo {{repo}} --body 'ready'"
+```
+
+The `nudge` block is optional — omitting it keeps the default behaviour (nudge by reassignment).
 
 The `dependsOn` block gates this job on the completion state of one or more upstream jobs. Multiple entries use AND logic — all must be satisfied. `orcai run` automatically resolves the full dependency chain in topological order, so passing only the downstream YAML is sufficient.
 
@@ -646,32 +704,6 @@ The `dependsOn` block gates this job on the completion state of one or more upst
 
 Use `orcai validate <yaml>` to check for missing upstream files and circular references. Use `orcai graph <yaml>` to visualise the dependency tree.
 
-**OpenCode example:**
-
-```yaml
-assign:
-  to: opencode-agent[bot]
-  via: comment
-  comment: "/opencode please work on this issue"
-
-nudge:
-  mode: comment-only
-  comment: "/opencode this issue seems stuck, please continue"
-```
-
-**Human assignee example:**
-
-```yaml
-assign:
-  to: my-github-username
-  via: assign
-  comment: "Hey, this issue is ready for you"
-
-nudge:
-  mode: comment-and-reassign
-  comment: "Hey {assignee}, any update on this one?"
-```
-
 ---
 
 ## Layered configuration
@@ -685,19 +717,17 @@ Each file can contain these optional fields:
 
 | Field | Description |
 |-------|-------------|
-| `skipCopilot` | Set default `--skip-copilot`. Superseded by `assign.via`. |
 | `defaultLabels` | List of labels applied to every issue. |
 | `autoCreateLabels` | Default for `--auto-create-labels`. |
 | `maxConcurrency` | Default for `--max-concurrency`. |
 | `continueOnError` | Default for `--continue-on-error`. |
 | `defaultOrg` | Default GitHub org for `generate`. |
-| `assign.to` | Default assignee handle. |
-| `assign.via` | Default trigger mode: `assign`, `comment`, or `comment-and-assign`. |
-| `assign.comment` | Default trigger comment body. Supports `{assignee}`, `{job.owner}`, `{repo.codeowners}` tokens. |
 | `nudge.mode` | Default nudge mode: `reassign`, `comment-only`, or `comment-and-reassign`. |
 | `nudge.comment` | Default nudge comment body. Supports `{assignee}`, `{job.owner}`, `{repo.codeowners}` tokens. |
 
-Values from the local config override the global config when present. Within the `assign` and `nudge` blocks, merging is field-level. The per-job YAML always wins over both config files.
+Note: `action:` is per-job only and cannot be set in the global/local JSON config. `nudge` defaults are still configurable globally.
+
+Values from the local config override the global config when present. The `nudge` block merges at field-level. The per-job YAML always wins over both config files.
 
 Example `~/.config/orcai/config.json`:
 
@@ -705,10 +735,6 @@ Example `~/.config/orcai/config.json`:
 {
   "defaultLabels": ["migration", "orcai"],
   "maxConcurrency": 3,
-  "assign": {
-    "to": "@copilot",
-    "via": "assign"
-  },
   "nudge": {
     "mode": "reassign"
   }

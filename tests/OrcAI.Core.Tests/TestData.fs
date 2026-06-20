@@ -77,7 +77,6 @@ module A =
             { YamlPath         = ""
               Verbose          = false
               AutoCreateLabels = false
-              SkipCopilot      = true
               SkipLock         = true
               MaxConcurrency   = 4
               NoParallel       = false
@@ -87,7 +86,6 @@ module A =
               OnClosedIssue    = None
               DryRun           = false }
 
-        let withSkipCopilot v (i: OrcAI.Core.RunCommand.RunInput)         = { i with SkipCopilot = v }
         let withIsPrimaryAuthApp v (i: OrcAI.Core.RunCommand.RunInput)    = { i with IsPrimaryAuthApp = v }
         let withOnClosedIssue a (i: OrcAI.Core.RunCommand.RunInput)       = { i with OnClosedIssue = a }
         let withNoParallel v (i: OrcAI.Core.RunCommand.RunInput)          = { i with NoParallel = v }
@@ -131,6 +129,22 @@ module Given =
             "job:\n  title: \"Add AGENTS.md\"\n  org: \"myorg\"\n" +
             "repos:\n  - \"repo-a\"\n" +
             "issue:\n  template: \"./template.md\"\n  labels: []\n"
+        let yamlPath = $"{dir}/{name}"
+        fs.File.WriteAllText(yamlPath, yaml)
+        yamlPath
+
+    /// Write a named YAML file with action: noop to a MockFileSystem; returns the YAML path.
+    let namedNoopYamlFile (fs: MockFileSystem) (name: string) : string =
+        let dir          = "/work"
+        fs.Directory.CreateDirectory(dir) |> ignore
+        let templatePath = $"{dir}/template.md"
+        if not (fs.File.Exists(templatePath)) then
+            fs.File.WriteAllText(templatePath, "# body")
+        let yaml =
+            "job:\n  title: \"Add AGENTS.md\"\n  org: \"myorg\"\n" +
+            "repos:\n  - \"repo-a\"\n" +
+            "issue:\n  template: \"./template.md\"\n  labels: []\n" +
+            "action:\n  type: noop\n"
         let yamlPath = $"{dir}/{name}"
         fs.File.WriteAllText(yamlPath, yaml)
         yamlPath

@@ -13,7 +13,6 @@ Local values take precedence over global values. Any key can be omitted; CLI fla
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `skipCopilot` | bool | `false` | Skip assignment entirely. Equivalent to `--skip-copilot`. Superseded by `assign.via`. |
 | `defaultLabels` | string[] | `[]` | Labels applied to every issue in addition to any labels in the YAML job config. |
 | `autoCreateLabels` | bool | `false` | Create missing labels in each repo before applying them. Equivalent to `--auto-create-labels`. |
 | `maxConcurrency` | int | `4` | Maximum number of config files processed concurrently. Equivalent to `--max-concurrency`. |
@@ -22,15 +21,7 @@ Local values take precedence over global values. Any key can be omitted; CLI fla
 | `writesPerMinute` | int | `60` | Token-bucket capacity for GitHub write calls per minute. Reduce if you hit secondary rate limits. |
 | `rateLimitRetries` | int | `3` | Maximum number of automatic retries when a GitHub rate-limit error is encountered. |
 
-### `assign` block
-
-Controls how `orcai run` (and the re-trigger in `orcai nudge`) reaches the assignee. All fields are optional; omitting the block keeps the existing `@copilot` assign behaviour.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `assign.to` | string | `"@copilot"` | Assignee handle (e.g. `"@copilot"`, `"devon.burriss"`, `"opencode-agent[bot]"`). Not required when `via` is `"comment"`. Note: assigning `@copilot` requires a PAT (`ORCAI_PAT`); all other handles work with GitHub App auth directly. |
-| `assign.via` | string | `"assign"` | How to trigger the assignee. `"assign"` — assign the issue. `"comment"` — post a comment only (no assignment). `"comment-and-assign"` — post a comment and assign. |
-| `assign.comment` | string | — | Comment body posted when `via` includes `"comment"`. Supports template tokens: `{assignee}`, `{job.owner}`, `{repo.codeowners}`. |
+> **Note**: `action:` is per-job only and cannot be set in the global or local JSON config. See the [YAML configuration reference](cli-reference.md#action-block) for available action types.
 
 ### `nudge` block
 
@@ -43,11 +34,11 @@ Controls how `orcai nudge` re-triggers the assignee on stale issues (those witho
 
 ### Template tokens
 
-`assign.comment` and `nudge.comment` support the following `{token}` placeholders:
+`nudge.comment` supports the following `{token}` placeholders:
 
 | Token | Resolved from |
 |-------|--------------|
-| `{assignee}` | The `assign.to` handle. |
+| `{assignee}` | Assignee derived from the job's `action:` type (e.g. `@copilot` for `assign-copilot`). |
 | `{job.owner}` | `job.owner` in the YAML (if set), otherwise the catch-all `*` owner from a `CODEOWNERS` file in the current repo (`CODEOWNERS`, `.github/CODEOWNERS`, or `docs/CODEOWNERS`). Left unreplaced if neither is found. |
 | `{repo.codeowners}` | The catch-all `*` owner from the target repository's `CODEOWNERS` file (fetched from GitHub). Left unreplaced if absent or no `*` rule exists. |
 
@@ -66,32 +57,11 @@ Controls how `orcai nudge` re-triggers the assignee on stale issues (those witho
 }
 ```
 
-**Local config with OpenCode** (`.orcai/config.json`):
+**Local config with nudge defaults** (`.orcai/config.json`):
 
 ```json
 {
   "defaultOrg": "my-github-org",
-  "assign": {
-    "to": "opencode-agent[bot]",
-    "via": "comment",
-    "comment": "/opencode please work on this issue"
-  },
-  "nudge": {
-    "mode": "comment-only",
-    "comment": "/opencode this issue seems stuck, please continue"
-  }
-}
-```
-
-**Local config with a human assignee** (`.orcai/config.json`):
-
-```json
-{
-  "assign": {
-    "to": "devon.burriss",
-    "via": "assign",
-    "comment": "Hey, this issue is ready for you"
-  },
   "nudge": {
     "mode": "comment-and-reassign",
     "comment": "Hey {assignee}, any update on this one?"
@@ -99,7 +69,7 @@ Controls how `orcai nudge` re-triggers the assignee on stale issues (those witho
 }
 ```
 
-With both files present, the effective config merges them with local values winning on any key that appears in both. Within the `assign` and `nudge` blocks, merging is also field-level — a local `assign.to` overrides a global `assign.to` without discarding the global `assign.via`.
+With both files present, the effective config merges them with local values winning on any key that appears in both. Within the `nudge` block, merging is field-level — a local `nudge.mode` overrides a global `nudge.mode` without discarding the global `nudge.comment`.
 
 ---
 
