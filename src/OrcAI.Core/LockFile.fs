@@ -77,22 +77,32 @@ let private jsonOptions =
 
 let internal categoryToString (c: RepoFailureCategory) : string =
     match c with
-    | FindIssue    -> "FindIssue"
-    | CreateIssue  -> "CreateIssue"
-    | ReopenIssue  -> "ReopenIssue"
-    | AssignIssue  -> "AssignIssue"
-    | AddToProject -> "AddToProject"
-    | UpdateBody   -> "UpdateBody"
+    | FindIssue             -> "FindIssue"
+    | CreateIssue           -> "CreateIssue"
+    | ReopenIssue           -> "ReopenIssue"
+    | AssignIssue           -> "AssignIssue"
+    | AddToProject          -> "AddToProject"
+    | UpdateBody            -> "UpdateBody"
+    | CmdCheckoutFailed     -> "CmdCheckoutFailed"
+    | CmdToPrCheckoutFailed -> "CmdToPrCheckoutFailed"
+    | CmdToPrNoDiff         -> "CmdToPrNoDiff"
+    | CmdToPrPushFailed     -> "CmdToPrPushFailed"
+    | CmdToPrOpenPrFailed   -> "CmdToPrOpenPrFailed"
 
 let internal categoryOfString (s: string) : RepoFailureCategory option =
     match s with
-    | "FindIssue"    -> Some FindIssue
-    | "CreateIssue"  -> Some CreateIssue
-    | "ReopenIssue"  -> Some ReopenIssue
-    | "AssignIssue"  -> Some AssignIssue
-    | "AddToProject" -> Some AddToProject
-    | "UpdateBody"   -> Some UpdateBody
-    | _              -> None
+    | "FindIssue"             -> Some FindIssue
+    | "CreateIssue"           -> Some CreateIssue
+    | "ReopenIssue"           -> Some ReopenIssue
+    | "AssignIssue"           -> Some AssignIssue
+    | "AddToProject"          -> Some AddToProject
+    | "UpdateBody"            -> Some UpdateBody
+    | "CmdCheckoutFailed"     -> Some CmdCheckoutFailed
+    | "CmdToPrCheckoutFailed" -> Some CmdToPrCheckoutFailed
+    | "CmdToPrNoDiff"         -> Some CmdToPrNoDiff
+    | "CmdToPrPushFailed"     -> Some CmdToPrPushFailed
+    | "CmdToPrOpenPrFailed"   -> Some CmdToPrOpenPrFailed
+    | _                       -> None
 
 let internal causeToString (c: RepoFailureCause) : string =
     match c with

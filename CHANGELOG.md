@@ -11,6 +11,15 @@
   - `comment-and-assign` — posts a comment then assigns (`to` and `comment` required).
   - `cmd` — runs a shell command or script per repo (`execute` for a script path, `run` for an inline command; mutually exclusive). Supports `args` and `cwd`. Template variables use `{{var}}` syntax: `{{repo}}`, `{{org}}`, `{{issue_number}}`, `{{issue_url}}`, `{{job_title}}`, `{{issue_text}}`, `{{issue_hash}}`, `{{yaml_hash}}`, `{{project_number}}`, `{{run_datetime}}`.
   - `noop` — skip the action step entirely (replaces `job.skipCopilot: true`).
+  - `cmd-checkout` — clones the target repo (bare, `--depth 1`) and runs the command inside it. Worktrees are reused when the same repo appears across multiple jobs. Extra template variables: `{{checkout_path}}` and `{{job_title_slug}}`.
+  - `cmd-to-pr` — checkout → run → commit all changes → push branch → open PR. Supports three write-back modes: `pr-to-origin` (default), `commit-to-origin`, and `fork-and-pr`. Optional fields: `branch`, `commitMessage`, `prTitle`, `prBody`, `errorIfNoDiff`.
+
+- New global config fields (`~/.config/orcai/config.json` / `.orcai/config.json`):
+  - `checkoutRoot` — override the directory where repos are cloned for `cmd-checkout` and `cmd-to-pr`. Defaults to an OS temp directory scoped to the run.
+  - `writeBack` — global default write-back mode for `cmd-to-pr` (`pr-to-origin` | `commit-to-origin` | `fork-and-pr`). Overridden by `writeBack` in the job YAML.
+  - `redoOnClosed` — when `true`, checkout-based actions re-run even if the issue or linked PR is already closed. Default `false` treats a closed issue/PR as done.
+
+- **GitHub App permission**: The **Contents** permission on the GitHub App must now be set to **Read & write** (instead of Read) to support push-based action types (`cmd-to-pr` with `pr-to-origin` or `commit-to-origin`). OrcAI configures git credentials automatically using the same token — no separate credential setup is required.
 
 ### Changed
 

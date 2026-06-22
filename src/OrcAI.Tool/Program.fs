@@ -394,7 +394,8 @@ let main argv =
                       DefaultLabels      = deps.Config.DefaultLabels |> Option.defaultValue []
                       IsPrimaryAuthApp   = isPrimaryAuthApp
                       OnClosedIssue      = onClosedIssue
-                      DryRun             = dryRun }
+                      DryRun             = dryRun
+                      CheckoutRoot       = deps.Config.CheckoutRoot }
                 let results =
                     OrcAI.Core.RunCommand.execute deps paths input
                     |> Async.RunSynchronously
@@ -450,12 +451,17 @@ let main argv =
                                         let (RepoName r) = f.Repo
                                         let catStr =
                                             match f.Category with
-                                            | OrcAI.Core.Domain.FindIssue    -> "FindIssue"
-                                            | OrcAI.Core.Domain.CreateIssue  -> "CreateIssue"
-                                            | OrcAI.Core.Domain.ReopenIssue  -> "ReopenIssue"
-                                            | OrcAI.Core.Domain.AssignIssue  -> "AssignIssue"
-                                            | OrcAI.Core.Domain.AddToProject -> "AddToProject"
-                                            | OrcAI.Core.Domain.UpdateBody   -> "UpdateBody"
+                                            | OrcAI.Core.Domain.FindIssue             -> "FindIssue"
+                                            | OrcAI.Core.Domain.CreateIssue           -> "CreateIssue"
+                                            | OrcAI.Core.Domain.ReopenIssue           -> "ReopenIssue"
+                                            | OrcAI.Core.Domain.AssignIssue           -> "AssignIssue"
+                                            | OrcAI.Core.Domain.AddToProject          -> "AddToProject"
+                                            | OrcAI.Core.Domain.UpdateBody            -> "UpdateBody"
+                                            | OrcAI.Core.Domain.CmdCheckoutFailed     -> "CmdCheckoutFailed"
+                                            | OrcAI.Core.Domain.CmdToPrCheckoutFailed -> "CmdToPrCheckoutFailed"
+                                            | OrcAI.Core.Domain.CmdToPrNoDiff         -> "CmdToPrNoDiff"
+                                            | OrcAI.Core.Domain.CmdToPrPushFailed     -> "CmdToPrPushFailed"
+                                            | OrcAI.Core.Domain.CmdToPrOpenPrFailed   -> "CmdToPrOpenPrFailed"
                                         let causeStr =
                                             match f.Cause with
                                             | OrcAI.Core.Domain.RateLimit        -> "RateLimit"

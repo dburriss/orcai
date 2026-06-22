@@ -18,6 +18,7 @@
     <Compile Include="LockFile.fs" />
     <Compile Include="FileGlob.fs" />
     <Compile Include="DependencyResolution.fs" />
+    <Compile Include="CheckoutManager.fs" />
     <Compile Include="GraphCommand.fs" />
     <Compile Include="ValidateCommand.fs" />
     <Compile Include="RunCommand.fs" />

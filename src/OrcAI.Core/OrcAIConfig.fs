@@ -21,7 +21,10 @@ type OrcAIConfig =
       WritesPerMinute  : int option
       RateLimitRetries : int option
       Nudge            : NudgeConfig option
-      Notify           : NotifyConfig option }
+      Notify           : NotifyConfig option
+      CheckoutRoot     : string option
+      WriteBack        : string option
+      RedoOnClosed     : bool option }
 
 /// All-None config — represents "no config loaded".
 let empty : OrcAIConfig =
@@ -33,7 +36,10 @@ let empty : OrcAIConfig =
       WritesPerMinute  = None
       RateLimitRetries = None
       Nudge            = None
-      Notify           = None }
+      Notify           = None
+      CheckoutRoot     = None
+      WriteBack        = None
+      RedoOnClosed     = None }
 
 // ---------------------------------------------------------------------------
 // Merge: local wins per field when Some; falls back to global otherwise.
@@ -63,7 +69,10 @@ let merge (globalCfg: OrcAIConfig) (localCfg: OrcAIConfig) : OrcAIConfig =
       WritesPerMinute  = pick localCfg.WritesPerMinute   globalCfg.WritesPerMinute
       RateLimitRetries = pick localCfg.RateLimitRetries  globalCfg.RateLimitRetries
       Nudge            = mergeNudge  localCfg.Nudge      globalCfg.Nudge
-      Notify           = mergeNotify localCfg.Notify     globalCfg.Notify }
+      Notify           = mergeNotify localCfg.Notify     globalCfg.Notify
+      CheckoutRoot     = pick localCfg.CheckoutRoot      globalCfg.CheckoutRoot
+      WriteBack        = pick localCfg.WriteBack         globalCfg.WriteBack
+      RedoOnClosed     = pick localCfg.RedoOnClosed      globalCfg.RedoOnClosed }
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -114,7 +123,13 @@ type OrcAIConfigDto =
       [<JsonPropertyName("nudge")>]
       Nudge            : NudgeConfigDto option
       [<JsonPropertyName("notify")>]
-      Notify           : NotifyConfigDto option }
+      Notify           : NotifyConfigDto option
+      [<JsonPropertyName("checkoutRoot")>]
+      CheckoutRoot     : string option
+      [<JsonPropertyName("writeBack")>]
+      WriteBack        : string option
+      [<JsonPropertyName("redoOnClosed")>]
+      RedoOnClosed     : System.Nullable<bool> }
 
 let private jsonOptions =
     let opts = JsonSerializerOptions()
@@ -133,7 +148,10 @@ let private ofDto (dto: OrcAIConfigDto) : OrcAIConfig =
       WritesPerMinute  = if dto.WritesPerMinute.HasValue  then Some dto.WritesPerMinute.Value  else None
       RateLimitRetries = if dto.RateLimitRetries.HasValue then Some dto.RateLimitRetries.Value else None
       Nudge            = dto.Nudge   |> Option.map ofNudgeDto
-      Notify           = dto.Notify  |> Option.map ofNotifyDto }
+      Notify           = dto.Notify  |> Option.map ofNotifyDto
+      CheckoutRoot     = dto.CheckoutRoot
+      WriteBack        = dto.WriteBack
+      RedoOnClosed     = if dto.RedoOnClosed.HasValue then Some dto.RedoOnClosed.Value else None }
 
 // ---------------------------------------------------------------------------
 // File I/O

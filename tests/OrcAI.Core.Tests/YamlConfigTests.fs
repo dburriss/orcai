@@ -365,25 +365,20 @@ let ``parse parses action type noop`` () =
 
 [<Fact>]
 let ``parse parses action type cmd with execute`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd\n  execute: \"echo hello\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(Cmd(Shell "echo hello", None), cfg.Action)
+
+[<Fact>]
+let ``parse parses action type cmd with execute containing path`` () =
     let yaml = actionBaseYaml + "action:\n  type: cmd\n  execute: \"./run.sh\"\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
-    | Ok cfg  -> Assert.Equal(Cmd(Script "./run.sh", [], None), cfg.Action)
+    | Ok cfg  -> Assert.Equal(Cmd(Shell "./run.sh", None), cfg.Action)
 
 [<Fact>]
-let ``parse parses action type cmd with run`` () =
-    let yaml = actionBaseYaml + "action:\n  type: cmd\n  run: \"echo hello\"\n"
-    match parse yaml "" "body" with
-    | Error e -> Assert.True(false, $"Expected Ok: {e}")
-    | Ok cfg  -> Assert.Equal(Cmd(Inline "echo hello", [], None), cfg.Action)
-
-[<Fact>]
-let ``parse returns error for cmd with both execute and run`` () =
-    let yaml = actionBaseYaml + "action:\n  type: cmd\n  execute: \"./s.sh\"\n  run: \"echo hi\"\n"
-    Assert.True(Result.isError (parse yaml "" "body"))
-
-[<Fact>]
-let ``parse returns error for cmd with neither execute nor run`` () =
+let ``parse returns error for cmd without execute`` () =
     let yaml = actionBaseYaml + "action:\n  type: cmd\n"
     Assert.True(Result.isError (parse yaml "" "body"))
 
@@ -396,6 +391,179 @@ let ``parse returns error for assign without to`` () =
 let ``parse returns error for unknown action type`` () =
     let yaml = actionBaseYaml + "action:\n  type: foobar\n"
     Assert.True(Result.isError (parse yaml "" "body"))
+
+// ---------------------------------------------------------------------------
+// cmd-checkout action type
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``parse parses action type cmd-checkout with execute`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-checkout\n  execute: \"echo hi\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(CmdCheckout(Shell "echo hi", None), cfg.Action)
+
+[<Fact>]
+let ``parse parses action type cmd-checkout with cwd`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-checkout\n  execute: \"echo hi\"\n  cwd: \"./sub\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(CmdCheckout(Shell "echo hi", Some "./sub"), cfg.Action)
+
+[<Fact>]
+let ``parse returns error for cmd-checkout without execute`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-checkout\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+// ---------------------------------------------------------------------------
+// cmd-to-pr action type
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``parse parses action type cmd-to-pr with defaults`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./upgrade.sh\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  ->
+        match cfg.Action with
+        | CmdToPr c ->
+            Assert.Equal(Shell "./upgrade.sh", c.Execute)
+            Assert.Equal<WriteBackMode option>(None, c.WriteBack)
+            Assert.False(c.ErrorIfNoDiff)
+            Assert.True(c.Branch.IsNone)
+            Assert.True(c.CommitMessage.IsNone)
+        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+
+[<Fact>]
+let ``parse parses action type cmd-to-pr with custom writeBack`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  writeBack: fork-and-pr\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  ->
+        match cfg.Action with
+        | CmdToPr c -> Assert.Equal<WriteBackMode option>(Some ForkAndPr, c.WriteBack)
+        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+
+[<Fact>]
+let ``parse parses action type cmd-to-pr with errorIfNoDiff`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  errorIfNoDiff: true\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  ->
+        match cfg.Action with
+        | CmdToPr c -> Assert.True(c.ErrorIfNoDiff)
+        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+
+[<Fact>]
+let ``parse parses action type cmd-to-pr with custom branch and commitMessage`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  branch: \"my-branch\"\n  commitMessage: \"my msg\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  ->
+        match cfg.Action with
+        | CmdToPr c ->
+            Assert.Equal(Some "my-branch", c.Branch)
+            Assert.Equal(Some "my msg", c.CommitMessage)
+        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+
+[<Fact>]
+let ``parse returns error for cmd-to-pr with unknown writeBack`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  writeBack: bad-mode\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+[<Fact>]
+let ``parse returns error for cmd-to-pr without execute`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+// ---------------------------------------------------------------------------
+// execute: exec list form
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``parse parses action type cmd with execute as list (exec form)`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd\n  execute: [\"./run.sh\", \"--flag\", \"val\"]\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(Cmd(Exec("./run.sh", ["--flag"; "val"]), None), cfg.Action)
+
+[<Fact>]
+let ``parse parses action type cmd-checkout with execute as list (exec form)`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-checkout\n  execute: [\"./build.sh\", \"arg1\"]\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal(CmdCheckout(Exec("./build.sh", ["arg1"]), None), cfg.Action)
+
+[<Fact>]
+let ``parse parses action type cmd-to-pr with execute as list (exec form)`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: [\"./upgrade.sh\", \"--dry-run\"]\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  ->
+        match cfg.Action with
+        | CmdToPr c -> Assert.Equal(Exec("./upgrade.sh", ["--dry-run"]), c.Execute)
+        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+
+// ---------------------------------------------------------------------------
+// redo_on_closed
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``parse returns None for redo_on_closed when absent`` () =
+    let yaml = actionBaseYaml
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal<bool option>(None, cfg.RedoOnClosed)
+
+[<Fact>]
+let ``parse parses redoOnClosed true`` () =
+    let yaml = actionBaseYaml.Replace("job:\n  title: \"T\"\n  org: \"o\"\n",
+                                      "job:\n  title: \"T\"\n  org: \"o\"\n  redoOnClosed: true\n")
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  -> Assert.Equal<bool option>(Some true, cfg.RedoOnClosed)
+
+// ---------------------------------------------------------------------------
+// skip_closed_issues deprecation
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``parse returns error for skip_closed_issues snake_case`` () =
+    let yaml = actionBaseYaml + "skip_closed_issues: true\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.Contains("redo_on_closed", e)
+    | Ok _    -> Assert.True(false, "Expected Error for skip_closed_issues")
+
+[<Fact>]
+let ``parse returns error for skipClosedIssues camelCase`` () =
+    let yaml = actionBaseYaml + "skipClosedIssues: true\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.Contains("redo_on_closed", e)
+    | Ok _    -> Assert.True(false, "Expected Error for skipClosedIssues")
+
+// ---------------------------------------------------------------------------
+// cmd-to-pr writeBack option semantics
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``parse cmd-to-pr with commit-to-origin writeBack`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  writeBack: commit-to-origin\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg ->
+        match cfg.Action with
+        | CmdToPr c -> Assert.Equal<WriteBackMode option>(Some CommitToOrigin, c.WriteBack)
+        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+
+[<Fact>]
+let ``parse cmd-to-pr with pr-to-origin writeBack`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  writeBack: pr-to-origin\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg ->
+        match cfg.Action with
+        | CmdToPr c -> Assert.Equal<WriteBackMode option>(Some PrToOrigin, c.WriteBack)
+        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
 
 // ---------------------------------------------------------------------------
 // hashBytes — pure

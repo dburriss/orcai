@@ -84,7 +84,8 @@ module A =
               DefaultLabels    = []
               IsPrimaryAuthApp = false
               OnClosedIssue    = None
-              DryRun           = false }
+              DryRun           = false
+              CheckoutRoot     = None }
 
         let withIsPrimaryAuthApp v (i: OrcAI.Core.RunCommand.RunInput)    = { i with IsPrimaryAuthApp = v }
         let withOnClosedIssue a (i: OrcAI.Core.RunCommand.RunInput)       = { i with OnClosedIssue = a }

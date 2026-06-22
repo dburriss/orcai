@@ -73,10 +73,31 @@ type NudgeConfig =
 type NotifyConfig =
     { Comment : string option }
 
-/// Source for a cmd action — either a script path or an inline command string.
-type CmdSource =
-    | Script of path: string
-    | Inline of command: string
+/// How to invoke the execute: field.
+/// Shell wraps the command in sh -c (Unix) or cmd /C (Windows).
+/// Exec passes cmd and args directly via ArgumentList — no shell.
+type CmdExec =
+    | Shell of command: string
+    | Exec  of cmd: string * args: string list
+
+/// Write-back strategy for cmd-to-pr.
+type WriteBackMode = PrToOrigin | CommitToOrigin | ForkAndPr
+
+/// Configuration for the cmd-to-pr type.
+type CmdToPrConfig =
+    { Execute       : CmdExec
+      Cwd           : string option
+      /// None = not specified in YAML; resolved against OrcAIConfig at runtime.
+      WriteBack     : WriteBackMode option
+      ErrorIfNoDiff : bool
+      /// None → default "orcai/{{job_title_slug}}"
+      Branch        : string option
+      /// None → default "[{{issue_number}}] {{job_title}}"
+      CommitMessage : string option
+      /// None → same default as CommitMessage
+      PrTitle       : string option
+      /// None → empty string
+      PrBody        : string option }
 
 /// The action to perform after an issue is created/found.
 type ActionConfig =
@@ -84,7 +105,9 @@ type ActionConfig =
     | Assign           of ``to``: string * comment: string option
     | Comment          of comment: string
     | CommentAndAssign of ``to``: string * comment: string
-    | Cmd              of source: CmdSource * args: string list * cwd: string option
+    | Cmd              of exec: CmdExec * cwd: string option
+    | CmdCheckout      of exec: CmdExec * cwd: string option
+    | CmdToPr          of config: CmdToPrConfig
     | Noop
 
 /// Top-level job configuration parsed from the YAML file.
@@ -103,7 +126,10 @@ type JobConfig =
       /// Max retry attempts per (repo, category) failure before the step is skipped.
       /// None → use the built-in default.
       MaxAttempts   : int option
-      DependsOn     : DependsOnConfig list }
+      DependsOn     : DependsOnConfig list
+      /// When true, re-run checkout-based actions even if the lock records a prior success.
+      /// None = not specified in YAML; resolved against OrcAIConfig at runtime.
+      RedoOnClosed  : bool option }
 
 /// Replace {key} placeholders in a template string.
 /// Tokens not present in vars are left unreplaced.
@@ -119,10 +145,11 @@ let renderActionTemplate (vars: Map<string, string>) (tmpl: string) =
 /// Used by nudge and notify to derive the assignee for templating.
 let extractAssignee (action: ActionConfig) : string option =
     match action with
-    | AssignCopilot _             -> Some "@copilot"
-    | Assign(``to``, _)           -> Some ``to``
-    | CommentAndAssign(``to``, _) -> Some ``to``
-    | Comment _ | Cmd _ | Noop   -> None
+    | AssignCopilot _                          -> Some "@copilot"
+    | Assign(``to``, _)                        -> Some ``to``
+    | CommentAndAssign(``to``, _)              -> Some ``to``
+    | Comment _ | Cmd _ | CmdCheckout _
+    | CmdToPr _ | Noop                         -> None
 
 /// Which step a recorded failure belongs to. Each (repo, category) is unique
 /// within the lock file's `Failures` list.
@@ -133,6 +160,11 @@ type RepoFailureCategory =
     | AssignIssue
     | AddToProject
     | UpdateBody
+    | CmdCheckoutFailed
+    | CmdToPrCheckoutFailed
+    | CmdToPrNoDiff
+    | CmdToPrPushFailed
+    | CmdToPrOpenPrFailed
 
 /// Classified reason for a failure, derived from the raw `gh` error message.
 /// Drives retry/skip decisions on subsequent runs.

@@ -20,8 +20,11 @@ Local values take precedence over global values. Any key can be omitted; CLI fla
 | `defaultOrg` | string | — | Default GitHub org used by `orcai generate` when `--org` is not supplied. |
 | `writesPerMinute` | int | `60` | Token-bucket capacity for GitHub write calls per minute. Reduce if you hit secondary rate limits. |
 | `rateLimitRetries` | int | `3` | Maximum number of automatic retries when a GitHub rate-limit error is encountered. |
+| `checkoutRoot` | string | temp dir | Root directory for repo checkouts used by `cmd-checkout` and `cmd-to-pr`. Defaults to an OS temp directory scoped to the run. |
+| `writeBack` | string | `"pr-to-origin"` | Global default write-back mode for `cmd-to-pr`. Overridden by `writeBack` in the job YAML. Values: `pr-to-origin`, `commit-to-origin`, `fork-and-pr`. |
+| `redoOnClosed` | bool | `false` | When `true`, checkout-based action types (`cmd-checkout`, `cmd-to-pr`) re-run even if the issue or linked PR is already closed. Default `false` treats a closed issue or existing PR as done. |
 
-> **Note**: `action:` is per-job only and cannot be set in the global or local JSON config. See the [YAML configuration reference](cli-reference.md#action-block) for available action types.
+> **Note**: `action:` is per-job only and cannot be set in the global or local JSON config. `writeBack` and `redoOnClosed` set global defaults that individual job YAML files can override. See the [YAML configuration reference](cli-reference.md#action-block) for available action types.
 
 ### `nudge` block
 

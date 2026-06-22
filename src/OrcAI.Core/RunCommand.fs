@@ -39,7 +39,9 @@ type RunInput =
       OnClosedIssue      : ClosedIssueAction option
       /// When true, perform no GitHub mutations and do not write the lock file.
       /// Read-only lookups still run so the preview reflects current state.
-      DryRun             : bool }
+      DryRun             : bool
+      /// Root directory for repo checkouts. None → temp dir scoped to the run.
+      CheckoutRoot       : string option }
 
 /// Whether an issue was freshly created or already existed in GitHub.
 type IssueOutcome =
@@ -79,6 +81,15 @@ type RunResult =
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+let private shellDispatch (cmd: string) : string * string list =
+    if OperatingSystem.IsWindows() then "cmd", ["/C"; cmd]
+    else "sh", ["-c"; cmd]
+
+let private resolveExec (render: string -> string) (exec: CmdExec) : string * string list =
+    match exec with
+    | Shell cmd       -> shellDispatch (render cmd)
+    | Exec(cmd, args) -> render cmd, args |> List.map render
 
 /// True if the issue already has the given assignee (case-insensitive, strips leading @).
 let private hasAssignee (assignee: string) (issue: IssueRef) =
@@ -163,7 +174,8 @@ type private ProcessParams =
       DryRun              : bool
       MaxAttempts         : int
       YamlHashChanged     : bool
-      TemplateHashChanged : bool }
+      TemplateHashChanged : bool
+      CheckoutRoot        : string }
 
 let private resolveProcessParams
     (deps                : OrcAIDeps)
@@ -172,8 +184,22 @@ let private resolveProcessParams
     (project             : ProjectInfo)
     (yamlHashChanged     : bool)
     (templateHashChanged : bool)
+    (checkoutRoot        : string)
     : ProcessParams =
-    let closedIssueAction = input.OnClosedIssue |> Option.defaultValue config.OnClosedIssue
+    let isCheckoutAction =
+        match config.Action with
+        | CmdCheckout _ | CmdToPr _ -> true
+        | _                         -> false
+    let effectiveRedoOnClosed =
+        match config.RedoOnClosed with
+        | Some v -> v
+        | None   -> deps.Config.RedoOnClosed |> Option.defaultValue false
+    let closedIssueAction =
+        match input.OnClosedIssue with
+        | Some a -> a
+        | None ->
+            if isCheckoutAction && not effectiveRedoOnClosed then Skip
+            else config.OnClosedIssue
     let jobOwner =
         config.JobOwner
         |> Option.orElseWith (fun () ->
@@ -193,7 +219,8 @@ let private resolveProcessParams
       DryRun              = input.DryRun
       MaxAttempts         = config.MaxAttempts |> Option.defaultValue defaultMaxAttempts
       YamlHashChanged     = yamlHashChanged
-      TemplateHashChanged = templateHashChanged }
+      TemplateHashChanged = templateHashChanged
+      CheckoutRoot        = checkoutRoot }
 
 /// Decide whether to attempt `cat` for this repo, given prior failures.
 /// Skips when attempts hit the cap, or when the cause is UserError and the
@@ -255,8 +282,9 @@ let private ensureLabelsExist
 /// Result of processing a single repo: the run outcome (if any) plus the per-step
 /// attempt results, which `runFull` feeds into `mergeFailures` to update the lock.
 type private RepoOutcome =
-    { Result    : RepoResult option
-      Attempted : (RepoFailureCategory * Result<unit, string>) list }
+    { Result      : RepoResult option
+      Attempted   : (RepoFailureCategory * Result<unit, string>) list
+      PullRequest : PullRequestRef option }
 
 /// Process a single repo: find/create issue, add to project, trigger assignee.
 /// `priorFailures` drives the per-step skip decisions (max-attempts cap, UserError
@@ -280,10 +308,12 @@ let private processRepo
         let action            = p.Action
         let jobOwner          = p.JobOwner
         let dryRun            = p.DryRun
+        let checkoutRoot      = p.CheckoutRoot
 
         let attempted = ResizeArray<RepoFailureCategory * Result<unit, string>>()
         let record cat result = attempted.Add(cat, result)
-        let outcome r = { Result = r; Attempted = List.ofSeq attempted }
+        let outcome r         = { Result = r; Attempted = List.ofSeq attempted; PullRequest = None }
+        let outcomeWithPr r pr = { Result = r; Attempted = List.ofSeq attempted; PullRequest = pr }
 
         // -1. Pre-check: skip repos that are archived (read-only). Uses prefetched state
         //     when available; falls back to an individual API call (e.g. recreateStaleIssues).
@@ -414,16 +444,16 @@ let private processRepo
         elif verbose then
             eprintfn "[%s] Skipping AddToProject (prior failure not retryable)" repoStr
 
-        // 4. Execute action
-        let! finalIssue =
+        // 4. Execute action. Returns (finalIssue, maybePr) — pr is Some only for cmd-to-pr.
+        let! finalIssue, maybePr =
             match action with
             | Noop ->
                 if verbose then eprintfn "[%s] Skipping action (noop)" repoStr
-                async { return issue }
+                async { return issue, None }
             | Comment commentTmpl ->
                 async {
                     do! Comments.postTemplatedComment client repo issue.Number "@" jobOwner commentTmpl verbose "trigger" Map.empty
-                    return issue
+                    return issue, None
                 }
             | AssignCopilot _ | Assign _ | CommentAndAssign _ ->
                 let assignTo, wantsComment, commentTmpl =
@@ -438,7 +468,7 @@ let private processRepo
                     if not (hasAssignee assignTo issue) then
                         if not (shouldAttempt p priorFailures AssignIssue) then
                             if verbose then eprintfn "[%s] Skipping AssignIssue (prior failure not retryable)" repoStr
-                            return issue
+                            return issue, None
                         else
                             let isCopilot = assignTo.TrimStart('@').Equals("copilot", StringComparison.OrdinalIgnoreCase)
                             let assignClient =
@@ -446,21 +476,21 @@ let private processRepo
                                 else client
                             if isCopilot && deps.CopilotClient.IsNone && isPrimaryAuthApp then
                                 eprintfn "[%s] Warning: assigning @copilot requires a PAT. Set ORCAI_PAT or add a 'pat' profile to auth.json." repoStr
-                                return issue
+                                return issue, None
                             else
                                 if verbose then eprintfn "[%s] Assigning %s" repoStr assignTo
                                 match! assignClient.AssignIssue repo issue.Number assignTo with
                                 | Error e ->
                                     record AssignIssue (Error e)
                                     eprintfn "[%s] Warning: failed to assign %s: %s" repoStr assignTo e
-                                    return issue
+                                    return issue, None
                                 | Ok () ->
                                     record AssignIssue (Ok ())
-                                    return { issue with Assignees = issue.Assignees @ [assignTo.TrimStart('@')] }
+                                    return { issue with Assignees = issue.Assignees @ [assignTo.TrimStart('@')] }, None
                     else
-                        return issue
+                        return issue, None
                 }
-            | Cmd(source, cmdArgs, cwd) ->
+            | Cmd(exec, cwd) ->
                 async {
                     let (IssueNumber issueNum) = issue.Number
                     let (OrgName orgStr) = config.Org
@@ -478,32 +508,254 @@ let private processRepo
                             "yaml_hash",      ""
                         ]
                     let render (s: string) = renderActionTemplate vars s
-                    let executable, allArgs =
-                        match source with
-                        | Script path ->
-                            render path, cmdArgs |> List.map render
-                        | Inline cmd ->
-                            let rendered = render cmd
-                            let idx = rendered.IndexOf(' ')
-                            if idx < 0 then rendered, []
-                            else rendered.[..idx-1], [rendered.[idx+1..]]
+                    let executable, allArgs = resolveExec render exec
                     let workingDir = cwd |> Option.map render |> Option.defaultValue "."
                     if verbose then
                         eprintfn "[%s] Executing: %s %s" repoStr executable (String.concat " " allArgs)
-                    let psi = Diagnostics.ProcessStartInfo(executable, allArgs |> String.concat " ")
+                    let psi = Diagnostics.ProcessStartInfo(executable)
                     psi.WorkingDirectory       <- workingDir
                     psi.RedirectStandardOutput <- true
                     psi.RedirectStandardError  <- true
                     psi.UseShellExecute        <- false
+                    for arg in allArgs do psi.ArgumentList.Add(arg)
                     use proc = Diagnostics.Process.Start(psi)
-                    let! _ = proc.WaitForExitAsync() |> Async.AwaitTask
+                    let stderrTask = proc.StandardError.ReadToEndAsync()
+                    do! proc.WaitForExitAsync() |> Async.AwaitTask
                     if proc.ExitCode <> 0 then
-                        let err = proc.StandardError.ReadToEnd()
+                        let! err = stderrTask |> Async.AwaitTask
                         eprintfn "[%s] Warning: cmd exited with code %d: %s" repoStr proc.ExitCode err
-                    return issue
+                    return issue, None
+                }
+            | CmdCheckout(exec, cwd) ->
+                async {
+                    let (IssueNumber issueNum) = issue.Number
+                    let (OrgName orgStr) = config.Org
+                    let branchSlug = CheckoutManager.slugify config.ProjectTitle
+                    if verbose then eprintfn "[%s] Cloning repo for cmd-checkout" repoStr
+                    let! cloneResult = CheckoutManager.ensureClone checkoutRoot repo
+                    match cloneResult with
+                    | Error e ->
+                        record CmdCheckoutFailed (Error e)
+                        eprintfn "[%s] Warning: checkout failed: %s" repoStr e
+                        return issue, None
+                    | Ok _ ->
+                        let! wtResult = CheckoutManager.getWorktree checkoutRoot repo branchSlug
+                        match wtResult with
+                        | Error e ->
+                            record CmdCheckoutFailed (Error e)
+                            eprintfn "[%s] Warning: worktree failed: %s" repoStr e
+                            return issue, None
+                        | Ok worktreePath ->
+                            let! defaultBranchResult = CheckoutManager.getDefaultBranch checkoutRoot repo
+                            let defaultBranch = defaultBranchResult |> Result.defaultValue ""
+                            let vars =
+                                Map.ofList [
+                                    "repo",           repoStr
+                                    "org",            orgStr
+                                    "issue_number",   string issueNum
+                                    "issue_url",      issue.Url
+                                    "job_title",      config.ProjectTitle
+                                    "issue_text",     config.IssueBody
+                                    "project_number", string project.Number
+                                    "run_datetime",   DateTimeOffset.UtcNow.ToString("o")
+                                    "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBody))
+                                    "yaml_hash",      ""
+                                    "checkout_path",  worktreePath
+                                    "job_title_slug", branchSlug
+                                    "default_branch", defaultBranch
+                                ]
+                            let render (s: string) = renderActionTemplate vars s
+                            let executable, allArgs = resolveExec render exec
+                            // cwd is relative to the checkout root, not the process CWD.
+                            let workingDir = cwd |> Option.map (fun c -> Path.Combine(worktreePath, render c)) |> Option.defaultValue worktreePath
+                            if verbose then
+                                eprintfn "[%s] Executing in checkout: %s %s" repoStr executable (String.concat " " allArgs)
+                            let psi = Diagnostics.ProcessStartInfo(executable)
+                            psi.WorkingDirectory       <- workingDir
+                            psi.RedirectStandardOutput <- true
+                            psi.RedirectStandardError  <- true
+                            psi.UseShellExecute        <- false
+                            for arg in allArgs do psi.ArgumentList.Add(arg)
+                            use proc = Diagnostics.Process.Start(psi)
+                            let stderrTask = proc.StandardError.ReadToEndAsync()
+                            do! proc.WaitForExitAsync() |> Async.AwaitTask
+                            if proc.ExitCode <> 0 then
+                                let! err = stderrTask |> Async.AwaitTask
+                                record CmdCheckoutFailed (Error $"cmd exited {proc.ExitCode}: {err.Trim()}")
+                                eprintfn "[%s] Warning: cmd-checkout exited with code %d: %s" repoStr proc.ExitCode err
+                            CheckoutManager.cleanup checkoutRoot repo branchSlug
+                            return issue, None
+                }
+            | CmdToPr(cfg) ->
+                async {
+                    let (IssueNumber issueNum) = issue.Number
+                    let (OrgName orgStr) = config.Org
+                    let branchSlug = CheckoutManager.slugify config.ProjectTitle
+                    let branch     = cfg.Branch        |> Option.defaultValue $"orcai/{branchSlug}"
+                    let commitMsg  = cfg.CommitMessage |> Option.defaultValue $"[{issueNum}] {config.ProjectTitle}"
+                    let prTitle    = cfg.PrTitle       |> Option.defaultWith (fun () -> cfg.CommitMessage |> Option.defaultValue $"[{issueNum}] {config.ProjectTitle}")
+                    let prBody     = cfg.PrBody        |> Option.defaultValue ""
+                    // Resolve write-back: job-level YAML → OrcAI config → default pr-to-origin.
+                    let effectiveWriteBack =
+                        match cfg.WriteBack with
+                        | Some wb -> wb
+                        | None ->
+                            match deps.Config.WriteBack with
+                            | Some "commit-to-origin" -> CommitToOrigin
+                            | Some "fork-and-pr"      -> ForkAndPr
+                            | _                       -> PrToOrigin
+                    if verbose then eprintfn "[%s] Cloning repo for cmd-to-pr" repoStr
+                    let! cloneResult = CheckoutManager.ensureClone checkoutRoot repo
+                    match cloneResult with
+                    | Error e ->
+                        record CmdToPrCheckoutFailed (Error e)
+                        eprintfn "[%s] Warning: checkout failed: %s" repoStr e
+                        return issue, None
+                    | Ok _ ->
+                        let! wtResult = CheckoutManager.getWorktree checkoutRoot repo branchSlug
+                        match wtResult with
+                        | Error e ->
+                            record CmdToPrCheckoutFailed (Error e)
+                            eprintfn "[%s] Warning: worktree failed: %s" repoStr e
+                            return issue, None
+                        | Ok worktreePath ->
+                            let! defaultBranchResult = CheckoutManager.getDefaultBranch checkoutRoot repo
+                            let defaultBranch = defaultBranchResult |> Result.defaultValue ""
+                            let vars =
+                                Map.ofList [
+                                    "repo",           repoStr
+                                    "org",            orgStr
+                                    "issue_number",   string issueNum
+                                    "issue_url",      issue.Url
+                                    "job_title",      config.ProjectTitle
+                                    "issue_text",     config.IssueBody
+                                    "project_number", string project.Number
+                                    "run_datetime",   DateTimeOffset.UtcNow.ToString("o")
+                                    "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBody))
+                                    "yaml_hash",      ""
+                                    "checkout_path",  worktreePath
+                                    "job_title_slug", branchSlug
+                                    "default_branch", defaultBranch
+                                ]
+                            let render (s: string) = renderActionTemplate vars s
+                            let executable, allArgs = resolveExec render cfg.Execute
+                            // cwd is relative to the checkout root, not the process CWD.
+                            let workingDir = cfg.Cwd |> Option.map (fun c -> Path.Combine(worktreePath, render c)) |> Option.defaultValue worktreePath
+                            if verbose then
+                                eprintfn "[%s] Executing in checkout: %s %s" repoStr executable (String.concat " " allArgs)
+                            let psi = Diagnostics.ProcessStartInfo(executable)
+                            psi.WorkingDirectory       <- workingDir
+                            psi.RedirectStandardOutput <- true
+                            psi.RedirectStandardError  <- true
+                            psi.UseShellExecute        <- false
+                            for arg in allArgs do psi.ArgumentList.Add(arg)
+                            use proc = Diagnostics.Process.Start(psi)
+                            let stderrTask = proc.StandardError.ReadToEndAsync()
+                            do! proc.WaitForExitAsync() |> Async.AwaitTask
+                            if proc.ExitCode <> 0 then
+                                let! err = stderrTask |> Async.AwaitTask
+                                record CmdToPrCheckoutFailed (Error $"cmd exited {proc.ExitCode}: {err.Trim()}")
+                                eprintfn "[%s] Warning: cmd-to-pr cmd exited with code %d: %s" repoStr proc.ExitCode err
+                                CheckoutManager.cleanup checkoutRoot repo branchSlug
+                                return issue, None
+                            else
+                                let renderedMsg    = render commitMsg
+                                let! commitResult  = CheckoutManager.commitAll worktreePath renderedMsg
+                                match commitResult with
+                                | Error "no-diff" when not cfg.ErrorIfNoDiff ->
+                                    if verbose then eprintfn "[%s] cmd-to-pr: no changes, skipping PR" repoStr
+                                    CheckoutManager.cleanup checkoutRoot repo branchSlug
+                                    return issue, None
+                                | Error "no-diff" ->
+                                    record CmdToPrNoDiff (Error "cmd produced no diff (error_if_no_diff is set)")
+                                    eprintfn "[%s] Warning: cmd-to-pr: no diff after cmd succeeded" repoStr
+                                    CheckoutManager.cleanup checkoutRoot repo branchSlug
+                                    return issue, None
+                                | Error e ->
+                                    record CmdToPrCheckoutFailed (Error e)
+                                    eprintfn "[%s] Warning: cmd-to-pr commit failed: %s" repoStr e
+                                    CheckoutManager.cleanup checkoutRoot repo branchSlug
+                                    return issue, None
+                                | Ok () ->
+                                    let renderedBranch  = render branch
+                                    let renderedPrTitle = render prTitle
+                                    let renderedPrBody  = render prBody
+                                    let (RepoName repoStr') = repo
+                                    let openPr (head: string) =
+                                        async {
+                                            let psi2 = Diagnostics.ProcessStartInfo("gh")
+                                            psi2.WorkingDirectory       <- worktreePath
+                                            psi2.RedirectStandardOutput <- true
+                                            psi2.RedirectStandardError  <- true
+                                            psi2.UseShellExecute        <- false
+                                            psi2.ArgumentList.Add("pr")
+                                            psi2.ArgumentList.Add("create")
+                                            psi2.ArgumentList.Add("--repo")
+                                            psi2.ArgumentList.Add(repoStr')
+                                            psi2.ArgumentList.Add("--head")
+                                            psi2.ArgumentList.Add(head)
+                                            psi2.ArgumentList.Add("--title")
+                                            psi2.ArgumentList.Add(renderedPrTitle)
+                                            psi2.ArgumentList.Add("--body")
+                                            psi2.ArgumentList.Add(renderedPrBody)
+                                            use proc2 = Diagnostics.Process.Start(psi2)
+                                            let stdoutTask2 = proc2.StandardOutput.ReadToEndAsync()
+                                            let stderrTask2 = proc2.StandardError.ReadToEndAsync()
+                                            do! proc2.WaitForExitAsync() |> Async.AwaitTask
+                                            let! prUrl = stdoutTask2 |> Async.AwaitTask
+                                            let! err2  = stderrTask2  |> Async.AwaitTask
+                                            if proc2.ExitCode <> 0 then
+                                                if err2.Contains("already exists") then
+                                                    if verbose then eprintfn "[%s] PR already exists for branch %s" repoStr renderedBranch
+                                                else
+                                                    record CmdToPrOpenPrFailed (Error (err2.Trim()))
+                                                    eprintfn "[%s] Warning: pr create failed: %s" repoStr err2
+                                                return None
+                                            else
+                                                if verbose then eprintfn "[%s] PR opened: %s" repoStr (prUrl.Trim())
+                                                return Some { Repo = repo; Number = PrNumber 0; Url = prUrl.Trim(); ClosesIssue = issue.Number; State = "OPEN" }
+                                        }
+                                    let! prResult =
+                                        match effectiveWriteBack with
+                                        | CommitToOrigin ->
+                                            async {
+                                                let! pushResult = CheckoutManager.pushToOrigin "" worktreePath renderedBranch
+                                                match pushResult with
+                                                | Error e ->
+                                                    record CmdToPrPushFailed (Error e)
+                                                    eprintfn "[%s] Warning: push failed: %s" repoStr e
+                                                    return None
+                                                | Ok () ->
+                                                    if verbose then eprintfn "[%s] Committed and pushed to %s" repoStr renderedBranch
+                                                    return None
+                                            }
+                                        | PrToOrigin ->
+                                            async {
+                                                let! pushResult = CheckoutManager.pushToOrigin "" worktreePath renderedBranch
+                                                match pushResult with
+                                                | Error e ->
+                                                    record CmdToPrPushFailed (Error e)
+                                                    eprintfn "[%s] Warning: push failed: %s" repoStr e
+                                                    return None
+                                                | Ok () ->
+                                                    return! openPr renderedBranch
+                                            }
+                                        | ForkAndPr ->
+                                            async {
+                                                let! forkResult = CheckoutManager.forkAndPush repo worktreePath renderedBranch
+                                                match forkResult with
+                                                | Error e ->
+                                                    record CmdToPrPushFailed (Error e)
+                                                    eprintfn "[%s] Warning: fork/push failed: %s" repoStr e
+                                                    return None
+                                                | Ok forkRepo ->
+                                                    return! openPr $"{forkRepo}:{renderedBranch}"
+                                            }
+                                    CheckoutManager.cleanup checkoutRoot repo branchSlug
+                                    return issue, prResult
                 }
 
-        return outcome (Some { Issue = finalIssue; Outcome = issueOutcome })
+        return outcomeWithPr (Some { Issue = finalIssue; Outcome = issueOutcome }) maybePr
     }
 
 // ---------------------------------------------------------------------------
@@ -559,7 +811,11 @@ let private runFull
     | Ok project ->
 
     // 2. Process all repos in parallel
-    let processParams = resolveProcessParams deps input config project yamlHashChanged templateHashChanged
+    let checkoutRoot =
+        input.CheckoutRoot
+        |> Option.defaultWith (fun () ->
+            Path.Combine(Path.GetTempPath(), $"orcai-{Guid.NewGuid():N}"))
+    let processParams = resolveProcessParams deps input config project yamlHashChanged templateHashChanged checkoutRoot
 
     let priorFailuresByRepo =
         priorLock
@@ -583,7 +839,7 @@ let private runFull
                 // Transient errors (where isRepoNotFoundError is false) fall through to individual calls.
                 let (RepoName r) = repo
                 if input.Verbose then eprintfn "[%s] Repository not found or inaccessible — skipping." r
-                async { return { Result = None; Attempted = [FindIssue, Error e] } }
+                async { return { Result = None; Attempted = [FindIssue, Error e]; PullRequest = None } }
             | fetchedResult ->
                 let prefetchedState = fetchedResult |> Option.bind Result.toOption
                 processRepo deps processParams priorFailures prefetchedState repo)
@@ -609,6 +865,13 @@ let private runFull
 
     let newFailures = LockFile.mergeFailures previousFailures attempted now
 
+    let newPullRequests = repoOutcomes |> Array.choose (fun o -> o.PullRequest) |> Array.toList
+    let priorPullRequests = priorLock |> Option.map (fun l -> l.PullRequests) |> Option.defaultValue []
+    let mergedPullRequests =
+        let newByRepo = newPullRequests |> List.map (fun pr -> pr.Repo) |> Set.ofList
+        let kept      = priorPullRequests |> List.filter (fun pr -> not (Set.contains pr.Repo newByRepo))
+        kept @ newPullRequests
+
     let lock : LockFile =
         { LockedAt     = now
           YamlHash     = yamlHash
@@ -616,12 +879,22 @@ let private runFull
           Project      = project
           Repos        = config.Repos
           Issues       = successes |> List.map (fun r -> r.Issue)
-          PullRequests = []
+          PullRequests = mergedPullRequests
           SkippedRepos = archivedRepos
           Failures     = newFailures }
 
     if not input.DryRun then
         LockFile.write deps.FileSystem input.YamlPath lock
+
+    // Clean up base clones for checkout-based actions (individual worktrees are
+    // already removed inside processRepo; this removes the bare clone dirs).
+    let isCheckoutAction =
+        match config.Action with
+        | CmdCheckout _ | CmdToPr _ -> true
+        | _                         -> false
+    if isCheckoutAction then
+        for repo in config.Repos do
+            CheckoutManager.cleanupAll checkoutRoot repo
 
     Ok { Lock = lock; Results = allResults; Source = FullRun; BlockedBy = None }
 
@@ -749,8 +1022,11 @@ let private refreshBodies
             if not hasStale then
                 refreshed, Map.empty
             else
+                let checkoutRootForRefresh =
+                    input.CheckoutRoot
+                    |> Option.defaultWith (fun () -> Path.Combine(Path.GetTempPath(), $"orcai-{Guid.NewGuid():N}"))
                 let processParams =
-                    resolveProcessParams deps input config fullResult.Lock.Project yamlHashChanged templateHashChanged
+                    resolveProcessParams deps input config fullResult.Lock.Project yamlHashChanged templateHashChanged checkoutRootForRefresh
                 recreateStaleIssues deps processParams refreshed
         let refreshedByRepo =
             recoveredRefreshed |> List.map (fun r -> r.Issue.Repo, r) |> Map.ofList

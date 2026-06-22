@@ -12,6 +12,7 @@
     <Compile Include="FakeGhClient.fs" />
     <Compile Include="LockFileTests.fs" />
     <Compile Include="YamlConfigTests.fs" />
+    <Compile Include="CheckoutManagerTests.fs" />
     <Compile Include="DependencyResolutionTests.fs" />
     <Compile Include="FileGlobTests.fs" />
     <Compile Include="OrcAIConfigTests.fs" />

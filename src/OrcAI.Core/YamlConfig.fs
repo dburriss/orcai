@@ -31,7 +31,8 @@ type YamlJob =
     { title:         string
       org:           string
       owner:         string
-      onClosedIssue: string }
+      onClosedIssue: string
+      redoOnClosed:  System.Nullable<bool> }
 
 [<CLIMutable>]
 type YamlIssue =
@@ -40,13 +41,17 @@ type YamlIssue =
 
 [<CLIMutable>]
 type YamlAction =
-    { ``type``  : string
-      comment   : string
-      ``to``    : string
-      execute   : string
-      run       : string
-      args      : System.Collections.Generic.List<string>
-      cwd       : string }
+    { ``type``        : string
+      comment         : string
+      ``to``          : string
+      execute         : obj
+      cwd             : string
+      writeBack       : string
+      errorIfNoDiff   : System.Nullable<bool>
+      branch          : string
+      commitMessage   : string
+      prTitle         : string
+      prBody          : string }
 
 [<CLIMutable>]
 type YamlNudge =
@@ -85,6 +90,22 @@ let private deserializer =
         .IgnoreUnmatchedProperties()
         .Build()
 
+let private parseCmdExec (execute: obj) (typeName: string) : CmdExec =
+    match execute with
+    | null ->
+        failwith $"action type '{typeName}' requires 'execute: <command>'."
+    | :? string as s when not (String.IsNullOrWhiteSpace s) ->
+        Shell s
+    | :? string ->
+        failwith $"action type '{typeName}': 'execute' must not be blank."
+    | :? System.Collections.Generic.List<obj> as lst when lst.Count > 0 ->
+        let items = lst |> Seq.map string |> List.ofSeq
+        Exec(List.head items, List.tail items)
+    | :? System.Collections.Generic.List<obj> ->
+        failwith $"action type '{typeName}': exec list form requires at least one element (the command)."
+    | _ ->
+        failwith $"action type '{typeName}': 'execute' must be a string (shell form) or a list e.g. [cmd, arg1, arg2] (exec form)."
+
 /// Pure: parse YAML text and a pre-loaded template body into a JobConfig.
 /// `org` is taken from the parsed YAML; repos are prefixed with it.
 let parse (yamlText: string) (templatePath: string) (templateContent: string) : Result<JobConfig, string> =
@@ -97,6 +118,8 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
             Error "YAML is missing required 'job' section."
         elif yamlText.Contains("skipCopilot:") then
             Error "'job.skipCopilot' has been removed. Use 'action: { type: noop }' to skip assignment, or omit 'action:' to assign @copilot."
+        elif yamlText.Contains("skip_closed_issues:") || yamlText.Contains("skipClosedIssues:") then
+            Error "'skip_closed_issues' has been removed. Use 'job.redo_on_closed: true' to re-run the action when the issue or PR is closed."
         elif not (isNull (box (root :> obj))) && yamlText.Contains("\nassign:") || yamlText.StartsWith("assign:") then
             Error "The 'assign:' field has been replaced by 'action:'. Migrate to: action: { type: assign-copilot, ... }"
         elif String.IsNullOrWhiteSpace(root.job.title) then
@@ -125,9 +148,6 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                 if isNull (box root.action) then
                     AssignCopilot None
                 else
-                    let actionArgs =
-                        if isNull (box root.action.args) then []
-                        else root.action.args |> Seq.toList
                     match root.action.``type`` with
                     | null | "" | "assign-copilot" ->
                         AssignCopilot (nullStr root.action.comment)
@@ -144,18 +164,33 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                         | None, _       -> failwith "action type 'comment-and-assign' requires a 'to' field."
                         | _, None       -> failwith "action type 'comment-and-assign' requires a 'comment' field."
                         | Some t, Some c -> CommentAndAssign(t, c)
-                    | "cmd" ->
-                        let hasExecute = not (String.IsNullOrWhiteSpace(root.action.execute))
-                        let hasRun     = not (String.IsNullOrWhiteSpace(root.action.run))
-                        if hasExecute && hasRun then
-                            failwith "action type 'cmd': 'execute' and 'run' are mutually exclusive — provide only one."
-                        elif not hasExecute && not hasRun then
-                            failwith "action type 'cmd' requires either 'execute' (script path) or 'run' (inline command)."
-                        else
-                            let source = if hasExecute then Script root.action.execute else Inline root.action.run
-                            Cmd(source, actionArgs, nullStr root.action.cwd)
+                    | "cmd" | "cmd-checkout" | "cmd-to-pr" ->
+                        let typeName = root.action.``type``
+                        let cmdExec  = parseCmdExec root.action.execute typeName
+                        match typeName with
+                        | "cmd" ->
+                            Cmd(cmdExec, nullStr root.action.cwd)
+                        | "cmd-checkout" ->
+                            CmdCheckout(cmdExec, nullStr root.action.cwd)
+                        | _ ->
+                            let writeBack =
+                                match root.action.writeBack with
+                                | null | ""            -> None
+                                | "pr-to-origin"       -> Some PrToOrigin
+                                | "commit-to-origin"   -> Some CommitToOrigin
+                                | "fork-and-pr"        -> Some ForkAndPr
+                                | other -> failwith $"Unknown writeBack value: '{other}'. Valid: pr-to-origin, commit-to-origin, fork-and-pr."
+                            CmdToPr
+                                { Execute       = cmdExec
+                                  Cwd           = nullStr root.action.cwd
+                                  WriteBack     = writeBack
+                                  ErrorIfNoDiff = root.action.errorIfNoDiff |> Option.ofNullable |> Option.defaultValue false
+                                  Branch        = nullStr root.action.branch
+                                  CommitMessage = nullStr root.action.commitMessage
+                                  PrTitle       = nullStr root.action.prTitle
+                                  PrBody        = nullStr root.action.prBody }
                     | "noop" -> Noop
-                    | other  -> failwith $"Unknown action type: '{other}'. Valid: assign-copilot, assign, comment, comment-and-assign, cmd, noop."
+                    | other  -> failwith $"Unknown action type: '{other}'. Valid: assign-copilot, assign, comment, comment-and-assign, cmd, cmd-checkout, cmd-to-pr, noop."
             let nudgeConfig =
                 if isNull (box root.nudge) then None
                 else Some { Mode    = nullStr root.nudge.mode
@@ -189,6 +224,8 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
             let dependsOnList =
                 if isNull (box root.dependsOn) then []
                 else root.dependsOn |> Seq.map parseDependsOnEntry |> List.ofSeq
+            let redoOnClosed =
+                if root.job.redoOnClosed.HasValue then Some root.job.redoOnClosed.Value else None
             Ok { Org           = OrgName root.job.org
                  ProjectTitle  = root.job.title
                  Repos         = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
@@ -201,7 +238,8 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                  Notify        = notifyConfig
                  JobOwner      = nullStr root.job.owner
                  MaxAttempts   = maxAttempts
-                 DependsOn     = dependsOnList }
+                 DependsOn     = dependsOnList
+                 RedoOnClosed  = redoOnClosed }
     with ex ->
         Error $"Failed to parse YAML: {ex.Message}"
 
