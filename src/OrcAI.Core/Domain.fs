@@ -126,10 +126,7 @@ type JobConfig =
       /// Max retry attempts per (repo, category) failure before the step is skipped.
       /// None → use the built-in default.
       MaxAttempts   : int option
-      DependsOn     : DependsOnConfig list
-      /// When true, re-run checkout-based actions even if the lock records a prior success.
-      /// None = not specified in YAML; resolved against OrcAIConfig at runtime.
-      RedoOnClosed  : bool option }
+      DependsOn     : DependsOnConfig list }
 
 /// Replace {key} placeholders in a template string.
 /// Tokens not present in vars are left unreplaced.

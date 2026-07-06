@@ -204,7 +204,7 @@ orcai run <yaml_file_or_glob> [--verbose] [--auto-create-labels]
 | `--max-concurrency` | int | No | `4` | Maximum number of config files processed concurrently. High values may hit GitHub rate limits. |
 | `--no-parallel` | flag | No | false | Disable all parallelism — files and repo checks run sequentially. Overrides `--max-concurrency`. |
 | `--continue-on-error` | flag | No | false | Continue processing remaining files when one fails instead of stopping. |
-| `--on-closed-issue` | string | No | `create` | What to do when a closed issue with the exact same title already exists in a repo: `create` (open a new issue anyway), `reopen` (reopen the closed one), `skip` (do nothing), or `fail` (error out). Overrides the YAML `job.onClosedIssue` value. |
+| `--on-closed-issue` | string | No | `skip` | What to do when a closed issue with the exact same title already exists in a repo: `skip` (do nothing — default), `create` (open a new issue anyway), `reopen` (reopen the closed one), or `fail` (error out). Overrides the YAML `job.onClosedIssue` value. |
 | `--dryrun` | flag | No | false | Preview what would be created/updated/reopened. Performs no GitHub mutations and does not write the lock file. Read-only lookups still run so the preview reflects current state. |
 | `--json` | flag | No | false | Emit machine-readable JSON output to stdout instead of the human summary. |
 
@@ -213,7 +213,7 @@ orcai run <yaml_file_or_glob> [--verbose] [--auto-create-labels]
 For each repository listed in every config file (processed concurrently by default):
 
 1. Finds or creates the GitHub Project (idempotent).
-2. Finds or creates an issue using `job.title` and the issue template. Open issues are matched by exact title. If no open match is found, closed issues are checked next — what happens then is controlled by `--on-closed-issue` / `job.onClosedIssue` (defaults to `create`, which opens a new issue even when a closed duplicate exists).
+2. Finds or creates an issue using `job.title` and the issue template. Open issues are matched by exact title. If no open match is found, closed issues are checked next — what happens then is controlled by `--on-closed-issue` / `job.onClosedIssue` (defaults to `skip`, which treats a closed duplicate as already done).
 3. Adds the issue to the project.
 4. Executes the `action` defined in the YAML config. Defaults to assigning `@copilot` when no `action:` block is present. See [YAML configuration](#yaml-configuration).
 
@@ -596,7 +596,7 @@ job:
   title: "My Project Title"
   org:   "my-github-org"
   # owner: "@platform-team"  # optional: used as {job.owner} in comment templates
-  # onClosedIssue: reopen    # create (default) | reopen | skip | fail
+  # onClosedIssue: create    # skip (default) | create | reopen | fail
 
 repos:
   - "repo-one"
@@ -625,7 +625,7 @@ issue:
 
 `job.title` and `job.org` are required. `repos` must be a non-empty list. `issue.template` must point to a real Markdown file relative to the YAML. Missing labels will cause an error during `run` unless `--auto-create-labels` is supplied. `job.owner` is optional — it sets the `{job.owner}` token in comment templates; if omitted, OrcAI falls back to the catch-all owner in the local CODEOWNERS file.
 
-`job.onClosedIssue` controls what `orcai run` does when an issue with the same title already exists in the repo but is closed (matching is exact and case-sensitive). Valid values: `create` (default — open a new issue alongside the closed one), `reopen` (reopen the closed issue), `skip` (leave the repo untouched and report `skipped`), `fail` (treat the closed match as a hard error). The `--on-closed-issue` CLI flag overrides this field when supplied.
+`job.onClosedIssue` controls what `orcai run` does when an issue with the same title already exists in the repo but is closed (matching is exact and case-sensitive). Valid values: `skip` (default — leave the repo untouched and report `skipped`), `create` (open a new issue alongside the closed one), `reopen` (reopen the closed issue), `fail` (treat the closed match as a hard error). The `--on-closed-issue` CLI flag overrides this field when supplied.
 
 ### `action:` block
 
@@ -765,9 +765,8 @@ Each file can contain these optional fields:
 | `nudge.comment` | Default nudge comment body. Supports `{assignee}`, `{job.owner}`, `{repo.codeowners}` tokens. |
 | `checkoutRoot` | Root directory for repo clones used by `cmd-checkout` and `cmd-to-pr`. Defaults to an OS temp directory scoped to the run. |
 | `writeBack` | Global default write-back mode for `cmd-to-pr`. Values: `pr-to-origin` (default), `commit-to-origin`, `fork-and-pr`. Overridden by `writeBack` in the job YAML. |
-| `redoOnClosed` | When `true`, checkout action types (`cmd-checkout`, `cmd-to-pr`) re-run even if the issue or linked PR is already closed. Default `false` treats a closed issue or existing PR as done. |
 
-Note: `action:` is per-job only and cannot be set in the global/local JSON config. `writeBack` and `redoOnClosed` set global defaults that individual job YAML files can override. `nudge` defaults are still configurable globally.
+Note: `action:` is per-job only and cannot be set in the global/local JSON config. `writeBack` sets a global default that individual job YAML files can override. `nudge` defaults are still configurable globally.
 
 Values from the local config override the global config when present. The `nudge` block merges at field-level. The per-job YAML always wins over both config files.
 

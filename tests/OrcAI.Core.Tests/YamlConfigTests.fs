@@ -505,23 +505,15 @@ let ``parse parses action type cmd-to-pr with execute as list (exec form)`` () =
         | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
 
 // ---------------------------------------------------------------------------
-// redo_on_closed
+// onClosedIssue default
 // ---------------------------------------------------------------------------
 
 [<Fact>]
-let ``parse returns None for redo_on_closed when absent`` () =
+let ``parse defaults onClosedIssue to Skip`` () =
     let yaml = actionBaseYaml
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
-    | Ok cfg  -> Assert.Equal<bool option>(None, cfg.RedoOnClosed)
-
-[<Fact>]
-let ``parse parses redoOnClosed true`` () =
-    let yaml = actionBaseYaml.Replace("job:\n  title: \"T\"\n  org: \"o\"\n",
-                                      "job:\n  title: \"T\"\n  org: \"o\"\n  redoOnClosed: true\n")
-    match parse yaml "" "body" with
-    | Error e -> Assert.True(false, $"Expected Ok: {e}")
-    | Ok cfg  -> Assert.Equal<bool option>(Some true, cfg.RedoOnClosed)
+    | Ok cfg  -> Assert.Equal(Skip, cfg.OnClosedIssue)
 
 // ---------------------------------------------------------------------------
 // skip_closed_issues deprecation
@@ -531,14 +523,14 @@ let ``parse parses redoOnClosed true`` () =
 let ``parse returns error for skip_closed_issues snake_case`` () =
     let yaml = actionBaseYaml + "skip_closed_issues: true\n"
     match parse yaml "" "body" with
-    | Error e -> Assert.Contains("redo_on_closed", e)
+    | Error e -> Assert.Contains("onClosedIssue: create", e)
     | Ok _    -> Assert.True(false, "Expected Error for skip_closed_issues")
 
 [<Fact>]
 let ``parse returns error for skipClosedIssues camelCase`` () =
     let yaml = actionBaseYaml + "skipClosedIssues: true\n"
     match parse yaml "" "body" with
-    | Error e -> Assert.Contains("redo_on_closed", e)
+    | Error e -> Assert.Contains("onClosedIssue: create", e)
     | Ok _    -> Assert.True(false, "Expected Error for skipClosedIssues")
 
 // ---------------------------------------------------------------------------

@@ -17,12 +17,12 @@
 - New global config fields (`~/.config/orcai/config.json` / `.orcai/config.json`):
   - `checkoutRoot` — override the directory where repos are cloned for `cmd-checkout` and `cmd-to-pr`. Defaults to an OS temp directory scoped to the run.
   - `writeBack` — global default write-back mode for `cmd-to-pr` (`pr-to-origin` | `commit-to-origin` | `fork-and-pr`). Overridden by `writeBack` in the job YAML.
-  - `redoOnClosed` — when `true`, checkout-based actions re-run even if the issue or linked PR is already closed. Default `false` treats a closed issue/PR as done.
 
 - **GitHub App permission**: The **Contents** permission on the GitHub App must now be set to **Read & write** (instead of Read) to support push-based action types (`cmd-to-pr` with `pr-to-origin` or `commit-to-origin`). OrcAI configures git credentials automatically using the same token — no separate credential setup is required.
 
 ### Changed
 
+- **BREAKING**: `onClosedIssue` default changed from `create` to `skip`. Previously, when a closed issue with a matching title was found, OrcAI would open a new issue alongside it. Now it treats the closed issue as already done and skips the repo. To restore the old behaviour, add `onClosedIssue: create` to the `job:` block in your YAML. The `redoOnClosed` YAML field and config option (added as a workaround for the wrong default on checkout actions) have been removed; use `onClosedIssue: create` instead.
 - **BREAKING**: `assign:` YAML block removed. Validation fails with a migration message when `assign:` is present. Migrate to `action: { type: assign-copilot, ... }` or the appropriate action type.
 - **BREAKING**: `job.skipCopilot` removed. Validation fails with a migration message when present. Use `action: { type: noop }` to skip assignment, or omit `action:` to assign `@copilot`.
 - **BREAKING**: `--skip-copilot` CLI flag removed from `orcai run` and `orcai generate`. Use `action: { type: noop }` in the YAML instead.

@@ -23,8 +23,7 @@ type OrcAIConfig =
       Nudge            : NudgeConfig option
       Notify           : NotifyConfig option
       CheckoutRoot     : string option
-      WriteBack        : string option
-      RedoOnClosed     : bool option }
+      WriteBack        : string option }
 
 /// All-None config — represents "no config loaded".
 let empty : OrcAIConfig =
@@ -38,8 +37,7 @@ let empty : OrcAIConfig =
       Nudge            = None
       Notify           = None
       CheckoutRoot     = None
-      WriteBack        = None
-      RedoOnClosed     = None }
+      WriteBack        = None }
 
 // ---------------------------------------------------------------------------
 // Merge: local wins per field when Some; falls back to global otherwise.
@@ -71,8 +69,7 @@ let merge (globalCfg: OrcAIConfig) (localCfg: OrcAIConfig) : OrcAIConfig =
       Nudge            = mergeNudge  localCfg.Nudge      globalCfg.Nudge
       Notify           = mergeNotify localCfg.Notify     globalCfg.Notify
       CheckoutRoot     = pick localCfg.CheckoutRoot      globalCfg.CheckoutRoot
-      WriteBack        = pick localCfg.WriteBack         globalCfg.WriteBack
-      RedoOnClosed     = pick localCfg.RedoOnClosed      globalCfg.RedoOnClosed }
+      WriteBack        = pick localCfg.WriteBack         globalCfg.WriteBack }
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -127,9 +124,7 @@ type OrcAIConfigDto =
       [<JsonPropertyName("checkoutRoot")>]
       CheckoutRoot     : string option
       [<JsonPropertyName("writeBack")>]
-      WriteBack        : string option
-      [<JsonPropertyName("redoOnClosed")>]
-      RedoOnClosed     : System.Nullable<bool> }
+      WriteBack        : string option }
 
 let private jsonOptions =
     let opts = JsonSerializerOptions()
@@ -150,8 +145,7 @@ let private ofDto (dto: OrcAIConfigDto) : OrcAIConfig =
       Nudge            = dto.Nudge   |> Option.map ofNudgeDto
       Notify           = dto.Notify  |> Option.map ofNotifyDto
       CheckoutRoot     = dto.CheckoutRoot
-      WriteBack        = dto.WriteBack
-      RedoOnClosed     = if dto.RedoOnClosed.HasValue then Some dto.RedoOnClosed.Value else None }
+      WriteBack        = dto.WriteBack }
 
 // ---------------------------------------------------------------------------
 // File I/O

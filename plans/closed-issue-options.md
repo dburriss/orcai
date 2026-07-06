@@ -1,5 +1,7 @@
 # Plan: `--on-closed-issue` Flag
 
+> **Amended 2026-06-23:** The original plan set the default to `create` to preserve existing behaviour. After implementation it was decided the correct default is `skip` — a closed issue with a matching title should be treated as already done unless the caller explicitly opts in to `create` or `reopen`. As part of this correction, the `redoOnClosed` YAML field and config option (which had been added to work around the wrong default for checkout actions) were removed entirely. The implementation is now simpler: the default is `skip` for all action types, and users who want the old behaviour set `onClosedIssue: create`.
+
 ## Context
 
 `FindIssue` only searches open issues. When a closed issue exists with a matching title and no valid lock file, OrcAI currently creates a duplicate. This plan adds a `--on-closed-issue` flag (and matching YAML field) to give users explicit control over what happens in that scenario.

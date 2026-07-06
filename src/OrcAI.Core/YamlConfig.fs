@@ -31,8 +31,7 @@ type YamlJob =
     { title:         string
       org:           string
       owner:         string
-      onClosedIssue: string
-      redoOnClosed:  System.Nullable<bool> }
+      onClosedIssue: string }
 
 [<CLIMutable>]
 type YamlIssue =
@@ -119,7 +118,7 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
         elif yamlText.Contains("skipCopilot:") then
             Error "'job.skipCopilot' has been removed. Use 'action: { type: noop }' to skip assignment, or omit 'action:' to assign @copilot."
         elif yamlText.Contains("skip_closed_issues:") || yamlText.Contains("skipClosedIssues:") then
-            Error "'skip_closed_issues' has been removed. Use 'job.redo_on_closed: true' to re-run the action when the issue or PR is closed."
+            Error "'skip_closed_issues' has been removed. Use 'job.onClosedIssue: create' to create a new issue alongside a closed one."
         elif not (isNull (box (root :> obj))) && yamlText.Contains("\nassign:") || yamlText.StartsWith("assign:") then
             Error "The 'assign:' field has been replaced by 'action:'. Migrate to: action: { type: assign-copilot, ... }"
         elif String.IsNullOrWhiteSpace(root.job.title) then
@@ -138,7 +137,8 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                 else root.issue.labels |> Seq.toList
             let closedIssueAction =
                 match root.job.onClosedIssue with
-                | null | "" | "create" -> Create
+                | null | ""  -> Skip
+                | "create"   -> Create
                 | "reopen"             -> Reopen
                 | "skip"               -> Skip
                 | "fail"               -> Fail
@@ -224,8 +224,6 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
             let dependsOnList =
                 if isNull (box root.dependsOn) then []
                 else root.dependsOn |> Seq.map parseDependsOnEntry |> List.ofSeq
-            let redoOnClosed =
-                if root.job.redoOnClosed.HasValue then Some root.job.redoOnClosed.Value else None
             Ok { Org           = OrgName root.job.org
                  ProjectTitle  = root.job.title
                  Repos         = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
@@ -238,8 +236,7 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                  Notify        = notifyConfig
                  JobOwner      = nullStr root.job.owner
                  MaxAttempts   = maxAttempts
-                 DependsOn     = dependsOnList
-                 RedoOnClosed  = redoOnClosed }
+                 DependsOn     = dependsOnList }
     with ex ->
         Error $"Failed to parse YAML: {ex.Message}"
 

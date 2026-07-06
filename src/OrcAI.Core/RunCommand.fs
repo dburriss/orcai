@@ -186,20 +186,8 @@ let private resolveProcessParams
     (templateHashChanged : bool)
     (checkoutRoot        : string)
     : ProcessParams =
-    let isCheckoutAction =
-        match config.Action with
-        | CmdCheckout _ | CmdToPr _ -> true
-        | _                         -> false
-    let effectiveRedoOnClosed =
-        match config.RedoOnClosed with
-        | Some v -> v
-        | None   -> deps.Config.RedoOnClosed |> Option.defaultValue false
     let closedIssueAction =
-        match input.OnClosedIssue with
-        | Some a -> a
-        | None ->
-            if isCheckoutAction && not effectiveRedoOnClosed then Skip
-            else config.OnClosedIssue
+        input.OnClosedIssue |> Option.defaultValue config.OnClosedIssue
     let jobOwner =
         config.JobOwner
         |> Option.orElseWith (fun () ->
