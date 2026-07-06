@@ -588,7 +588,7 @@ let private processRepo
                         match cfg.WriteBack with
                         | Some wb -> wb
                         | None ->
-                            match deps.Config.WriteBack with
+                            match deps.Config.Action |> Option.bind (fun a -> a.WriteBack) with
                             | Some "commit-to-origin" -> CommitToOrigin
                             | Some "fork-and-pr"      -> ForkAndPr
                             | _                       -> PrToOrigin

@@ -16,7 +16,7 @@
 
 - New global config fields (`~/.config/orcai/config.json` / `.orcai/config.json`):
   - `checkoutRoot` — override the directory where repos are cloned for `cmd-checkout` and `cmd-to-pr`. Defaults to an OS temp directory scoped to the run.
-  - `writeBack` — global default write-back mode for `cmd-to-pr` (`pr-to-origin` | `commit-to-origin` | `fork-and-pr`). Overridden by `writeBack` in the job YAML.
+  - `action.writeBack` — global default write-back mode for `cmd-to-pr` (`pr-to-origin` | `commit-to-origin` | `fork-and-pr`). Nested under `action` in the config JSON. Overridden by `writeBack` in the job YAML.
 
 - **GitHub App permission**: The **Contents** permission on the GitHub App must now be set to **Read & write** (instead of Read) to support push-based action types (`cmd-to-pr` with `pr-to-origin` or `commit-to-origin`). OrcAI configures git credentials automatically using the same token — no separate credential setup is required.
 
@@ -27,6 +27,7 @@
 - **BREAKING**: `job.skipCopilot` removed. Validation fails with a migration message when present. Use `action: { type: noop }` to skip assignment, or omit `action:` to assign `@copilot`.
 - **BREAKING**: `--skip-copilot` CLI flag removed from `orcai run` and `orcai generate`. Use `action: { type: noop }` in the YAML instead.
 - **BREAKING**: `skipCopilot` and `assign` fields removed from the global/local JSON config (`~/.config/orcai/config.json`). `action:` is per-job only.
+- **BREAKING**: Top-level `writeBack` config key moved to `action.writeBack`. Update config files from `"writeBack": "..."` to `"action": { "writeBack": "..." }`.
 - `orcai generate` no longer generates a `skipCopilot` comment line; generates an `action:` comment block instead.
 - `orcai nudge` and `orcai notify` derive the `{assignee}` template variable from the job's `action:` type rather than `assign.to`.
 

@@ -21,10 +21,8 @@ Local values take precedence over global values. Any key can be omitted; CLI fla
 | `writesPerMinute` | int | `60` | Token-bucket capacity for GitHub write calls per minute. Reduce if you hit secondary rate limits. |
 | `rateLimitRetries` | int | `3` | Maximum number of automatic retries when a GitHub rate-limit error is encountered. |
 | `checkoutRoot` | string | temp dir | Root directory for repo checkouts used by `cmd-checkout` and `cmd-to-pr`. Defaults to an OS temp directory scoped to the run. |
-| `writeBack` | string | `"pr-to-origin"` | Global default write-back mode for `cmd-to-pr`. Overridden by `writeBack` in the job YAML. Values: `pr-to-origin`, `commit-to-origin`, `fork-and-pr`. |
-| `redoOnClosed` | bool | `false` | When `true`, checkout-based action types (`cmd-checkout`, `cmd-to-pr`) re-run even if the issue or linked PR is already closed. Default `false` treats a closed issue or existing PR as done. |
 
-> **Note**: `action:` is per-job only and cannot be set in the global or local JSON config. `writeBack` and `redoOnClosed` set global defaults that individual job YAML files can override. See the [YAML configuration reference](cli-reference.md#action-block) for available action types.
+> **Note**: `action:` is per-job only and cannot be set in the global or local JSON config. The `action` block below sets global defaults for action fields that individual job YAML files can override. See the [YAML configuration reference](cli-reference.md#action-block) for all available action types and per-job options.
 
 ### `nudge` block
 
@@ -45,6 +43,25 @@ Controls how `orcai nudge` re-triggers the assignee on stale issues (those witho
 | `{job.owner}` | `job.owner` in the YAML (if set), otherwise the catch-all `*` owner from a `CODEOWNERS` file in the current repo (`CODEOWNERS`, `.github/CODEOWNERS`, or `docs/CODEOWNERS`). Left unreplaced if neither is found. |
 | `{repo.codeowners}` | The catch-all `*` owner from the target repository's `CODEOWNERS` file (fetched from GitHub). Left unreplaced if absent or no `*` rule exists. |
 
+### `action` block
+
+Sets global defaults for action fields. Individual job YAML files override these values. The `action:` type itself is always per-job and cannot be set here.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `action.writeBack` | string | `"pr-to-origin"` | Default write-back mode for `cmd-to-pr` jobs. Overridden by `writeBack` in the job YAML. Values: `pr-to-origin`, `commit-to-origin`, `fork-and-pr`. |
+
+---
+
+## Migration
+
+### 0.9.0
+
+- **`assign` config key removed.** The top-level `assign` JSON config key (available up to 0.8.1) has been removed. Use `action: { type: assign-copilot, ... }` or the appropriate `action` type in each job YAML instead.
+- **`skipCopilot` config key removed.** The top-level `skipCopilot` JSON config key (available up to 0.8.1) has been removed. Use `action: { type: noop }` in the job YAML to skip assignment.
+- **`redoOnClosed` config key removed.** Use `onClosedIssue: create` in the job YAML to re-run on closed issues.
+- **`writeBack` moved to `action.writeBack`.** The top-level `writeBack` key is now nested under `action`. Update any config files from `"writeBack": "..."` to `"action": { "writeBack": "..." }`.
+
 ---
 
 ## Examples
@@ -60,7 +77,7 @@ Controls how `orcai nudge` re-triggers the assignee on stale issues (those witho
 }
 ```
 
-**Local config with nudge defaults** (`.orcai/config.json`):
+**Local config with nudge and action defaults** (`.orcai/config.json`):
 
 ```json
 {
@@ -68,11 +85,14 @@ Controls how `orcai nudge` re-triggers the assignee on stale issues (those witho
   "nudge": {
     "mode": "comment-and-reassign",
     "comment": "Hey {assignee}, any update on this one?"
+  },
+  "action": {
+    "writeBack": "fork-and-pr"
   }
 }
 ```
 
-With both files present, the effective config merges them with local values winning on any key that appears in both. Within the `nudge` block, merging is field-level — a local `nudge.mode` overrides a global `nudge.mode` without discarding the global `nudge.comment`.
+With both files present, the effective config merges them with local values winning on any key that appears in both. Within nested blocks (`nudge`, `action`), merging is field-level — a local `nudge.mode` overrides a global `nudge.mode` without discarding the global `nudge.comment`.
 
 ---
 

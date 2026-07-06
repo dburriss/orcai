@@ -646,7 +646,7 @@ The `action:` block controls what happens after the issue is created. If omitted
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `writeBack` | string | `pr-to-origin` | How to push changes back. `pr-to-origin` — push branch and open PR on origin. `commit-to-origin` — push branch directly (no PR). `fork-and-pr` — fork the repo, push to fork, open PR on origin. Can be set globally in `config.json`. |
+| `writeBack` | string | `pr-to-origin` | How to push changes back. `pr-to-origin` — push branch and open PR on origin. `commit-to-origin` — push branch directly (no PR). `fork-and-pr` — fork the repo, push to fork, open PR on origin. Global default can be set via `action.writeBack` in `config.json`. |
 | `errorIfNoDiff` | bool | `false` | When `true`, treat an exit-0 command with no file changes as a failure. Default `false` skips silently. |
 | `branch` | string | `orcai/{{job_title_slug}}` | Branch name. Supports `{{var}}` template variables. The branch is orcai-owned and is force-pushed on each run. |
 | `commitMessage` | string | `[{{issue_number}}] {{job_title}}` | Commit message. Supports `{{var}}` template variables. |
@@ -764,9 +764,9 @@ Each file can contain these optional fields:
 | `nudge.mode` | Default nudge mode: `reassign`, `comment-only`, or `comment-and-reassign`. |
 | `nudge.comment` | Default nudge comment body. Supports `{assignee}`, `{job.owner}`, `{repo.codeowners}` tokens. |
 | `checkoutRoot` | Root directory for repo clones used by `cmd-checkout` and `cmd-to-pr`. Defaults to an OS temp directory scoped to the run. |
-| `writeBack` | Global default write-back mode for `cmd-to-pr`. Values: `pr-to-origin` (default), `commit-to-origin`, `fork-and-pr`. Overridden by `writeBack` in the job YAML. |
+| `action.writeBack` | Global default write-back mode for `cmd-to-pr`. Values: `pr-to-origin` (default), `commit-to-origin`, `fork-and-pr`. Overridden by `writeBack` in the job YAML. |
 
-Note: `action:` is per-job only and cannot be set in the global/local JSON config. `writeBack` sets a global default that individual job YAML files can override. `nudge` defaults are still configurable globally.
+Note: `action:` is per-job only and cannot be set in the global/local JSON config. `action.writeBack` sets a global default that individual job YAML files can override. `nudge` defaults are still configurable globally.
 
 Values from the local config override the global config when present. The `nudge` block merges at field-level. The per-job YAML always wins over both config files.
 

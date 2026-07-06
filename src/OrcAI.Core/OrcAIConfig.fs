@@ -9,6 +9,10 @@ open OrcAI.Core.Domain
 // Config type
 // ---------------------------------------------------------------------------
 
+/// Per-action defaults settable in the JSON config.
+type ActionDefaults =
+    { WriteBack : string option }
+
 /// Layered configuration loaded from ~/.config/orcai/config.json (global)
 /// and .orcai/config.json (local).  All fields are option types so that
 /// absence is distinguishable from false/0.
@@ -23,7 +27,7 @@ type OrcAIConfig =
       Nudge            : NudgeConfig option
       Notify           : NotifyConfig option
       CheckoutRoot     : string option
-      WriteBack        : string option }
+      Action           : ActionDefaults option }
 
 /// All-None config — represents "no config loaded".
 let empty : OrcAIConfig =
@@ -37,7 +41,7 @@ let empty : OrcAIConfig =
       Nudge            = None
       Notify           = None
       CheckoutRoot     = None
-      WriteBack        = None }
+      Action           = None }
 
 // ---------------------------------------------------------------------------
 // Merge: local wins per field when Some; falls back to global otherwise.
@@ -59,6 +63,12 @@ let merge (globalCfg: OrcAIConfig) (localCfg: OrcAIConfig) : OrcAIConfig =
         | Some ln, None   -> Some ln
         | Some ln, Some gn ->
             Some { Comment = ln.Comment |> Option.orElse gn.Comment }
+    let mergeAction (l: ActionDefaults option) (g: ActionDefaults option) =
+        match l, g with
+        | None,    _       -> g
+        | Some ln, None    -> Some ln
+        | Some ln, Some gn ->
+            Some { WriteBack = ln.WriteBack |> Option.orElse gn.WriteBack }
     { DefaultLabels    = pick localCfg.DefaultLabels     globalCfg.DefaultLabels
       AutoCreateLabels = pick localCfg.AutoCreateLabels  globalCfg.AutoCreateLabels
       MaxConcurrency   = pick localCfg.MaxConcurrency    globalCfg.MaxConcurrency
@@ -69,7 +79,7 @@ let merge (globalCfg: OrcAIConfig) (localCfg: OrcAIConfig) : OrcAIConfig =
       Nudge            = mergeNudge  localCfg.Nudge      globalCfg.Nudge
       Notify           = mergeNotify localCfg.Notify     globalCfg.Notify
       CheckoutRoot     = pick localCfg.CheckoutRoot      globalCfg.CheckoutRoot
-      WriteBack        = pick localCfg.WriteBack         globalCfg.WriteBack }
+      Action           = mergeAction localCfg.Action     globalCfg.Action }
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -102,6 +112,11 @@ type NotifyConfigDto =
       Comment : string option }
 
 [<CLIMutable>]
+type ActionDefaultsDto =
+    { [<JsonPropertyName("writeBack")>]
+      WriteBack : string option }
+
+[<CLIMutable>]
 type OrcAIConfigDto =
     { [<JsonPropertyName("defaultLabels")>]
       DefaultLabels    : string[] option
@@ -123,8 +138,8 @@ type OrcAIConfigDto =
       Notify           : NotifyConfigDto option
       [<JsonPropertyName("checkoutRoot")>]
       CheckoutRoot     : string option
-      [<JsonPropertyName("writeBack")>]
-      WriteBack        : string option }
+      [<JsonPropertyName("action")>]
+      Action           : ActionDefaultsDto option }
 
 let private jsonOptions =
     let opts = JsonSerializerOptions()
@@ -133,8 +148,9 @@ let private jsonOptions =
     opts
 
 let private ofDto (dto: OrcAIConfigDto) : OrcAIConfig =
-    let ofNudgeDto  (d: NudgeConfigDto)  : NudgeConfig  = { Mode = d.Mode; Comment = d.Comment }
-    let ofNotifyDto (d: NotifyConfigDto) : NotifyConfig = { Comment = d.Comment }
+    let ofNudgeDto   (d: NudgeConfigDto)   : NudgeConfig   = { Mode = d.Mode; Comment = d.Comment }
+    let ofNotifyDto  (d: NotifyConfigDto)  : NotifyConfig  = { Comment = d.Comment }
+    let ofActionDto  (d: ActionDefaultsDto): ActionDefaults = { WriteBack = d.WriteBack }
     { DefaultLabels    = dto.DefaultLabels |> Option.map Array.toList
       AutoCreateLabels = if dto.AutoCreateLabels.HasValue then Some dto.AutoCreateLabels.Value else None
       MaxConcurrency   = if dto.MaxConcurrency.HasValue   then Some dto.MaxConcurrency.Value   else None
@@ -145,7 +161,7 @@ let private ofDto (dto: OrcAIConfigDto) : OrcAIConfig =
       Nudge            = dto.Nudge   |> Option.map ofNudgeDto
       Notify           = dto.Notify  |> Option.map ofNotifyDto
       CheckoutRoot     = dto.CheckoutRoot
-      WriteBack        = dto.WriteBack }
+      Action           = dto.Action  |> Option.map ofActionDto }
 
 // ---------------------------------------------------------------------------
 // File I/O
