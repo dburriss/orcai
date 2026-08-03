@@ -11,19 +11,6 @@
   - A job using `provider: local` never requires or resolves GitHub authentication — `orcai run`/`generate`/etc. work with no `GH_TOKEN`, PAT, App credentials, or `gh` CLI login at all.
   - Known limitations: `provider: local` has no PR tracking or bulk repo inspection. `orcai nudge`'s closed-PR handling and `orcai info`'s PR summary always show zero PRs for local jobs, and any `dependsOn` condition needing bulk repo state is unavailable.
 - `--provider local` flag on `orcai generate` — scaffolds a job YAML with the `provider: { type: local }` block instead of the default (GitHub).
-
----
-
-### Changed
-
-- **BREAKING**: Issue and project identifiers are now opaque strings instead of GitHub-shaped integers (internal groundwork for supporting non-GitHub providers in the future). User-visible effects:
-  - **Lock files**: the `.lock.json` format has changed. Existing lock files fail to load with `Lock file was written by an older OrcAI version with incompatible issue/project ids. Delete <path> and re-run.` There is no migration — delete the affected `.lock.json` file(s) and re-run `orcai run` to regenerate them.
-  - **`--json` output**: issue and project numbers in `orcai run --json`, `orcai info --json`, and `orcai cleanup --json` are now emitted as JSON strings instead of numbers (e.g. `"issueNumber": "42"` instead of `"issueNumber": 42`). Human-readable console output (e.g. `#42`) is unchanged.
-
----
-
-### Added
-
 - `action:` YAML field — typed, explicit action to execute after issue creation. Supported types:
   - `assign-copilot` (default when `action:` is absent) — assigns `@copilot`, with an optional trigger comment.
   - `assign` — assigns any GitHub user or bot (`to` required, `comment` optional).
@@ -33,28 +20,10 @@
   - `noop` — skip the action step entirely (replaces `job.skipCopilot: true`).
   - `cmd-checkout` — clones the target repo (bare, `--depth 1`) and runs the command inside it. Worktrees are reused when the same repo appears across multiple jobs. Extra template variables: `{{checkout_path}}` and `{{job_title_slug}}`.
   - `cmd-to-pr` — checkout → run → commit all changes → push branch → open PR. Supports three write-back modes: `pr-to-origin` (default), `commit-to-origin`, and `fork-and-pr`. Optional fields: `branch`, `commitMessage`, `prTitle`, `prBody`, `errorIfNoDiff`.
-
 - New global config fields (`~/.config/orcai/config.json` / `.orcai/config.json`):
   - `checkoutRoot` — override the directory where repos are cloned for `cmd-checkout` and `cmd-to-pr`. Defaults to an OS temp directory scoped to the run.
   - `action.writeBack` — global default write-back mode for `cmd-to-pr` (`pr-to-origin` | `commit-to-origin` | `fork-and-pr`). Nested under `action` in the config JSON. Overridden by `writeBack` in the job YAML.
-
 - **GitHub App permission**: The **Contents** permission on the GitHub App must now be set to **Read & write** (instead of Read) to support push-based action types (`cmd-to-pr` with `pr-to-origin` or `commit-to-origin`). OrcAI configures git credentials automatically using the same token — no separate credential setup is required.
-
-### Changed
-
-- **BREAKING**: `onClosedIssue` default changed from `create` to `skip`. Previously, when a closed issue with a matching title was found, OrcAI would open a new issue alongside it. Now it treats the closed issue as already done and skips the repo. To restore the old behaviour, add `onClosedIssue: create` to the `job:` block in your YAML. The `redoOnClosed` YAML field and config option (added as a workaround for the wrong default on checkout actions) have been removed; use `onClosedIssue: create` instead.
-- **BREAKING**: `assign:` YAML block removed. Validation fails with a migration message when `assign:` is present. Migrate to `action: { type: assign-copilot, ... }` or the appropriate action type.
-- **BREAKING**: `job.skipCopilot` removed. Validation fails with a migration message when present. Use `action: { type: noop }` to skip assignment, or omit `action:` to assign `@copilot`.
-- **BREAKING**: `--skip-copilot` CLI flag removed from `orcai run` and `orcai generate`. Use `action: { type: noop }` in the YAML instead.
-- **BREAKING**: `skipCopilot` and `assign` fields removed from the global/local JSON config (`~/.config/orcai/config.json`). `action:` is per-job only.
-- **BREAKING**: Top-level `writeBack` config key moved to `action.writeBack`. Update config files from `"writeBack": "..."` to `"action": { "writeBack": "..." }`.
-- `orcai generate` no longer generates a `skipCopilot` comment line; generates an `action:` comment block instead.
-- `orcai nudge` and `orcai notify` derive the `{assignee}` template variable from the job's `action:` type rather than `assign.to`.
-
----
-
-### Added
-
 - `dependsOn` YAML field — gates a downstream job on the completion state of one or more upstream jobs. Each entry specifies a `job` (relative path), `condition` (`pr_merged` | `issue_closed`), `scope` (`per_repo` | `all_repos`), and `untrackedRepos` (`include` | `skip`). Multiple entries use AND logic.
 - `orcai run` now resolves `dependsOn` chains in topological order before executing. Passing a downstream YAML is sufficient — upstream dependencies are discovered and run automatically. The `scope: all_repos` option blocks the entire downstream run when any upstream repo has not met the condition; `scope: per_repo` (default) filters the downstream repo list individually.
 - `orcai graph <yaml>` — new command that renders the `dependsOn` dependency tree as an ASCII diagram. File-system only; no GitHub API calls. Supports `--json` output.
@@ -63,6 +32,17 @@
 
 ### Changed
 
+- **BREAKING**: Issue and project identifiers are now opaque strings instead of GitHub-shaped integers (internal groundwork for supporting non-GitHub providers in the future). User-visible effects:
+  - **Lock files**: the `.lock.json` format has changed. Existing lock files fail to load with `Lock file was written by an older OrcAI version with incompatible issue/project ids. Delete <path> and re-run.` There is no migration — delete the affected `.lock.json` file(s) and re-run `orcai run` to regenerate them.
+  - **`--json` output**: issue and project numbers in `orcai run --json`, `orcai info --json`, and `orcai cleanup --json` are now emitted as JSON strings instead of numbers (e.g. `"issueNumber": "42"` instead of `"issueNumber": 42`). Human-readable console output (e.g. `#42`) is unchanged.
+- **BREAKING**: `onClosedIssue` default changed from `create` to `skip`. Previously, when a closed issue with a matching title was found, OrcAI would open a new issue alongside it. Now it treats the closed issue as already done and skips the repo. To restore the old behaviour, add `onClosedIssue: create` to the `job:` block in your YAML. The `redoOnClosed` YAML field and config option (added as a workaround for the wrong default on checkout actions) have been removed; use `onClosedIssue: create` instead.
+- **BREAKING**: `assign:` YAML block removed. Validation fails with a migration message when `assign:` is present. Migrate to `action: { type: assign-copilot, ... }` or the appropriate action type.
+- **BREAKING**: `job.skipCopilot` removed. Validation fails with a migration message when present. Use `action: { type: noop }` to skip assignment, or omit `action:` to assign `@copilot`.
+- **BREAKING**: `--skip-copilot` CLI flag removed from `orcai run` and `orcai generate`. Use `action: { type: noop }` in the YAML instead.
+- **BREAKING**: `skipCopilot` and `assign` fields removed from the global/local JSON config (`~/.config/orcai/config.json`). `action:` is per-job only.
+- **BREAKING**: Top-level `writeBack` config key moved to `action.writeBack`. Update config files from `"writeBack": "..."` to `"action": { "writeBack": "..." }`.
+- `orcai generate` no longer generates a `skipCopilot` comment line; generates an `action:` comment block instead.
+- `orcai nudge` and `orcai notify` derive the `{assignee}` template variable from the job's `action:` type rather than `assign.to`.
 - `orcai nudge` now surfaces PR state when checking for existing PRs. The `state` field (`OPEN`, `CLOSED`, `MERGED`) is stored on PR entries in the lock file; old lock files without the field default to `OPEN` on load.
 - `orcai nudge` no longer treats a closed PR in the lock file as "PR exists — skip". Only open PRs in the lock suppress the live check. Closed PR entries (e.g. written by `orcai info --save-lock`) are now ignored by the lock-file fast-path, so nudge correctly proceeds to a live GitHub check for those issues.
 - `orcai nudge --save-lock` now persists all discovered PRs with their state to the lock file, so closed PRs are visible via `orcai info`.
