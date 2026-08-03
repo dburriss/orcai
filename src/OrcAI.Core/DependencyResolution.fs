@@ -113,7 +113,11 @@ let private checkConditionForTrackedRepo
             match condition with
             | IssueClosed ->
                 let! stateOpt = tracker.GetIssueState repo issue.Id
-                return Ok (stateOpt = Some "CLOSED")
+                let isClosed =
+                    stateOpt
+                    |> Option.map (fun s -> System.String.Equals(s, "CLOSED", System.StringComparison.OrdinalIgnoreCase))
+                    |> Option.defaultValue false
+                return Ok isClosed
             | PrMerged ->
                 match prs with
                 | None -> return Error "This provider does not support 'pr_merged' depends_on conditions (no pull-request linker available)."

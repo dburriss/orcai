@@ -296,6 +296,34 @@ let ``filterRepos per_repo issue_closed includes only repos with closed issue`` 
     Assert.Equal(Ok [ repoA ], result)
 
 [<Fact>]
+let ``filterRepos per_repo issue_closed includes repos when tracker reports lowercase closed state`` () =
+    // The local provider reports issue state as lowercase ("open"/"closed"), unlike GitHub's
+    // uppercase ("OPEN"/"CLOSED"). The gate must not be provider-format-specific.
+    let fs    = MockFileSystem()
+    setup fs
+    let upPath   = writeNoDeps fs "upstream.yml"
+    let downPath = writeFullDeps fs "downstream.yml"
+                       [ ("./upstream.yml", "issue_closed", "per_repo", "include") ]
+    writeLock fs upPath
+        [ repoA; repoB ]
+        [ (repoA, 10); (repoB, 20) ]
+        []
+    let config =
+        match OrcAI.Core.YamlConfig.parseFile (fs :> System.IO.Abstractions.IFileSystem) downPath with
+        | Ok c -> c
+        | Error e -> failwith e
+    let client = FakeGhClient.from
+                     { FakeGhClient.defaults with
+                           GetIssueState = fun repo _ ->
+                               async {
+                                   return if repo = repoA then Some "closed" else Some "open"
+                               } }
+    let result =
+        filterRepos client (Some (client :?> IPullRequestLinker)) (fs :> System.IO.Abstractions.IFileSystem) config dir
+        |> Async.RunSynchronously
+    Assert.Equal(Ok [ repoA ], result)
+
+[<Fact>]
 let ``filterRepos per_repo untracked_repos skip excludes repos not in upstream lock`` () =
     let fs    = MockFileSystem()
     setup fs
