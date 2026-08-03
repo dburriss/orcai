@@ -44,6 +44,7 @@ performance improvements to `orcai run` by using GraphQL to fetch multiple repos
     <ProjectReference Include="..\OrcAI.Core\OrcAI.Core.fsproj" />
     <ProjectReference Include="..\OrcAI.GitHub\OrcAI.GitHub.fsproj" />
     <ProjectReference Include="..\OrcAI.Auth\OrcAI.Auth.fsproj" />
+    <ProjectReference Include="..\OrcAI.Local\OrcAI.Local.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Argu" Version="6.2.4" />

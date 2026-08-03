@@ -1,0 +1,17 @@
+job:
+  title: "Local provider demo"
+  org: "dburriss"
+
+repos:
+  - "wye"
+
+provider:
+  type: local
+  # root: "./.orcai-local"   # optional; defaults to "<yaml-dir>/.orcai-local"
+
+issue:
+  template: "./local-provider-demo.md"
+  labels: ["documentation", "automated"]
+
+action:
+  type: assign-copilot

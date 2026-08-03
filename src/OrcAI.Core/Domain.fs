@@ -23,6 +23,9 @@ type ProjectId = ProjectId of string
 /// A GitHub pull-request number within a repository.
 type PrNumber = PrNumber of int
 
+/// Which backend tracks issue/project state for a job.
+type Provider = GitHub | Local
+
 type ProjectInfo =
     { Org   : OrgName
       Id    : ProjectId
@@ -131,7 +134,11 @@ type JobConfig =
       /// Max retry attempts per (repo, category) failure before the step is skipped.
       /// None → use the built-in default.
       MaxAttempts   : int option
-      DependsOn     : DependsOnConfig list }
+      DependsOn     : DependsOnConfig list
+      /// Which IIssueTracker backend to use. Default GitHub when the YAML omits `provider:`.
+      Provider      : Provider
+      /// Resolved absolute path to the local store's root. None when Provider = GitHub.
+      ProviderRoot  : string option }
 
 /// Replace {key} placeholders in a template string.
 /// Tokens not present in vars are left unreplaced.

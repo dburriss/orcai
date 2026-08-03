@@ -761,13 +761,16 @@ let private runFull
     (templateHashChanged : bool)
     : Result<RunResult, string> =
 
+    // Only GitHub jobs need a token; a Local job's ResolveProvider needs no
+    // auth at all, so skip this precheck rather than forcing it unconditionally.
     let tokenResult =
-        deps.AuthContext.GetToken()
-        |> Async.RunSynchronously
+        match config.Provider with
+        | Local  -> Ok ()
+        | GitHub -> deps.AuthContext.GetToken() |> Async.RunSynchronously |> Result.map ignore
 
     match tokenResult with
     | Error e -> Error $"Auth error: {e}"
-    | Ok _ ->
+    | Ok () ->
 
     match deps.ResolveProvider config with
     | Error e -> Error $"Provider error: {e}"

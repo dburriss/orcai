@@ -50,3 +50,25 @@ let ``Prs=None skips PR lookup/close and deletes the issue directly`` () =
     | Ok cleanupResult ->
         Assert.DoesNotContain(cleanupResult.Resources, function CleanedPr _ -> true | _ -> false)
         Assert.Contains(cleanupResult.Resources, function CleanedIssue("myorg/repo-a", "7") -> true | _ -> false)
+
+[<Fact>]
+let ``execute never calls AuthContext.GetToken for a provider: local job`` () =
+    let fs   = MockFileSystem()
+    let yaml = Given.yamlFile fs (cleanupYaml + "provider:\n  type: local\n") "# body"
+    writeLock fs yaml (lockWithIssue ())
+
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                DeleteIssue   = fun _ _ -> async { return Ok () }
+                DeleteProject = fun _   -> async { return Ok () } }
+    // A Local provider has no IPullRequestLinker (Prs = None) — same as production.
+    let deps =
+        Given.deps fs client
+        |> Given.mapProviderClients (fun pc -> { pc with Prs = None })
+        |> Given.withNeverCalledAuth
+    let input : CleanupInput = { YamlPath = yaml; DryRun = false }
+
+    match execute deps input with
+    | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+    | Ok _ -> ()

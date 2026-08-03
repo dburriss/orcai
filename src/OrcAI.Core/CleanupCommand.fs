@@ -100,10 +100,16 @@ let execute (deps: OrcAIDeps) (input: CleanupInput) : Result<CleanupResult, stri
     | Error e -> Error e
     | Ok config ->
 
-    // 2. Resolve auth token
-    match deps.AuthContext.GetToken() |> Async.RunSynchronously with
+    // 2. Resolve auth token — only needed for GitHub jobs; a Local job's
+    //    ResolveProvider needs no auth at all.
+    let tokenResult =
+        match config.Provider with
+        | Local  -> Ok ()
+        | GitHub -> deps.AuthContext.GetToken() |> Async.RunSynchronously |> Result.map ignore
+
+    match tokenResult with
     | Error e -> Error $"Auth error: {e}"
-    | Ok _ ->
+    | Ok () ->
 
     match deps.ResolveProvider config with
     | Error e -> Error $"Provider error: {e}"

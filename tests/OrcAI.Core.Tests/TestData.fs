@@ -163,3 +163,11 @@ module Given =
     /// a provider that lacks PR-linking or repo-inspection capability.
     let mapProviderClients (f: ProviderClients -> ProviderClients) (deps: OrcAIDeps) : OrcAIDeps =
         { deps with ResolveProvider = fun cfg -> deps.ResolveProvider cfg |> Result.map f }
+
+    /// Fails the test if AuthContext.GetToken() is ever called — used to assert that a
+    /// Local-provider job's auth precheck is skipped (see RunCommand.fs / CleanupCommand.fs).
+    let withNeverCalledAuth (deps: OrcAIDeps) : OrcAIDeps =
+        { deps with
+            AuthContext =
+                { new OrcAI.Core.AuthContext.IAuthContext with
+                      member _.GetToken() = async { return failwith "AuthContext.GetToken should not be called for a Local-provider job" } } }

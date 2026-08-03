@@ -20,9 +20,12 @@
 
 ```
 OrcAI.Tool       Entry point — argument parsing, output, dispatch
-  ├── OrcAI.Core     Domain types, interfaces (IGhClient, IAuthContext),
+  ├── OrcAI.Core     Domain types, interfaces (IIssueTracker, IAuthContext),
   │                  command modules, YAML/lock file I/O
-  ├── OrcAI.GitHub   IGhClient implementation (shells out to gh CLI)
+  ├── OrcAI.GitHub   IIssueTracker/IPullRequestLinker/IRepoInspector implementation
+  │                  (shells out to gh CLI) — provider: github (default)
+  ├── OrcAI.Local    IIssueTracker implementation backed by YAML/Markdown files on
+  │                  disk, no PR/repo-inspection support — provider: local
   └── OrcAI.Auth     IAuthContext implementations (PAT, GitHub App)
 ```
 
@@ -37,6 +40,26 @@ OrcAI.Tool       Entry point — argument parsing, output, dispatch
 **Lock file for idempotency** — After a successful `run`, a `<basename>.lock.json` is written alongside the YAML. Subsequent runs short-circuit all network calls if the YAML hash is unchanged.
 
 **File system abstraction** — `IFileSystem` (Testably.Abstractions) is injected so file I/O is testable without real disk access.
+
+## Provider Resolution
+
+Each job YAML picks its tracker backend via an optional `provider:` block:
+
+```yaml
+provider:
+  type: local              # "github" (default) | "local"
+  root: "./.orcai-local"   # optional; default "<yaml-dir>/.orcai-local"
+```
+
+`root` is resolved relative to the YAML file's directory (same convention as
+`issue.template`), so a job YAML + its `.orcai-local` store are portable
+across clones/checkouts when both are committed to git. A `local` job's
+`ProviderClients.Prs`/`Repos` are always `None` — no PR tracking or bulk
+repo inspection, only issue/project tracking.
+
+Auth resolution (below) is fully lazy: a job that resolves to `provider:
+local` never calls `resolveAuthContext()` — no config file reads, no `gh
+auth token` shell-out — since it needs no GitHub token at all.
 
 ## Auth Resolution (runtime priority)
 

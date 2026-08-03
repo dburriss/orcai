@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- `provider:` YAML field — selects the issue/project tracking backend for a job.
+  - `type: github` (default; omitting `provider:` entirely preserves current behaviour, no change needed to existing YAMLs).
+  - `type: local` — tracks project/issue state as YAML + Markdown files on disk instead of calling the GitHub API. Useful for trying out a job's fan-out behaviour without touching GitHub, or for tracking work in a repo synced via git rather than the GitHub API.
+  - `root:` (optional, `local` only) — where the local store is written, resolved relative to the YAML file's directory (same convention as `issue.template`). Defaults to `.orcai-local` next to the YAML file.
+  - A job using `provider: local` never requires or resolves GitHub authentication — `orcai run`/`generate`/etc. work with no `GH_TOKEN`, PAT, App credentials, or `gh` CLI login at all.
+  - Known limitations: `provider: local` has no PR tracking or bulk repo inspection. `orcai nudge`'s closed-PR handling and `orcai info`'s PR summary always show zero PRs for local jobs, and any `dependsOn` condition needing bulk repo state is unavailable.
+- `--provider local` flag on `orcai generate` — scaffolds a job YAML with the `provider: { type: local }` block instead of the default (GitHub).
+
+---
+
 ### Changed
 
 - **BREAKING**: Issue and project identifiers are now opaque strings instead of GitHub-shaped integers (internal groundwork for supporting non-GitHub providers in the future). User-visible effects:

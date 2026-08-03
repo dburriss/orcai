@@ -582,3 +582,73 @@ let ``hashBytes returns different hash for different bytes`` () =
 [<Fact>]
 let ``hashBytes known SHA-256 value`` () =
     Assert.Equal("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", hashBytes [||])
+
+// ---------------------------------------------------------------------------
+// provider: parsing
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``parse defaults to GitHub with no ProviderRoot when provider is omitted`` () =
+    match parse pureParsYaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  ->
+        Assert.Equal(GitHub, cfg.Provider)
+        Assert.Equal(None, cfg.ProviderRoot)
+
+[<Fact>]
+let ``parse leaves ProviderRoot as the raw YAML string, unresolved (parseFile resolves it)`` () =
+    let yaml = pureParsYaml + "provider:\n  type: local\n  root: \"./custom-store\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  ->
+        Assert.Equal(Local, cfg.Provider)
+        Assert.Equal(Some "./custom-store", cfg.ProviderRoot)
+
+[<Fact>]
+let ``parse defaults ProviderRoot to .orcai-local (raw) when local root is omitted`` () =
+    let yaml = pureParsYaml + "provider:\n  type: local\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  -> Assert.Equal(Some ".orcai-local", cfg.ProviderRoot)
+
+[<Fact>]
+let ``parse returns error for unknown provider type`` () =
+    let yaml = pureParsYaml + "provider:\n  type: jira\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+[<Fact>]
+let ``parseFile defaults to GitHub with no ProviderRoot when provider is omitted`` () =
+    let fs   = MockFileSystem()
+    let path = Given.yamlFile fs A.Yaml.valid "body"
+    match parseFile fs path with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  ->
+        Assert.Equal(GitHub, cfg.Provider)
+        Assert.Equal(None, cfg.ProviderRoot)
+
+[<Fact>]
+let ``parseFile resolves the default local root relative to the YAML's directory`` () =
+    let fs   = MockFileSystem()
+    let yaml = A.Yaml.valid + "provider:\n  type: local\n"
+    let path = Given.yamlFile fs yaml "body"
+    match parseFile fs path with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  ->
+        Assert.Equal(Local, cfg.Provider)
+        Assert.Equal(Some "/work/.orcai-local", cfg.ProviderRoot)
+
+[<Fact>]
+let ``parseFile resolves an explicit relative local root against the YAML's directory`` () =
+    let fs   = MockFileSystem()
+    let yaml = A.Yaml.valid + "provider:\n  type: local\n  root: \"./custom-store\"\n"
+    let path = Given.yamlFile fs yaml "body"
+    match parseFile fs path with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  -> Assert.Equal(Some "/work/custom-store", cfg.ProviderRoot)
+
+[<Fact>]
+let ``parseFile returns error for unknown provider type`` () =
+    let fs   = MockFileSystem()
+    let yaml = A.Yaml.valid + "provider:\n  type: jira\n"
+    let path = Given.yamlFile fs yaml "body"
+    Assert.True(Result.isError (parseFile fs path))

@@ -73,6 +73,11 @@ type YamlDependsOn =
       untrackedRepos : string }
 
 [<CLIMutable>]
+type YamlProvider =
+    { ``type``: string
+      root:    string }
+
+[<CLIMutable>]
 type YamlRoot =
     { job:       YamlJob
       repos:     System.Collections.Generic.List<string>
@@ -81,7 +86,8 @@ type YamlRoot =
       nudge:     YamlNudge
       notify:    YamlNotify
       failures:  YamlFailures
-      dependsOn: System.Collections.Generic.List<YamlDependsOn> }
+      dependsOn: System.Collections.Generic.List<YamlDependsOn>
+      provider:  YamlProvider }
 
 let private deserializer =
     DeserializerBuilder()
@@ -224,6 +230,20 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
             let dependsOnList =
                 if isNull (box root.dependsOn) then []
                 else root.dependsOn |> Seq.map parseDependsOnEntry |> List.ofSeq
+            // ProviderRoot is left as the raw (relative-or-absolute) string from YAML
+            // here; parseFile resolves it against the YAML file's directory once a
+            // real path is known. Pure `parse` has no notion of "the YAML's directory".
+            let provider, providerRoot =
+                if isNull (box root.provider) then GitHub, None
+                else
+                    match root.provider.``type`` with
+                    | null | "" | "github" -> GitHub, None
+                    | "local" ->
+                        let rawRoot =
+                            if String.IsNullOrWhiteSpace root.provider.root then ".orcai-local"
+                            else root.provider.root
+                        Local, Some rawRoot
+                    | other -> failwith $"Unknown provider type: '{other}'. Valid values: github, local."
             Ok { Org           = OrgName root.job.org
                  ProjectTitle  = root.job.title
                  Repos         = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
@@ -236,7 +256,9 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                  Notify        = notifyConfig
                  JobOwner      = nullStr root.job.owner
                  MaxAttempts   = maxAttempts
-                 DependsOn     = dependsOnList }
+                 DependsOn     = dependsOnList
+                 Provider      = provider
+                 ProviderRoot  = providerRoot }
     with ex ->
         Error $"Failed to parse YAML: {ex.Message}"
 
@@ -254,20 +276,27 @@ let parseFile (fs: IFileSystem) (path: string) : Result<JobConfig, string> =
         Error $"YAML config file not found: {path}"
     else
         try
-            let yaml = fs.File.ReadAllText(path)
+            let yaml    = fs.File.ReadAllText(path)
             // Peek at the raw YAML to resolve the template path before full validation.
-            let root = deserializer.Deserialize<YamlRoot>(yaml)
+            let root    = deserializer.Deserialize<YamlRoot>(yaml)
+            let yamlDir = Path.GetDirectoryName(Path.GetFullPath(path)) |> Option.ofObj |> Option.defaultValue "."
+            // `parse` has no notion of "the YAML's directory", so it leaves
+            // ProviderRoot as the raw string from YAML; resolve it to an absolute
+            // path here, same convention as the template path below.
+            let resolveProviderRoot (config: JobConfig) : JobConfig =
+                match config.Provider, config.ProviderRoot with
+                | Local, Some rawRoot -> { config with ProviderRoot = Some (Path.GetFullPath(Path.Combine(yamlDir, rawRoot))) }
+                | _ -> config
             if isNull (box root) || isNull (box root.issue) || String.IsNullOrWhiteSpace(root.issue.template) then
                 // Let `parse` produce the proper validation error message.
-                parse yaml "" ""
+                parse yaml "" "" |> Result.map resolveProviderRoot
             else
-                let yamlDir      = Path.GetDirectoryName(Path.GetFullPath(path)) |> Option.ofObj |> Option.defaultValue "."
                 let templatePath = Path.GetFullPath(Path.Combine(yamlDir, root.issue.template))
                 if not (fs.File.Exists(templatePath)) then
                     Error $"Issue template file not found: {templatePath}"
                 else
                     let templateContent = fs.File.ReadAllText(templatePath)
-                    parse yaml templatePath templateContent
+                    parse yaml templatePath templateContent |> Result.map resolveProviderRoot
         with ex ->
             Error $"Failed to parse YAML file '{path}': {ex.Message}"
 

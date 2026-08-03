@@ -1052,3 +1052,18 @@ let ``execute dependency chain runs dep before downstream`` () =
     // Both the dep and the downstream should appear in the result map.
     Assert.True(results.ContainsKey(depPath),  "dep.yml should appear in results")
     Assert.True(results.ContainsKey(mainPath), "main.yml should appear in results")
+
+// ---------------------------------------------------------------------------
+// provider: local — the auth precheck must be skipped entirely
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``execute never calls AuthContext.GetToken for a provider: local job`` () =
+    let fs   = MockFileSystem()
+    let yaml = A.Yaml.valid + "provider:\n  type: local\n"
+    let path = Given.yamlFile fs yaml "# body"
+    let deps = Given.deps fs (FakeGhClient.from FakeGhClient.defaults) |> Given.withNeverCalledAuth
+
+    let results = execute deps [path] (A.RunInput.defaults ()) |> Async.RunSynchronously
+
+    Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))

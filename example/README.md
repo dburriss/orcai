@@ -9,6 +9,7 @@ This folder contains example migration specifications and their corresponding ex
 - **dotnet-multi-version-setup** - Sets up multi-version .NET development environment so Copilot can run `build` and `test` commands
 - **add-agents-md** - Adds an AGENTS.md file to instruct agents on how to build and run the project
 - **dotnet-upgrade-to-10** - Upgrades .NET projects to version 10
+- **local-provider-demo** - Demonstrates `provider: local`, tracking project/issue state as files under `.orcai-local/` instead of GitHub
 
 Each example includes:
 - `.md` file - The migration specification describing what changes to make

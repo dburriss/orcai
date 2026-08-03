@@ -122,6 +122,7 @@ type GenerateArgs =
     | Repo        of repo: string
     | Output      of path: string
     | Interactive
+    | Provider    of provider: string
     interface IArgParserTemplate with
         member a.Usage =
             match a with
@@ -130,6 +131,7 @@ type GenerateArgs =
             | Repo _      -> "Repo short-name to include (repeatable, e.g. --repo my-repo). Optional."
             | Output _    -> "Output YAML file path. Defaults to <slug>.yml in the current directory."
             | Interactive -> "Prompt for any missing values and select repos via an interactive TUI."
+            | Provider _  -> "Provider backend to scaffold: local, or github (default). Omit for github."
 
 [<CliPrefix(CliPrefix.DoubleDash)>]
 type NudgeArgs =

@@ -73,59 +73,71 @@ let private resolveLogLevel () =
         | true, level -> level
         | _           -> LogLevel.Warning
 
-/// Resolve auth, build a lazily-initialized GitHub provider bundle, and invoke `f`.
-/// Returns 1 on any auth failure, otherwise returns the result of `f`.
+/// Build a lazily-initialized GitHub provider bundle and invoke `f`. Auth resolution
+/// (App/PAT config lookups, `gh auth token` shell-out) is deferred behind `lazyAuthCtx`
+/// and only forced when something actually needs a GitHub token — a job whose
+/// JobConfig.Provider resolves to Local never forces it at all.
 ///
-/// `f` receives: the deps record, `copilotAssignBlocked` (true when the primary auth
-/// is a GitHub App and no PAT is configured for Copilot (re)assignment — used only by
-/// `nudge`), and a thunk resolving the concrete GitHub provider bundle directly (used
-/// only by `generate`, which scaffolds a job before any JobConfig exists to dispatch
-/// on). Token resolution is deferred until one of these is actually forced, so a
-/// command that never touches GitHub never pays for auth resolution.
-let private withClient (f: OrcAIDeps -> bool -> (unit -> Result<ProviderClients, string>) -> int) : int =
-    match resolveAuthContext () with
-    | Error e ->
-        eprintfn "Auth error: %s" e
-        1
-    | Ok authCtx ->
-        let isPrimaryAuthApp =
-            match authCtx with
-            | :? AppAuthContext -> true
-            | _ -> false
-        let fs   = RealFileSystem() :> IFileSystem
-        let home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile)
-        let cwd  = System.Environment.CurrentDirectory
-        let cfg  = OrcAI.Core.OrcAIConfig.resolve fs home cwd
-        // Env > config > default. ORCAI_WRITES_PER_MINUTE and
-        // ORCAI_RATE_LIMIT_RETRIES let a developer override the throttle
-        // for a single invocation without editing config files.
-        let envInt (name: string) =
-            match Environment.GetEnvironmentVariable(name) with
-            | null | "" -> None
-            | s ->
-                match Int32.TryParse(s) with
-                | true, n when n > 0 -> Some n
-                | _ -> None
-        let writesPerMinute =
-            envInt "ORCAI_WRITES_PER_MINUTE"
-            |> Option.orElse cfg.WritesPerMinute
-            |> Option.defaultValue 60
-        let rateLimitRetries =
-            envInt "ORCAI_RATE_LIMIT_RETRIES"
-            |> Option.orElse cfg.RateLimitRetries
-            |> Option.defaultValue 3
-        let logLevel    = resolveLogLevel ()
-        let logFactory  = LoggerFactory.Create(fun b -> b.AddConsole().SetMinimumLevel(logLevel) |> ignore)
-        let ghLogger    = logFactory.CreateLogger("OrcAI.GitHub.GhCliClient")
-        let lazyGithub : Lazy<Result<ProviderClients, string>> =
-            lazy (
-                match authCtx.GetToken() |> Async.RunSynchronously with
+/// `f` receives: the deps record, a thunk returning `copilotAssignBlocked` (true when
+/// the primary auth is a GitHub App and no PAT is configured for Copilot (re)assignment
+/// — used only by `nudge`), and a thunk resolving the concrete GitHub provider bundle
+/// directly (used only by `generate`, which scaffolds a job before any JobConfig exists
+/// to dispatch on). Both are thunks, not eagerly-computed values, so verbs that ignore
+/// them (the majority) never force auth resolution either.
+let private withClient (f: OrcAIDeps -> (unit -> bool) -> (unit -> Result<ProviderClients, string>) -> int) : int =
+    let lazyAuthCtx : Lazy<Result<OrcAI.Core.AuthContext.IAuthContext, string>> =
+        lazy (resolveAuthContext ())
+    // Proxies IAuthContext without forcing auth resolution until GetToken() is
+    // actually called — keeps OrcAIDeps.AuthContext's type unchanged.
+    let authCtx =
+        { new OrcAI.Core.AuthContext.IAuthContext with
+              member _.GetToken() =
+                  async {
+                      match lazyAuthCtx.Value with
+                      | Error e    -> return Error e
+                      | Ok real    -> return! real.GetToken()
+                  } }
+    let isPrimaryAuthApp () =
+        match lazyAuthCtx.Value with
+        | Ok (:? AppAuthContext) -> true
+        | _                      -> false
+    let fs   = RealFileSystem() :> IFileSystem
+    let home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile)
+    let cwd  = System.Environment.CurrentDirectory
+    let cfg  = OrcAI.Core.OrcAIConfig.resolve fs home cwd
+    // Env > config > default. ORCAI_WRITES_PER_MINUTE and
+    // ORCAI_RATE_LIMIT_RETRIES let a developer override the throttle
+    // for a single invocation without editing config files.
+    let envInt (name: string) =
+        match Environment.GetEnvironmentVariable(name) with
+        | null | "" -> None
+        | s ->
+            match Int32.TryParse(s) with
+            | true, n when n > 0 -> Some n
+            | _ -> None
+    let writesPerMinute =
+        envInt "ORCAI_WRITES_PER_MINUTE"
+        |> Option.orElse cfg.WritesPerMinute
+        |> Option.defaultValue 60
+    let rateLimitRetries =
+        envInt "ORCAI_RATE_LIMIT_RETRIES"
+        |> Option.orElse cfg.RateLimitRetries
+        |> Option.defaultValue 3
+    let logLevel    = resolveLogLevel ()
+    let logFactory  = LoggerFactory.Create(fun b -> b.AddConsole().SetMinimumLevel(logLevel) |> ignore)
+    let ghLogger    = logFactory.CreateLogger("OrcAI.GitHub.GhCliClient")
+    let lazyGithub : Lazy<Result<ProviderClients, string>> =
+        lazy (
+            match lazyAuthCtx.Value with
+            | Error e -> Error e
+            | Ok realAuthCtx ->
+                match realAuthCtx.GetToken() |> Async.RunSynchronously with
                 | Error e -> Error e
                 | Ok ghToken ->
                     // When the primary auth is a GitHub App, attempt to resolve a secondary
                     // PAT for use exclusively in @copilot assignment (Apps cannot assign copilot).
                     let copilotToken =
-                        if isPrimaryAuthApp then
+                        if isPrimaryAuthApp () then
                             match loadToken () with
                             | Ok pat  -> Some pat
                             | Error _ -> None
@@ -134,16 +146,27 @@ let private withClient (f: OrcAIDeps -> bool -> (unit -> Result<ProviderClients,
                     Ok { Tracker = client :> IIssueTracker
                          Prs     = Some (client :> IPullRequestLinker)
                          Repos   = Some (client :> IRepoInspector) }
-            )
-        let copilotAssignBlocked =
-            isPrimaryAuthApp
-            && (match loadToken () with Ok _ -> false | Error _ -> true)
-        let deps : OrcAIDeps =
-            { ResolveProvider = fun (_: JobConfig) -> lazyGithub.Value
-              AuthContext     = authCtx
-              FileSystem      = fs
-              Config          = cfg }
-        f deps copilotAssignBlocked (fun () -> lazyGithub.Value)
+        )
+    let copilotAssignBlocked () =
+        isPrimaryAuthApp ()
+        && (match loadToken () with Ok _ -> false | Error _ -> true)
+    let deps : OrcAIDeps =
+        { ResolveProvider =
+            fun (config: JobConfig) ->
+                match config.Provider with
+                | GitHub -> lazyGithub.Value
+                | Local  ->
+                    match config.ProviderRoot with
+                    | None ->
+                        Error "provider: local requires a resolved root (internal error — YamlConfig should always set ProviderRoot for a Local provider)."
+                    | Some root ->
+                        Ok { Tracker = OrcAI.Local.LocalClient.LocalClient(fs, root) :> IIssueTracker
+                             Prs     = None
+                             Repos   = None }
+          AuthContext = authCtx
+          FileSystem  = fs
+          Config      = cfg }
+    f deps copilotAssignBlocked (fun () -> lazyGithub.Value)
 
 /// Format an InfoResult for console output.
 let private printInfoResult (result: InfoResult) =
@@ -602,14 +625,14 @@ let main argv =
                 | Some other          ->
                     eprintfn "Unknown --on-closed-pr value '%s'. Valid values: skip, nudge, fail." other
                     OrcAI.Core.Domain.ClosedPrAction.Skip
-            withClient (fun deps copilotAssignBlocked _ ->
+            withClient (fun deps copilotAssignBlockedThunk _ ->
                 let input : OrcAI.Core.NudgeCommand.NudgeInput =
                     { YamlPath             = yamlFile
                       DryRun               = dryRun
                       Verbose              = verbose
                       SaveLock             = saveLock
                       MaxConcurrency       = maxConcurrency
-                      CopilotAssignBlocked = copilotAssignBlocked
+                      CopilotAssignBlocked = copilotAssignBlockedThunk ()
                       OnClosedPr           = onClosedPr }
                 match OrcAI.Core.NudgeCommand.execute deps input with
                 | Error e ->
@@ -951,11 +974,17 @@ let main argv =
                         else
                             Ok []
 
-                    match reposResult with
-                    | Error e ->
+                    let localProviderResult =
+                        match args.TryGetResult(GenerateArgs.Provider) with
+                        | None | Some "github" -> Ok false
+                        | Some "local"         -> Ok true
+                        | Some other           -> Error $"Unknown --provider value '{other}'. Valid values: local, github (default)."
+
+                    match reposResult, localProviderResult with
+                    | Error e, _ | _, Error e ->
                         eprintfn "Error: %s" e
                         1
-                    | Ok repos ->
+                    | Ok repos, Ok localProvider ->
                         // --- Resolve output path ---
                         let slug       = slugify name
                         let outputPath =
@@ -964,11 +993,12 @@ let main argv =
                             | None   -> System.IO.Path.Combine(System.Environment.CurrentDirectory, $"{slug}.yml")
 
                         let input : GenerateInput =
-                            { Name       = name
-                              Org        = org
-                              Repos      = repos
-                              OutputPath = outputPath
-                              Noop       = false }
+                            { Name          = name
+                              Org           = org
+                              Repos         = repos
+                              OutputPath    = outputPath
+                              Noop          = false
+                              LocalProvider = localProvider }
 
                         match execute deps input with
                         | Error e ->

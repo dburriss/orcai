@@ -11,13 +11,15 @@ open OrcAI.Core.Deps
 // ---------------------------------------------------------------------------
 
 type GenerateInput =
-    { Name       : string
-      Org        : string
+    { Name          : string
+      Org           : string
       /// Short repo names (no owner prefix). Empty list emits a placeholder.
-      Repos      : string list
+      Repos         : string list
       /// Resolved output path for the YAML file (e.g. "/cwd/my-job.yml").
-      OutputPath : string
-      Noop       : bool }
+      OutputPath    : string
+      Noop          : bool
+      /// Scaffold `provider: { type: local }` instead of the default (omitted = GitHub).
+      LocalProvider : bool }
 
 /// Convert a job name into a filesystem-friendly slug.
 /// "Add AGENTS.md" -> "add-agents-md"
@@ -38,7 +40,7 @@ let slugify (name: string) : string =
     |> fun s -> s.Trim('-')
 
 /// Build the YAML text for the job config.
-let private buildYaml (name: string) (org: string) (repos: string list) (slug: string) (noop: bool) : string =
+let private buildYaml (name: string) (org: string) (repos: string list) (slug: string) (noop: bool) (localProvider: bool) : string =
     let reposSection =
         if repos.IsEmpty then
             "  # TODO: add repo short-names (without the org/ prefix)\n  # - my-repo"
@@ -51,6 +53,10 @@ let private buildYaml (name: string) (org: string) (repos: string list) (slug: s
         else
             "# action:\n#   type: assign-copilot  # default; omit this block to assign @copilot\n#   comment: \"\"  # optional trigger comment\n"
 
+    // Omitted entirely (default) means GitHub — additive, no change to the default scaffold.
+    let providerBlock =
+        if localProvider then "provider:\n  type: local\n\n" else ""
+
     $"""job:
   title: "{name}"
   org: "{org}"
@@ -59,7 +65,7 @@ repos:
 {reposSection}
   # TODO: add more repos if needed
 
-issue:
+{providerBlock}issue:
   template: "./{slug}.md"
   labels: []
   # TODO: add label names, e.g. ["automated", "migration"]
@@ -97,7 +103,7 @@ let execute (deps: OrcAIDeps) (input: GenerateInput) : Result<string * string, s
         let yamlPath = input.OutputPath
         let mdPath   = Path.Combine(Path.GetDirectoryName(yamlPath) |> Option.ofObj |> Option.defaultValue ".", $"{slug}.md")
 
-        let yaml = buildYaml input.Name input.Org input.Repos slug input.Noop
+        let yaml = buildYaml input.Name input.Org input.Repos slug input.Noop input.LocalProvider
         let md   = buildMarkdown input.Name
 
         try
