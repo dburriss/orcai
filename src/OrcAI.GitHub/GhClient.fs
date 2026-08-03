@@ -200,6 +200,25 @@ let private intProp (el: JsonElement) (name: string) =
     | _ -> None
 
 // ------------------------------------------------------------------
+// Opaque id <-> GitHub int mapping. GitHub's `gh` CLI is entirely
+// numeric-id based; this is the only place that round-trips between it
+// and the opaque IssueId/ProjectId the rest of the codebase sees.
+// ------------------------------------------------------------------
+
+let private toIssueId (n: int) = IssueId (string n)
+let private toProjectId (n: int) = ProjectId (string n)
+
+let private ghIssueArg (IssueId s) =
+    match Int32.TryParse s with
+    | true, n -> n
+    | false, _ -> failwith $"GitHub issue id '{s}' is not numeric — corrupt state or wrong provider for this job."
+
+let private ghProjectArg (ProjectId s) =
+    match Int32.TryParse s with
+    | true, n -> n
+    | false, _ -> failwith $"GitHub project id '{s}' is not numeric — corrupt state or wrong provider for this job."
+
+// ------------------------------------------------------------------
 // Production GhCliClient
 // ------------------------------------------------------------------
 
@@ -239,10 +258,10 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                     |> Option.bind (fun el ->
                         match intProp el "number", strProp el "url" with
                         | Some n, Some url ->
-                            Some { Org    = org
-                                   Number = n
-                                   Title  = title
-                                   Url    = url }
+                            Some { Org   = org
+                                   Id    = toProjectId n
+                                   Title = title
+                                   Url   = url }
                         | _ -> None)
         }
 
@@ -273,7 +292,7 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                                     |> List.ofSeq
                                 | _ -> []
                             Some { Repo      = repo
-                                   Number    = IssueNumber n
+                                   Id        = toIssueId n
                                    Url       = url
                                    Assignees = assignees }
                         | _ -> None))
@@ -302,17 +321,17 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                                     |> List.ofSeq
                                 | _ -> []
                             Some { Repo      = repo
-                                   Number    = IssueNumber n
+                                   Id        = toIssueId n
                                    Url       = url
                                    Assignees = assignees }
                         | _ -> None))
         }
 
     /// Reopen a closed issue and return the refreshed IssueRef.
-    member private _.ReopenIssueImpl(repo: RepoName) (issue: IssueNumber) : Async<Result<IssueRef, string>> =
+    member private _.ReopenIssueImpl(repo: RepoName) (issue: IssueId) : Async<Result<IssueRef, string>> =
         async {
-            let (RepoName repoStr)   = repo
-            let (IssueNumber issueN) = issue
+            let (RepoName repoStr) = repo
+            let issueN = ghIssueArg issue
             match! runGhApi bucket retries ghToken $"issue reopen {issueN} --repo {repoStr}" with
             | Error e -> return Error e
             | Ok _ ->
@@ -330,7 +349,7 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                                 |> List.ofSeq
                             | _ -> []
                         return Ok { Repo      = repo
-                                    Number    = IssueNumber n
+                                    Id        = toIssueId n
                                     Url       = url
                                     Assignees = assignees }
                     | _ ->
@@ -345,10 +364,10 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
     /// via "fixes #N"/"closes #N") with cross-referenced PRs from the issue
     /// timeline so we also catch Copilot-authored PRs that omit a closing
     /// keyword. Results are deduplicated by PR number.
-    member private _.FindPrsForIssueImpl(repo: RepoName) (issue: IssueNumber) : Async<PullRequestRef list> =
+    member private _.FindPrsForIssueImpl(repo: RepoName) (issue: IssueId) : Async<PullRequestRef list> =
         async {
-            let (RepoName repoStr)   = repo
-            let (IssueNumber issueN) = issue
+            let (RepoName repoStr) = repo
+            let issueN = ghIssueArg issue
             let parts    = repoStr.Split('/', 2)
             let owner    = parts.[0]
             let repoName = parts.[1]
@@ -462,7 +481,7 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                     let el = JsonDocument.Parse(json).RootElement
                     match intProp el "number", strProp el "url" with
                     | Some n, Some url ->
-                        return Ok { Org = org; Number = n; Title = title; Url = url }
+                        return Ok { Org = org; Id = toProjectId n; Title = title; Url = url }
                     | _ ->
                         return Error $"Unexpected response from 'gh project create': {json}"
             }
@@ -470,10 +489,11 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
         member _.DeleteProject project =
             async {
                 let (OrgName orgStr) = project.Org
-                match! runGhApi bucket retries ghToken $"project delete {project.Number} --owner {orgStr}" with
+                let projectN = ghProjectArg project.Id
+                match! runGhApi bucket retries ghToken $"project delete {projectN} --owner {orgStr}" with
                 | Error e ->
                     if e.Contains("Could not resolve to a ProjectV2") then
-                        logger.LogWarning("Project #{ProjectNumber} in org '{Org}' not found — already deleted.", project.Number, orgStr)
+                        logger.LogWarning("Project #{ProjectNumber} in org '{Org}' not found — already deleted.", projectN, orgStr)
                         return Ok ()
                     else
                         return Error e
@@ -502,7 +522,7 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                         match System.Int32.TryParse(lastSegment) with
                         | true, n ->
                             return Ok { Repo      = repo
-                                        Number    = IssueNumber n
+                                        Id        = toIssueId n
                                         Url       = url
                                         Assignees = [] }
                         | _ ->
@@ -513,8 +533,8 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
 
         member _.UpdateIssue repo issue title body =
             async {
-                let (RepoName repoStr)   = repo
-                let (IssueNumber issueN) = issue
+                let (RepoName repoStr) = repo
+                let issueN = ghIssueArg issue
                 let tmpFile = System.IO.Path.GetTempFileName()
                 try
                     System.IO.File.WriteAllText(tmpFile, body)
@@ -527,8 +547,8 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
 
         member _.DeleteIssue repo issue =
             async {
-                let (RepoName repoStr)   = repo
-                let (IssueNumber issueN) = issue
+                let (RepoName repoStr) = repo
+                let issueN = ghIssueArg issue
                 match! runGhApi bucket retries ghToken $"issue delete {issueN} --repo {repoStr} --yes" with
                 | Ok _    -> return Ok ()
                 | Error e ->
@@ -542,16 +562,17 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
         member _.AddIssueToProject project issue =
             async {
                 let (OrgName orgStr) = project.Org
+                let projectN = ghProjectArg project.Id
                 // Idempotent: if the item is already in the project the gh CLI succeeds silently.
-                match! runGhApi bucket retries ghToken $"project item-add {project.Number} --owner {orgStr} --url {issue.Url}" with
+                match! runGhApi bucket retries ghToken $"project item-add {projectN} --owner {orgStr} --url {issue.Url}" with
                 | Ok _    -> return Ok ()
                 | Error e -> return Error e
             }
 
         member _.AssignIssue repo issue assignee =
             async {
-                let (RepoName repoStr)   = repo
-                let (IssueNumber issueN) = issue
+                let (RepoName repoStr) = repo
+                let issueN = ghIssueArg issue
                 match! runGhApi bucket retries (tokenFor assignee) $"issue edit {issueN} --repo {repoStr} --add-assignee {assignee}" with
                 | Error e -> return Error e
                 | Ok _    -> return Ok ()
@@ -559,8 +580,8 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
 
         member _.UnassignIssue repo issue assignee =
             async {
-                let (RepoName repoStr)   = repo
-                let (IssueNumber issueN) = issue
+                let (RepoName repoStr) = repo
+                let issueN = ghIssueArg issue
                 match! runGhApi bucket retries (tokenFor assignee) $"issue edit {issueN} --repo {repoStr} --remove-assignee {assignee}" with
                 | Error e -> return Error e
                 | Ok _    -> return Ok ()
@@ -568,8 +589,8 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
 
         member _.PostComment repo issue body =
             async {
-                let (RepoName repoStr)   = repo
-                let (IssueNumber issueN) = issue
+                let (RepoName repoStr) = repo
+                let issueN = ghIssueArg issue
                 let tmpFile = System.IO.Path.GetTempFileName()
                 try
                     System.IO.File.WriteAllText(tmpFile, body)
@@ -582,8 +603,8 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
 
         member _.GetIssueState repo issue =
             async {
-                let (RepoName repoStr)   = repo
-                let (IssueNumber issueN) = issue
+                let (RepoName repoStr) = repo
+                let issueN = ghIssueArg issue
                 match! runGhApi bucket retries ghToken $"issue view {issueN} --repo {repoStr} --json state" with
                 | Error _ -> return None
                 | Ok json ->
@@ -796,7 +817,7 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                                                         |> Seq.choose (fun n -> strProp n "login")
                                                         |> List.ofSeq
                                                     | _ -> []
-                                                Some { Repo = repo; Number = IssueNumber n; Url = url; Assignees = assignees }
+                                                Some { Repo = repo; Id = toIssueId n; Url = url; Assignees = assignees }
                                             | _ -> None)
 
                             chunk |> List.iteri (fun i repo ->

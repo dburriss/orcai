@@ -39,7 +39,7 @@ type NudgeOutcome =
 
 type NudgeResult =
     { Repo    : RepoName
-      Issue   : IssueNumber
+      Issue   : IssueId
       Outcome : NudgeOutcome
       LivePrs : PullRequestRef list }
 
@@ -116,26 +116,26 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
 
                     let hasPrInLock =
                         lock.PullRequests
-                        |> List.exists (fun pr -> pr.Repo = issue.Repo && pr.ClosesIssue = issue.Number && pr.State = "OPEN")
+                        |> List.exists (fun pr -> pr.Repo = issue.Repo && pr.ClosesIssue = issue.Id && pr.State = "OPEN")
 
                     if hasPrInLock then
                         if input.Verbose then eprintfn "[%s] PR already in lock file, skipping" repoStr
-                        return { Repo = issue.Repo; Issue = issue.Number; Outcome = Skipped; LivePrs = [] }
+                        return { Repo = issue.Repo; Issue = issue.Id; Outcome = Skipped; LivePrs = [] }
                     else
 
                     match providerClients.Prs with
                     | None ->
-                        return { Repo = issue.Repo; Issue = issue.Number
+                        return { Repo = issue.Repo; Issue = issue.Id
                                  Outcome = NudgeFailed "This provider does not support PR-based nudge checks (no pull-request linker available)."
                                  LivePrs = [] }
                     | Some prsLinker ->
-                        let! prs = prsLinker.FindPrsForIssue issue.Repo issue.Number
+                        let! prs = prsLinker.FindPrsForIssue issue.Repo issue.Id
                         let openOrMergedPrs = prs |> List.filter (fun pr -> pr.State = "OPEN" || pr.State = "MERGED")
                         let closedPrs       = prs |> List.filter (fun pr -> pr.State = "CLOSED")
 
                         if not (List.isEmpty openOrMergedPrs) then
                             if input.Verbose then eprintfn "[%s] PR found on GitHub, no nudge needed" repoStr
-                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = PrFoundLive; LivePrs = openOrMergedPrs }
+                            return { Repo = issue.Repo; Issue = issue.Id; Outcome = PrFoundLive; LivePrs = openOrMergedPrs }
                         else
 
                         // Compute an early-exit result when only closed PRs exist.
@@ -145,9 +145,9 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                                 match input.OnClosedPr with
                                 | ClosedPrAction.Skip ->
                                     if input.Verbose then eprintfn "[%s] Closed PR found, skipping (--on-closed-pr skip)" repoStr
-                                    Some { Repo = issue.Repo; Issue = issue.Number; Outcome = SkippedClosedPr; LivePrs = closedPrs }
+                                    Some { Repo = issue.Repo; Issue = issue.Id; Outcome = SkippedClosedPr; LivePrs = closedPrs }
                                 | ClosedPrAction.Fail ->
-                                    Some { Repo = issue.Repo; Issue = issue.Number; Outcome = NudgeFailed "closed PR exists (use --on-closed-pr nudge to re-trigger)"; LivePrs = [] }
+                                    Some { Repo = issue.Repo; Issue = issue.Id; Outcome = NudgeFailed "closed PR exists (use --on-closed-pr nudge to re-trigger)"; LivePrs = [] }
                                 | ClosedPrAction.Nudge ->
                                     None
                             else None
@@ -158,13 +158,13 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
 
                         if input.DryRun then
                             if input.Verbose then eprintfn "[%s] DRY RUN: would nudge %s" repoStr assignTo
-                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = DryRunWouldNudge; LivePrs = [] }
+                            return { Repo = issue.Repo; Issue = issue.Id; Outcome = DryRunWouldNudge; LivePrs = [] }
                         else
                             // Post nudge comment when mode includes comment
                             if nudgeMode = "comment-only" || nudgeMode = "comment-and-reassign" then
                                 match nudgeComment with
                                 | Some tmpl ->
-                                    do! Comments.postTemplatedComment client providerClients.Repos issue.Repo issue.Number assignTo jobOwner tmpl input.Verbose "nudge" Map.empty
+                                    do! Comments.postTemplatedComment client providerClients.Repos issue.Repo issue.Id assignTo jobOwner tmpl input.Verbose "nudge" Map.empty
                                 | None -> ()
 
                             // Unassign + reassign when mode includes reassign.
@@ -172,11 +172,11 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                             let mutable failure : string option = None
                             if modeReassigns then
                                 if input.Verbose then eprintfn "[%s] Nudging %s (unassign + reassign)" repoStr assignTo
-                                match! client.UnassignIssue issue.Repo issue.Number assignTo with
+                                match! client.UnassignIssue issue.Repo issue.Id assignTo with
                                 | Error e -> failure <- Some (nudgeFailureMessage assignTo e)
                                 | Ok ()   -> ()
                                 if failure.IsNone then
-                                    match! client.AssignIssue issue.Repo issue.Number assignTo with
+                                    match! client.AssignIssue issue.Repo issue.Id assignTo with
                                     | Error e -> failure <- Some (nudgeFailureMessage assignTo e)
                                     | Ok ()   -> ()
 
@@ -184,7 +184,7 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                                 match failure with
                                 | Some reason -> NudgeFailed reason
                                 | None        -> NudgeSent
-                            return { Repo = issue.Repo; Issue = issue.Number; Outcome = outcome; LivePrs = [] }
+                            return { Repo = issue.Repo; Issue = issue.Id; Outcome = outcome; LivePrs = [] }
                 finally
                     semaphore.Release() |> ignore
             })

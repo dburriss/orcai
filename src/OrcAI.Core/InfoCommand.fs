@@ -59,7 +59,7 @@ let private fetchFromGitHub
                     | Ok (Some issue) ->
                         let! foundPrs =
                             match prs with
-                            | Some p -> p.FindPrsForIssue repo issue.Number
+                            | Some p -> p.FindPrsForIssue repo issue.Id
                             | None   -> async { return [] }
                         return Ok ([issue], foundPrs)
                 })

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: Issue and project identifiers are now opaque strings instead of GitHub-shaped integers (internal groundwork for supporting non-GitHub providers in the future). User-visible effects:
+  - **Lock files**: the `.lock.json` format has changed. Existing lock files fail to load with `Lock file was written by an older OrcAI version with incompatible issue/project ids. Delete <path> and re-run.` There is no migration — delete the affected `.lock.json` file(s) and re-run `orcai run` to regenerate them.
+  - **`--json` output**: issue and project numbers in `orcai run --json`, `orcai info --json`, and `orcai cleanup --json` are now emitted as JSON strings instead of numbers (e.g. `"issueNumber": "42"` instead of `"issueNumber": 42`). Human-readable console output (e.g. `#42`) is unchanged.
+
+---
+
 ### Added
 
 - `action:` YAML field — typed, explicit action to execute after issue creation. Supported types:

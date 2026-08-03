@@ -13,19 +13,19 @@ module A =
 
     module ProjectInfo =
         let defaults () : ProjectInfo =
-            { Org    = OrgName "myorg"
-              Number = 1
-              Title  = "My Project"
-              Url    = "https://github.com/orgs/myorg/projects/1" }
+            { Org   = OrgName "myorg"
+              Id    = ProjectId "1"
+              Title = "My Project"
+              Url   = "https://github.com/orgs/myorg/projects/1" }
 
-        let withNumber n (p: ProjectInfo) = { p with Number = n }
+        let withNumber n (p: ProjectInfo) = { p with Id = ProjectId (string n) }
         let withTitle  t (p: ProjectInfo) = { p with Title = t }
 
     module IssueRef =
         let defaults (repo: RepoName) num : IssueRef =
             let (RepoName r) = repo
             { Repo      = repo
-              Number    = IssueNumber num
+              Id        = IssueId (string num)
               Url       = $"https://github.com/{r}/issues/{num}"
               Assignees = [] }
 
@@ -37,7 +37,7 @@ module A =
             { Repo        = repo
               Number      = PrNumber prNum
               Url         = $"https://github.com/{r}/pull/{prNum}"
-              ClosesIssue = IssueNumber issueNum
+              ClosesIssue = IssueId (string issueNum)
               State       = "OPEN" }
 
         let withState s (pr: PullRequestRef) = { pr with State = s }

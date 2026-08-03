@@ -63,7 +63,7 @@ let private writeLock
     (issues: (RepoName * int) list)
     (prs: (RepoName * int * int * string) list)    // repo, prNum, issueNum, state
     =
-    let project = { Org = OrgName "myorg"; Number = 1; Title = "Test"; Url = "" }
+    let project = { Org = OrgName "myorg"; Id = ProjectId "1"; Title = "Test"; Url = "" }
     let lock : LockFile =
         { LockedAt     = System.DateTimeOffset.MinValue
           YamlHash     = "hash"
@@ -72,7 +72,7 @@ let private writeLock
           Repos        = repos
           Issues       = issues |> List.map (fun (repo, num) ->
                              let (RepoName r) = repo
-                             { Repo = repo; Number = IssueNumber num
+                             { Repo = repo; Id = IssueId (string num)
                                Url  = $"https://github.com/{r}/issues/{num}"
                                Assignees = [] })
           PullRequests  = prs |> List.map (fun (repo, prNum, issueNum, state) ->
@@ -80,7 +80,7 @@ let private writeLock
                               { Repo        = repo
                                 Number      = PrNumber prNum
                                 Url         = $"https://github.com/{r}/pull/{prNum}"
-                                ClosesIssue = IssueNumber issueNum
+                                ClosesIssue = IssueId (string issueNum)
                                 State       = state })
           SkippedRepos  = []
           Failures      = [] }

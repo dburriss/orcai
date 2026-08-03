@@ -161,7 +161,8 @@ let private printInfoResult (result: InfoResult) =
     let row (label: string) (value: string) =
         grid.AddRow([| Markup($"[bold]{label}[/]") :> Rendering.IRenderable; Markup(value) |]) |> ignore
 
-    row "Project"   $"[link={result.Lock.Project.Url}]{orgStr} / {Markup.Escape(result.Lock.Project.Title)}[/] [dim](#{result.Lock.Project.Number})[/]"
+    let (ProjectId projectId) = result.Lock.Project.Id
+    row "Project"   $"[link={result.Lock.Project.Url}]{orgStr} / {Markup.Escape(result.Lock.Project.Title)}[/] [dim](#{projectId})[/]"
     row "URL"       $"[dim]{result.Lock.Project.Url}[/]"
     row "Source"    sourceLabel
     row "Locked at" (result.Lock.LockedAt.ToString("u"))
@@ -183,16 +184,16 @@ let private printInfoResult (result: InfoResult) =
         table.AddColumn(TableColumn("[bold]Assignees[/]"))         |> ignore
 
         for issue in result.Lock.Issues do
-            let (RepoName r)    = issue.Repo
-            let (IssueNumber n) = issue.Number
-            let repoUrl         = $"https://github.com/{r}"
+            let (RepoName r) = issue.Repo
+            let (IssueId n)  = issue.Id
+            let repoUrl      = $"https://github.com/{r}"
             let assignees =
                 match issue.Assignees with
                 | [] -> "[dim](unassigned)[/]"
                 | xs -> String.concat ", " xs
             let prs =
                 result.Lock.PullRequests
-                |> List.filter (fun pr -> pr.ClosesIssue = issue.Number && pr.Repo = issue.Repo)
+                |> List.filter (fun pr -> pr.ClosesIssue = issue.Id && pr.Repo = issue.Repo)
             let prText =
                 match prs with
                 | [] -> "[dim]-[/]"
@@ -222,11 +223,11 @@ let private printInfoJson (result: InfoResult) =
         | FromGitHub   -> "github"
     let issues =
         lock.Issues |> List.map (fun issue ->
-            let (RepoName r)    = issue.Repo
-            let (IssueNumber n) = issue.Number
+            let (RepoName r) = issue.Repo
+            let (IssueId n)  = issue.Id
             let prs =
                 lock.PullRequests
-                |> List.filter (fun pr -> pr.ClosesIssue = issue.Number && pr.Repo = issue.Repo)
+                |> List.filter (fun pr -> pr.ClosesIssue = issue.Id && pr.Repo = issue.Repo)
                 |> List.map (fun pr -> let (PrNumber pn) = pr.Number in pn)
             {| repo      = r
                issueNumber = n
@@ -270,8 +271,8 @@ let private printRunJsonMulti (results: Map<string, Result<OrcAI.Core.RunCommand
                     let wouldUpdate   = result.Results |> List.filter (fun r -> r.Outcome = OrcAI.Core.RunCommand.DryRunWouldUpdate)    |> List.length
                     let issues =
                         result.Results |> List.map (fun r ->
-                            let (RepoName repo)   = r.Issue.Repo
-                            let (IssueNumber num) = r.Issue.Number
+                            let (RepoName repo) = r.Issue.Repo
+                            let (IssueId num)   = r.Issue.Id
                             let status =
                                 match r.Outcome with
                                 | OrcAI.Core.RunCommand.Created             -> "created"
@@ -310,11 +311,11 @@ let private printCleanupJson (result: OrcAI.Core.CleanupCommand.CleanupResult) =
         |> List.choose (fun r ->
             match r with
             | OrcAI.Core.CleanupCommand.CleanedPr(repo, prN) ->
-                Some {| ``type`` = "pr"; repo = Some repo; number = prN; org = None; name = None |}
+                Some {| ``type`` = "pr"; repo = Some repo; number = string prN; org = None; name = None |}
             | OrcAI.Core.CleanupCommand.CleanedIssue(repo, issueN) ->
                 Some {| ``type`` = "issue"; repo = Some repo; number = issueN; org = None; name = None |}
-            | OrcAI.Core.CleanupCommand.CleanedProject(org, name, num) ->
-                Some {| ``type`` = "project"; repo = None; number = num; org = Some org; name = Some name |}
+            | OrcAI.Core.CleanupCommand.CleanedProject(org, name, id) ->
+                Some {| ``type`` = "project"; repo = None; number = id; org = Some org; name = Some name |}
             | OrcAI.Core.CleanupCommand.RemovedLockFile ->
                 None)
     let doc =
@@ -500,7 +501,7 @@ let main argv =
                                     let repoUrl = $"https://github.com/{repoStr}"
                                     match Map.tryFind repo resultsByRepo with
                                     | Some r ->
-                                        let (IssueNumber num) = r.Issue.Number
+                                        let (IssueId num) = r.Issue.Id
                                         let statusMarkup =
                                             match r.Outcome with
                                             | OrcAI.Core.RunCommand.Created             -> "[green]created[/]"
@@ -515,7 +516,7 @@ let main argv =
                                             | OrcAI.Core.RunCommand.DryRunWouldReopen   -> "[dim]would reopen (dry run)[/]"
                                             | OrcAI.Core.RunCommand.DryRunWouldUpdate   -> "[dim]would update (dry run)[/]"
                                         let issueCell =
-                                            if num = 0 then Markup("[dim]-[/]")
+                                            if num = "0" then Markup("[dim]-[/]")
                                             else Markup($"[yellow]#{num}[/]")
                                         table.AddRow(
                                             [| Markup($"[cyan][link={repoUrl}]{Markup.Escape(repoStr)}[/][/]") :> Rendering.IRenderable
@@ -560,11 +561,11 @@ let main argv =
                                 if dryRun then printfn "DRY RUN: Would close PR #%d in %s" prN repo
                                 else printfn "Closed PR #%d in %s" prN repo
                             | OrcAI.Core.CleanupCommand.CleanedIssue(repo, issueN) ->
-                                if dryRun then printfn "DRY RUN: Would delete issue #%d in %s" issueN repo
-                                else printfn "Deleted issue #%d in %s" issueN repo
-                            | OrcAI.Core.CleanupCommand.CleanedProject(org, name, num) ->
-                                if dryRun then printfn "DRY RUN: Would delete project '%s' (#%d) from '%s'" name num org
-                                else printfn "Deleted project '%s' (#%d) from '%s'" name num org
+                                if dryRun then printfn "DRY RUN: Would delete issue #%s in %s" issueN repo
+                                else printfn "Deleted issue #%s in %s" issueN repo
+                            | OrcAI.Core.CleanupCommand.CleanedProject(org, name, id) ->
+                                if dryRun then printfn "DRY RUN: Would delete project '%s' (#%s) from '%s'" name id org
+                                else printfn "Deleted project '%s' (#%s) from '%s'" name id org
                             | OrcAI.Core.CleanupCommand.RemovedLockFile ->
                                 printfn "Removed lock file."
                         if dryRun then
@@ -637,9 +638,9 @@ let main argv =
                         table.AddColumn(TableColumn("[bold]Issue[/]").Centered()) |> ignore
                         table.AddColumn(TableColumn("[bold]Status[/]"))           |> ignore
                         for r in results do
-                            let (RepoName repo)   = r.Repo
-                            let (IssueNumber num) = r.Issue
-                            let repoUrl           = $"https://github.com/{repo}"
+                            let (RepoName repo) = r.Repo
+                            let (IssueId num)   = r.Issue
+                            let repoUrl         = $"https://github.com/{repo}"
                             let statusMarkup =
                                 match r.Outcome with
                                 | OrcAI.Core.NudgeCommand.Skipped          -> "[grey]skipped (PR in lock)[/]"

@@ -114,10 +114,10 @@ let isLabelAlreadyExists (e: string) =
 /// No repos are processed and no lock file is written.
 let private blockedResult (config: JobConfig) (reason: string) : RunResult =
     let dummyProject =
-        { Org    = config.Org
-          Number = 0
-          Title  = config.ProjectTitle
-          Url    = "" }
+        { Org   = config.Org
+          Id    = ProjectId "0"
+          Title = config.ProjectTitle
+          Url   = "" }
     let dummyLock =
         { LockedAt     = DateTimeOffset.MinValue
           YamlHash     = ""
@@ -137,10 +137,10 @@ let isStaleIssue (e: string) =
     e.Contains("Could not resolve to an issue", StringComparison.OrdinalIgnoreCase)
 
 /// Placeholder IssueRef for a repo that was skipped because it is archived.
-/// Carries no real issue number — number is 0 and URL points to the repo home.
+/// Carries no real issue id — id is "0" and URL points to the repo home.
 let private archivedPlaceholder (repo: RepoName) : IssueRef =
     let (RepoName r) = repo
-    { Repo = repo; Number = IssueNumber 0; Url = $"https://github.com/{r}"; Assignees = [] }
+    { Repo = repo; Id = IssueId "0"; Url = $"https://github.com/{r}"; Assignees = [] }
 
 /// Returns true when a FetchReposState error definitively means the repo does not exist
 /// (as opposed to a transient network/API failure where falling back to individual calls is valid).
@@ -149,10 +149,10 @@ let private isRepoNotFoundError (e: string) =
     e.Contains("Could not resolve to a Repository")
 
 /// Placeholder IssueRef for a repo where a dry run would have created a new issue.
-/// Number is 0 and URL points to a non-existent /issues/0 path.
+/// Id is "0" and URL points to a non-existent /issues/0 path.
 let private dryRunCreatePlaceholder (repo: RepoName) : IssueRef =
     let (RepoName r) = repo
-    { Repo = repo; Number = IssueNumber 0; Url = $"https://github.com/{r}/issues/0"; Assignees = [] }
+    { Repo = repo; Id = IssueId "0"; Url = $"https://github.com/{r}/issues/0"; Assignees = [] }
 
 /// Default maximum retry attempts per (repo, category) failure before a step is skipped.
 let defaultMaxAttempts = 3
@@ -391,7 +391,7 @@ let private processRepo
                                 return Error "ReopenIssue skipped (prior failure not retryable)"
                             else
                                 if verbose then eprintfn "[%s] Reopening closed issue: %s" repoStr closed.Url
-                                match! client.ReopenIssue repo closed.Number with
+                                match! client.ReopenIssue repo closed.Id with
                                 | Ok issue -> record ReopenIssue (Ok ()); return Ok (issue, Reopened)
                                 | Error e  -> record ReopenIssue (Error e); return Error e
                         | Skip ->
@@ -442,7 +442,7 @@ let private processRepo
                 async { return issue, None }
             | Comment commentTmpl ->
                 async {
-                    do! Comments.postTemplatedComment client p.Repos repo issue.Number "@" jobOwner commentTmpl verbose "trigger" Map.empty
+                    do! Comments.postTemplatedComment client p.Repos repo issue.Id "@" jobOwner commentTmpl verbose "trigger" Map.empty
                     return issue, None
                 }
             | AssignCopilot _ | Assign _ | CommentAndAssign _ ->
@@ -454,14 +454,14 @@ let private processRepo
                     | _                        -> failwith "unreachable"
                 async {
                     if wantsComment then
-                        do! Comments.postTemplatedComment client p.Repos repo issue.Number assignTo jobOwner commentTmpl verbose "trigger" Map.empty
+                        do! Comments.postTemplatedComment client p.Repos repo issue.Id assignTo jobOwner commentTmpl verbose "trigger" Map.empty
                     if not (hasAssignee assignTo issue) then
                         if not (shouldAttempt p priorFailures AssignIssue) then
                             if verbose then eprintfn "[%s] Skipping AssignIssue (prior failure not retryable)" repoStr
                             return issue, None
                         else
                             if verbose then eprintfn "[%s] Assigning %s" repoStr assignTo
-                            match! client.AssignIssue repo issue.Number assignTo with
+                            match! client.AssignIssue repo issue.Id assignTo with
                             | Error e ->
                                 record AssignIssue (Error e)
                                 eprintfn "[%s] Warning: failed to assign %s: %s" repoStr assignTo e
@@ -474,17 +474,18 @@ let private processRepo
                 }
             | Cmd(exec, cwd) ->
                 async {
-                    let (IssueNumber issueNum) = issue.Number
+                    let (IssueId issueNum) = issue.Id
                     let (OrgName orgStr) = config.Org
+                    let (ProjectId projectNum) = project.Id
                     let vars =
                         Map.ofList [
                             "repo",           repoStr
                             "org",            orgStr
-                            "issue_number",   string issueNum
+                            "issue_number",   issueNum
                             "issue_url",      issue.Url
                             "job_title",      config.ProjectTitle
                             "issue_text",     config.IssueBody
-                            "project_number", string project.Number
+                            "project_number", projectNum
                             "run_datetime",   DateTimeOffset.UtcNow.ToString("o")
                             "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBody))
                             "yaml_hash",      ""
@@ -510,7 +511,7 @@ let private processRepo
                 }
             | CmdCheckout(exec, cwd) ->
                 async {
-                    let (IssueNumber issueNum) = issue.Number
+                    let (IssueId issueNum) = issue.Id
                     let (OrgName orgStr) = config.Org
                     let branchSlug = CheckoutManager.slugify config.ProjectTitle
                     if verbose then eprintfn "[%s] Cloning repo for cmd-checkout" repoStr
@@ -530,15 +531,16 @@ let private processRepo
                         | Ok worktreePath ->
                             let! defaultBranchResult = CheckoutManager.getDefaultBranch checkoutRoot repo
                             let defaultBranch = defaultBranchResult |> Result.defaultValue ""
+                            let (ProjectId projectNum) = project.Id
                             let vars =
                                 Map.ofList [
                                     "repo",           repoStr
                                     "org",            orgStr
-                                    "issue_number",   string issueNum
+                                    "issue_number",   issueNum
                                     "issue_url",      issue.Url
                                     "job_title",      config.ProjectTitle
                                     "issue_text",     config.IssueBody
-                                    "project_number", string project.Number
+                                    "project_number", projectNum
                                     "run_datetime",   DateTimeOffset.UtcNow.ToString("o")
                                     "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBody))
                                     "yaml_hash",      ""
@@ -570,7 +572,7 @@ let private processRepo
                 }
             | CmdToPr(cfg) ->
                 async {
-                    let (IssueNumber issueNum) = issue.Number
+                    let (IssueId issueNum) = issue.Id
                     let (OrgName orgStr) = config.Org
                     let branchSlug = CheckoutManager.slugify config.ProjectTitle
                     let branch     = cfg.Branch        |> Option.defaultValue $"orcai/{branchSlug}"
@@ -603,15 +605,16 @@ let private processRepo
                         | Ok worktreePath ->
                             let! defaultBranchResult = CheckoutManager.getDefaultBranch checkoutRoot repo
                             let defaultBranch = defaultBranchResult |> Result.defaultValue ""
+                            let (ProjectId projectNum) = project.Id
                             let vars =
                                 Map.ofList [
                                     "repo",           repoStr
                                     "org",            orgStr
-                                    "issue_number",   string issueNum
+                                    "issue_number",   issueNum
                                     "issue_url",      issue.Url
                                     "job_title",      config.ProjectTitle
                                     "issue_text",     config.IssueBody
-                                    "project_number", string project.Number
+                                    "project_number", projectNum
                                     "run_datetime",   DateTimeOffset.UtcNow.ToString("o")
                                     "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBody))
                                     "yaml_hash",      ""
@@ -695,7 +698,7 @@ let private processRepo
                                                 return None
                                             else
                                                 if verbose then eprintfn "[%s] PR opened: %s" repoStr (prUrl.Trim())
-                                                return Some { Repo = repo; Number = PrNumber 0; Url = prUrl.Trim(); ClosesIssue = issue.Number; State = "OPEN" }
+                                                return Some { Repo = repo; Number = PrNumber 0; Url = prUrl.Trim(); ClosesIssue = issue.Id; State = "OPEN" }
                                         }
                                     let! prResult =
                                         match effectiveWriteBack with
@@ -781,10 +784,10 @@ let private runFull
             | None when input.DryRun ->
                 eprintfn "Project '%s' not found in '%s' — would create (dry run)." config.ProjectTitle orgStr
                 let placeholder : ProjectInfo =
-                    { Org    = config.Org
-                      Number = 0
-                      Title  = config.ProjectTitle
-                      Url    = $"https://github.com/orgs/{orgStr}/projects/0" }
+                    { Org   = config.Org
+                      Id    = ProjectId "0"
+                      Title = config.ProjectTitle
+                      Url   = $"https://github.com/orgs/{orgStr}/projects/0" }
                 return Ok placeholder
             | None ->
                 eprintfn "Project '%s' not found in '%s', creating..." config.ProjectTitle orgStr
@@ -978,8 +981,8 @@ let private refreshBodies
             toRefresh
             |> List.map (fun r ->
                 async {
-                    let (RepoName repoStr)   = r.Issue.Repo
-                    let (IssueNumber issueN) = r.Issue.Number
+                    let (RepoName repoStr) = r.Issue.Repo
+                    let (IssueId issueN)   = r.Issue.Id
                     if input.DryRun then
                         if input.Verbose then eprintfn "[%s] Would refresh issue body (dry run)" repoStr
                         return { Issue = r.Issue; Outcome = DryRunWouldUpdate }, None
@@ -987,7 +990,7 @@ let private refreshBodies
                         if input.Verbose then eprintfn "[%s] Skipping UpdateBody (prior failure not retryable)" repoStr
                         return r, None
                     else
-                        match! providerClients.Tracker.UpdateIssue r.Issue.Repo r.Issue.Number config.IssueTitle config.IssueBody with
+                        match! providerClients.Tracker.UpdateIssue r.Issue.Repo r.Issue.Id config.IssueTitle config.IssueBody with
                         | Ok () ->
                             let newOutcome =
                                 match r.Outcome with
@@ -996,7 +999,7 @@ let private refreshBodies
                             return { Issue = r.Issue; Outcome = newOutcome },
                                    Some (r.Issue.Repo, UpdateBody, Ok ())
                         | Error e when isStaleIssue e ->
-                            eprintfn "[%s] Stale issue #%d during body refresh — will recreate." repoStr issueN
+                            eprintfn "[%s] Stale issue #%s during body refresh — will recreate." repoStr issueN
                             return { Issue = r.Issue; Outcome = StaleIssueRecreated }, None
                         | Error e ->
                             eprintfn "[%s] Error refreshing issue body: %s" repoStr e

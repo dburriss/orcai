@@ -27,21 +27,21 @@ type IIssueTracker =
     // Issues
     abstract FindIssue        : repo:RepoName -> title:string -> Async<Result<IssueRef option, string>>
     abstract FindClosedIssue  : repo:RepoName -> title:string -> Async<Result<IssueRef option, string>>
-    abstract ReopenIssue      : repo:RepoName -> issue:IssueNumber -> Async<Result<IssueRef, string>>
+    abstract ReopenIssue      : repo:RepoName -> issue:IssueId -> Async<Result<IssueRef, string>>
     abstract CreateIssue      : repo:RepoName -> title:string -> body:string -> labels:string list -> Async<Result<IssueRef, string>>
-    abstract UpdateIssue      : repo:RepoName -> issue:IssueNumber -> title:string -> body:string  -> Async<Result<unit, string>>
-    abstract DeleteIssue      : repo:RepoName -> issue:IssueNumber           -> Async<Result<unit, string>>
+    abstract UpdateIssue      : repo:RepoName -> issue:IssueId -> title:string -> body:string  -> Async<Result<unit, string>>
+    abstract DeleteIssue      : repo:RepoName -> issue:IssueId           -> Async<Result<unit, string>>
     abstract AddIssueToProject: project:ProjectInfo -> issue:IssueRef        -> Async<Result<unit, string>>
-    abstract AssignIssue      : repo:RepoName -> issue:IssueNumber -> assignee:string -> Async<Result<unit, string>>
-    abstract UnassignIssue    : repo:RepoName -> issue:IssueNumber -> assignee:string -> Async<Result<unit, string>>
-    abstract PostComment      : repo:RepoName -> issue:IssueNumber -> body:string    -> Async<Result<unit, string>>
+    abstract AssignIssue      : repo:RepoName -> issue:IssueId -> assignee:string -> Async<Result<unit, string>>
+    abstract UnassignIssue    : repo:RepoName -> issue:IssueId -> assignee:string -> Async<Result<unit, string>>
+    abstract PostComment      : repo:RepoName -> issue:IssueId -> body:string    -> Async<Result<unit, string>>
 
     // State
-    abstract GetIssueState    : repo:RepoName -> issue:IssueNumber  -> Async<string option>
+    abstract GetIssueState    : repo:RepoName -> issue:IssueId  -> Async<string option>
 
 /// Optional — GitHub-API PR tracking. None for providers with no PR concept.
 type IPullRequestLinker =
-    abstract FindPrsForIssue  : repo:RepoName -> issue:IssueNumber -> Async<PullRequestRef list>
+    abstract FindPrsForIssue  : repo:RepoName -> issue:IssueId -> Async<PullRequestRef list>
     abstract ClosePr          : repo:RepoName -> pr:PrNumber        -> Async<Result<unit, string>>
     abstract GetPrState       : repo:RepoName -> pr:PrNumber        -> Async<string option>
 

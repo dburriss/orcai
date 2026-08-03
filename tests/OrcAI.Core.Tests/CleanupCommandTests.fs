@@ -49,4 +49,4 @@ let ``Prs=None skips PR lookup/close and deletes the issue directly`` () =
     | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
     | Ok cleanupResult ->
         Assert.DoesNotContain(cleanupResult.Resources, function CleanedPr _ -> true | _ -> false)
-        Assert.Contains(cleanupResult.Resources, function CleanedIssue("myorg/repo-a", 7) -> true | _ -> false)
+        Assert.Contains(cleanupResult.Resources, function CleanedIssue("myorg/repo-a", "7") -> true | _ -> false)

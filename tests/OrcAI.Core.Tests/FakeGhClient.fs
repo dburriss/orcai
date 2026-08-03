@@ -14,18 +14,18 @@ type Handlers =
       CreateLabel      : RepoName    -> string      -> Async<Result<unit, string>>
       FindIssue        : RepoName    -> string      -> Async<Result<IssueRef option, string>>
       FindClosedIssue  : RepoName    -> string      -> Async<Result<IssueRef option, string>>
-      ReopenIssue      : RepoName    -> IssueNumber -> Async<Result<IssueRef, string>>
+      ReopenIssue      : RepoName    -> IssueId -> Async<Result<IssueRef, string>>
       CreateIssue      : RepoName    -> string -> string -> string list -> Async<Result<IssueRef, string>>
-      UpdateIssue      : RepoName    -> IssueNumber -> string -> string -> Async<Result<unit, string>>
-      DeleteIssue      : RepoName    -> IssueNumber -> Async<Result<unit, string>>
+      UpdateIssue      : RepoName    -> IssueId -> string -> string -> Async<Result<unit, string>>
+      DeleteIssue      : RepoName    -> IssueId -> Async<Result<unit, string>>
       AddIssueToProject: ProjectInfo -> IssueRef    -> Async<Result<unit, string>>
-      AssignIssue      : RepoName    -> IssueNumber -> string -> Async<Result<unit, string>>
-      UnassignIssue    : RepoName    -> IssueNumber -> string -> Async<Result<unit, string>>
-      PostComment      : RepoName    -> IssueNumber -> string -> Async<Result<unit, string>>
-      FindPrsForIssue  : RepoName    -> IssueNumber -> Async<PullRequestRef list>
+      AssignIssue      : RepoName    -> IssueId -> string -> Async<Result<unit, string>>
+      UnassignIssue    : RepoName    -> IssueId -> string -> Async<Result<unit, string>>
+      PostComment      : RepoName    -> IssueId -> string -> Async<Result<unit, string>>
+      FindPrsForIssue  : RepoName    -> IssueId -> Async<PullRequestRef list>
       ClosePr          : RepoName    -> PrNumber    -> Async<Result<unit, string>>
       GetPrState       : RepoName    -> PrNumber    -> Async<string option>
-      GetIssueState    : RepoName    -> IssueNumber -> Async<string option>
+      GetIssueState    : RepoName    -> IssueId -> Async<string option>
       ListRepos        : OrgName                   -> Async<Result<string list, string>>
       ReposExist       : RepoName list             -> Async<Map<RepoName, Result<unit, string>>>
       IsArchived       : RepoName                  -> Async<Result<bool, string>>
@@ -35,11 +35,11 @@ type Handlers =
 /// Returns a default-shaped IssueRef for repo + issue number.
 let issueFor (repo: RepoName) num : IssueRef =
     let (RepoName r) = repo
-    { Repo = repo; Number = IssueNumber num
+    { Repo = repo; Id = IssueId (string num)
       Url  = $"https://github.com/{r}/issues/{num}"; Assignees = [] }
 
 let private defaultProject () =
-    { Org = OrgName "myorg"; Number = 1; Title = "My Project"
+    { Org = OrgName "myorg"; Id = ProjectId "1"; Title = "My Project"
       Url = "https://github.com/orgs/myorg/projects/1" }
 
 /// Happy-path defaults: project and issue operations succeed; FindIssue/FindClosedIssue
@@ -137,7 +137,7 @@ let providerClients (h: Handlers) : ProviderClients =
 
 /// Returns a handler for AssignIssue that records calls by `label`.
 let trackingAssign (label: string) (calls: ConcurrentBag<string>) =
-    fun (_ : RepoName) (_ : IssueNumber) (_ : string) ->
+    fun (_ : RepoName) (_ : IssueId) (_ : string) ->
         calls.Add(label)
         async { return Ok () }
 
@@ -149,7 +149,7 @@ let trackingAddIssue (calls: ConcurrentBag<unit>) =
 
 /// Returns a handler for AssignIssue that records calls as unit.
 let trackingAssignUnit (calls: ConcurrentBag<unit>) =
-    fun (_ : RepoName) (_ : IssueNumber) (_ : string) ->
+    fun (_ : RepoName) (_ : IssueId) (_ : string) ->
         calls.Add(())
         async { return Ok () }
 

@@ -112,7 +112,7 @@ let private checkConditionForTrackedRepo
         | Some issue ->
             match condition with
             | IssueClosed ->
-                let! stateOpt = tracker.GetIssueState repo issue.Number
+                let! stateOpt = tracker.GetIssueState repo issue.Id
                 return Ok (stateOpt = Some "CLOSED")
             | PrMerged ->
                 match prs with
@@ -122,12 +122,12 @@ let private checkConditionForTrackedRepo
                         lock.PullRequests
                         |> List.exists (fun pr ->
                             pr.Repo         = repo
-                            && pr.ClosesIssue = issue.Number
+                            && pr.ClosesIssue = issue.Id
                             && pr.State       = "MERGED")
                     if mergedInLock then
                         return Ok true
                     else
-                        let! foundPrs = prs.FindPrsForIssue repo issue.Number
+                        let! foundPrs = prs.FindPrsForIssue repo issue.Id
                         return Ok (foundPrs |> List.exists (fun pr -> pr.State = "MERGED"))
     }
 

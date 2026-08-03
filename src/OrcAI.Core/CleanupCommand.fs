@@ -30,8 +30,8 @@ type CleanupInput =
 /// A resource that was (or would be) cleaned up.
 type CleanedResource =
     | CleanedPr      of repo: string * prNumber: int
-    | CleanedIssue   of repo: string * issueNumber: int
-    | CleanedProject of org: string * name: string * number: int
+    | CleanedIssue   of repo: string * issueId: string
+    | CleanedProject of org: string * name: string * id: string
     | RemovedLockFile
 
 /// The result returned to the caller for display.
@@ -54,20 +54,20 @@ let private cleanupIssue
     (dryRun  : bool)
     : Async<Result<CleanedResource list, string>> =
     async {
-        let (RepoName repoStr)   = issue.Repo
-        let (IssueNumber issueN) = issue.Number
+        let (RepoName repoStr) = issue.Repo
+        let (IssueId issueN)   = issue.Id
 
         match prs with
         | None ->
             if dryRun then
                 return Ok [ CleanedIssue(repoStr, issueN) ]
             else
-                match! tracker.DeleteIssue issue.Repo issue.Number with
+                match! tracker.DeleteIssue issue.Repo issue.Id with
                 | Error e -> return Error $"Failed to delete issue #{issueN} in {repoStr}: {e}"
                 | Ok ()   -> return Ok [ CleanedIssue(repoStr, issueN) ]
         | Some prsLinker ->
             // 1. Find PRs that close this issue
-            let! foundPrs = prsLinker.FindPrsForIssue issue.Repo issue.Number
+            let! foundPrs = prsLinker.FindPrsForIssue issue.Repo issue.Id
 
             // 2. Close each PR
             let mutable prResources : CleanedResource list = []
@@ -83,7 +83,7 @@ let private cleanupIssue
             if dryRun then
                 return Ok (prResources @ [CleanedIssue(repoStr, issueN)])
             else
-                match! tracker.DeleteIssue issue.Repo issue.Number with
+                match! tracker.DeleteIssue issue.Repo issue.Id with
                 | Error e -> return Error $"Failed to delete issue #{issueN} in {repoStr}: {e}"
                 | Ok ()   -> return Ok (prResources @ [CleanedIssue(repoStr, issueN)])
     }
@@ -161,7 +161,8 @@ let execute (deps: OrcAIDeps) (input: CleanupInput) : Result<CleanupResult, stri
 
     // 5. Delete the project
     let (OrgName orgStr) = project.Org
-    let projectResource  = CleanedProject(orgStr, project.Title, project.Number)
+    let (ProjectId projectId) = project.Id
+    let projectResource  = CleanedProject(orgStr, project.Title, projectId)
 
     let deleteResult =
         if input.DryRun then

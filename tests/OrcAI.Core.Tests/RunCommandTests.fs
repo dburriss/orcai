@@ -450,7 +450,7 @@ let private givenStaleTemplateLock (fs: MockFileSystem) (yamlPath: string) (issu
     let issue =
         let (RepoName r) = issueRepo
         { Repo = issueRepo
-          Number = IssueNumber issueNum
+          Id = IssueId (string issueNum)
           Url = $"https://github.com/{r}/issues/{issueNum}"
           Assignees = [] }
     let lock =
@@ -472,7 +472,7 @@ let private givenStaleYamlLock (fs: MockFileSystem) (yamlPath: string) (issueRep
     let issue =
         let (RepoName r) = issueRepo
         { Repo = issueRepo
-          Number = IssueNumber issueNum
+          Id = IssueId (string issueNum)
           Url = $"https://github.com/{r}/issues/{issueNum}"
           Assignees = [] }
     let lock =
@@ -656,7 +656,7 @@ let ``refreshBodies recreates issue when UpdateIssue returns stale error`` () =
     | Ok result ->
         Assert.Contains(result.Results, fun r -> r.Outcome = StaleIssueRecreated)
         let issue = List.head result.Lock.Issues
-        Assert.Equal(IssueNumber 99, issue.Number)
+        Assert.Equal(IssueId "99", issue.Id)
 
 // ---------------------------------------------------------------------------
 
@@ -739,7 +739,7 @@ let ``dry-run does not call CreateProject when project missing`` () =
     match results.[path] with
     | Error e -> Assert.Fail($"Expected Ok but got: {e}")
     | Ok result ->
-        Assert.Equal(0, result.Lock.Project.Number)
+        Assert.Equal(ProjectId "0", result.Lock.Project.Id)
 
 [<Fact>]
 let ``dry-run skips ReopenIssue and returns DryRunWouldReopen outcome`` () =
@@ -957,7 +957,7 @@ let private writeLockFor
     (issues: (RepoName * int) list)
     (prs: (RepoName * int * int * string) list)
     =
-    let project = { Org = OrgName "myorg"; Number = 1; Title = "Upstream"; Url = "" }
+    let project = { Org = OrgName "myorg"; Id = ProjectId "1"; Title = "Upstream"; Url = "" }
     let lock : LockFile =
         { LockedAt     = System.DateTimeOffset.MinValue
           YamlHash     = "h"
@@ -966,7 +966,7 @@ let private writeLockFor
           Repos        = repos
           Issues       = issues |> List.map (fun (repo, num) ->
                              let (RepoName r) = repo
-                             { Repo = repo; Number = IssueNumber num
+                             { Repo = repo; Id = IssueId (string num)
                                Url  = $"https://github.com/{r}/issues/{num}"
                                Assignees = [] })
           PullRequests  = prs |> List.map (fun (repo, prNum, issueNum, state) ->
@@ -974,7 +974,7 @@ let private writeLockFor
                               { Repo        = repo
                                 Number      = PrNumber prNum
                                 Url         = $"https://github.com/{r}/pull/{prNum}"
-                                ClosesIssue = IssueNumber issueNum
+                                ClosesIssue = IssueId (string issueNum)
                                 State       = state })
           SkippedRepos  = []
           Failures      = [] }

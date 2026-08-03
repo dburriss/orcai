@@ -26,7 +26,7 @@ type NotifyOutcome = | Skipped | Notified | DryRunWouldNotify
 
 type NotifyResult =
     { Repo    : RepoName
-      Number  : int
+      Number  : string
       Kind    : string  // "issue" | "pr"
       Outcome : NotifyOutcome }
 
@@ -85,14 +85,14 @@ let execute (deps: OrcAIDeps) (input: NotifyInput) : Result<NotifyResult list, s
         items
         |> List.map (fun item ->
             async {
-                let repo, issueNum, kind =
+                let repo, issueId, kind =
                     match item with
-                    | IssueItem i -> i.Repo, i.Number, "issue"
+                    | IssueItem i -> i.Repo, i.Id, "issue"
                     | PrItem p    ->
                         let (PrNumber n) = p.Number
-                        p.Repo, IssueNumber n, "pr"
-                let (RepoName repoStr)  = repo
-                let (IssueNumber num)   = issueNum
+                        p.Repo, IssueId (string n), "pr"
+                let (RepoName repoStr) = repo
+                let (IssueId num)      = issueId
 
                 let! shouldSkip =
                     if input.State = "all" then async { return false }
@@ -100,7 +100,7 @@ let execute (deps: OrcAIDeps) (input: NotifyInput) : Result<NotifyResult list, s
                         async {
                             let! liveState =
                                 match item with
-                                | IssueItem _ -> client.GetIssueState repo issueNum
+                                | IssueItem _ -> client.GetIssueState repo issueId
                                 | PrItem p    ->
                                     match providerClients.Prs with
                                     | Some prs -> prs.GetPrState repo p.Number
@@ -112,20 +112,20 @@ let execute (deps: OrcAIDeps) (input: NotifyInput) : Result<NotifyResult list, s
                         }
 
                 if shouldSkip then
-                    if input.Verbose then eprintfn "[%s #%d] Filtered by --state %s, skipping" repoStr num input.State
+                    if input.Verbose then eprintfn "[%s #%s] Filtered by --state %s, skipping" repoStr num input.State
                     return { Repo = repo; Number = num; Kind = kind; Outcome = Skipped }
                 else
 
                 if input.DryRun then
-                    if input.Verbose then eprintfn "[%s #%d] DRY RUN: would notify" repoStr num
+                    if input.Verbose then eprintfn "[%s #%s] DRY RUN: would notify" repoStr num
                     return { Repo = repo; Number = num; Kind = kind; Outcome = DryRunWouldNotify }
                 else
 
                 match effectiveTemplate with
                 | Some tmpl ->
-                    do! Comments.postTemplatedComment client providerClients.Repos repo issueNum assignTo jobOwner tmpl input.Verbose "notify" input.ExtraVars
+                    do! Comments.postTemplatedComment client providerClients.Repos repo issueId assignTo jobOwner tmpl input.Verbose "notify" input.ExtraVars
                 | None ->
-                    if input.Verbose then eprintfn "[%s #%d] No notify.comment configured, skipping" repoStr num
+                    if input.Verbose then eprintfn "[%s #%s] No notify.comment configured, skipping" repoStr num
 
                 return { Repo = repo; Number = num; Kind = kind; Outcome = Notified }
             })

@@ -13,7 +13,7 @@ let postTemplatedComment
         (tracker   : IIssueTracker)
         (repos     : IRepoInspector option)
         (repo      : RepoName)
-        (issue     : IssueNumber)
+        (issue     : IssueId)
         (assignTo  : string)
         (jobOwner  : string option)
         (template  : string)

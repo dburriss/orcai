@@ -29,7 +29,7 @@ let ``write then tryRead round-trips the lock file`` () =
     | None      -> Assert.Fail("Expected Some but got None")
     | Some read ->
         Assert.Equal(original.YamlHash,        read.YamlHash)
-        Assert.Equal(original.Project.Number,  read.Project.Number)
+        Assert.Equal(original.Project.Id,      read.Project.Id)
         Assert.Equal(original.Project.Title,   read.Project.Title)
         Assert.Equal(original.Project.Org,     read.Project.Org)
         Assert.Equal(original.Repos.Length,    read.Repos.Length)
@@ -79,7 +79,7 @@ let ``round-trip preserves issue number and URL`` () =
     | None      -> Assert.Fail("Expected Some")
     | Some read ->
         let issue = List.head read.Issues
-        Assert.Equal(IssueNumber 7, issue.Number)
+        Assert.Equal(IssueId "7", issue.Id)
         Assert.Equal("https://github.com/myorg/repo-a/issues/7", issue.Url)
 
 [<Fact>]
@@ -92,7 +92,7 @@ let ``round-trip preserves PR number, URL, and closesIssue`` () =
         let pr = List.head read.PullRequests
         Assert.Equal(PrNumber 3,    pr.Number)
         Assert.Equal("https://github.com/myorg/repo-a/pull/3", pr.Url)
-        Assert.Equal(IssueNumber 7, pr.ClosesIssue)
+        Assert.Equal(IssueId "7", pr.ClosesIssue)
 
 [<Fact>]
 let ``round-trip preserves project org, title, number, and URL`` () =
@@ -103,7 +103,7 @@ let ``round-trip preserves project org, title, number, and URL`` () =
     | None      -> Assert.Fail("Expected Some")
     | Some read ->
         Assert.Equal(lock.Project.Org,    read.Project.Org)
-        Assert.Equal(lock.Project.Number, read.Project.Number)
+        Assert.Equal(lock.Project.Id,     read.Project.Id)
         Assert.Equal(lock.Project.Title,  read.Project.Title)
         Assert.Equal(lock.Project.Url,    read.Project.Url)
 
@@ -137,10 +137,11 @@ let ``tryRead deserialises lock files written before skippedRepos field was adde
     (fs :> System.IO.Abstractions.IFileSystem).Directory.CreateDirectory("/work") |> ignore
     let legacyJson =
         """{
+          "formatVersion": 2,
           "lockedAt":     "2026-03-02T10:00:00+00:00",
           "yamlHash":     "abc123",
           "templateHash": "def456",
-          "project":      { "org": "myorg", "number": 1, "title": "P", "url": "https://github.com/orgs/myorg/projects/1" },
+          "project":      { "org": "myorg", "id": "1", "title": "P", "url": "https://github.com/orgs/myorg/projects/1" },
           "repos":        ["myorg/repo-a"],
           "issues":       [],
           "pullRequests": []
@@ -157,10 +158,11 @@ let ``tryRead deserialises lock files written before failures field was added`` 
     (fs :> System.IO.Abstractions.IFileSystem).Directory.CreateDirectory("/work") |> ignore
     let legacyJson =
         """{
+          "formatVersion": 2,
           "lockedAt":     "2026-03-02T10:00:00+00:00",
           "yamlHash":     "abc123",
           "templateHash": "def456",
-          "project":      { "org": "myorg", "number": 1, "title": "P", "url": "https://github.com/orgs/myorg/projects/1" },
+          "project":      { "org": "myorg", "id": "1", "title": "P", "url": "https://github.com/orgs/myorg/projects/1" },
           "repos":        ["myorg/repo-a"],
           "issues":       [],
           "pullRequests": [],
@@ -170,6 +172,46 @@ let ``tryRead deserialises lock files written before failures field was added`` 
     match tryRead fs "/work/job.yml" with
     | None      -> Assert.Fail("Expected Some")
     | Some read -> Assert.Empty(read.Failures)
+
+[<Fact>]
+let ``tryRead throws a clear error for a lock file with no formatVersion (pre-opaque-id format)`` () =
+    let fs   = MockFileSystem()
+    let path = "/work/job.lock.json"
+    (fs :> System.IO.Abstractions.IFileSystem).Directory.CreateDirectory("/work") |> ignore
+    let legacyJson =
+        """{
+          "lockedAt":     "2026-03-02T10:00:00+00:00",
+          "yamlHash":     "abc123",
+          "templateHash": "def456",
+          "project":      { "org": "myorg", "number": 1, "title": "P", "url": "https://github.com/orgs/myorg/projects/1" },
+          "repos":        ["myorg/repo-a"],
+          "issues":       [],
+          "pullRequests": []
+        }"""
+    (fs :> System.IO.Abstractions.IFileSystem).File.WriteAllText(path, legacyJson)
+    let ex = Assert.Throws<System.Exception>(fun () -> tryRead fs "/work/job.yml" |> ignore)
+    Assert.Contains("incompatible issue/project ids", ex.Message)
+    Assert.Contains(path, ex.Message)
+
+[<Fact>]
+let ``tryRead throws a clear error for a lock file with a mismatched formatVersion`` () =
+    let fs   = MockFileSystem()
+    let path = "/work/job.lock.json"
+    (fs :> System.IO.Abstractions.IFileSystem).Directory.CreateDirectory("/work") |> ignore
+    let futureJson =
+        """{
+          "formatVersion": 99,
+          "lockedAt":     "2026-03-02T10:00:00+00:00",
+          "yamlHash":     "abc123",
+          "templateHash": "def456",
+          "project":      { "org": "myorg", "id": "1", "title": "P", "url": "https://github.com/orgs/myorg/projects/1" },
+          "repos":        ["myorg/repo-a"],
+          "issues":       [],
+          "pullRequests": []
+        }"""
+    (fs :> System.IO.Abstractions.IFileSystem).File.WriteAllText(path, futureJson)
+    let ex = Assert.Throws<System.Exception>(fun () -> tryRead fs "/work/job.yml" |> ignore)
+    Assert.Contains("incompatible issue/project ids", ex.Message)
 
 [<Fact>]
 let ``round-trip preserves failures list`` () =

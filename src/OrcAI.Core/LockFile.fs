@@ -10,25 +10,30 @@ open OrcAI.Core.Domain
 // Reads and writes the JSON lock file that sits alongside the YAML config.
 // Lock file path convention: <yaml-basename>.lock.json
 //
-// Single-case DUs (OrgName, RepoName, IssueNumber, PrNumber) are unwrapped
-// to primitives in a DTO layer so the JSON is human-readable.
+// Single-case DUs (OrgName, RepoName, IssueId, ProjectId, PrNumber) are
+// unwrapped to primitives in a DTO layer so the JSON is human-readable.
 // ---------------------------------------------------------------------------
 
 // ------------------------------------------------------------------
 // JSON DTO types — plain records with primitive fields
 // ------------------------------------------------------------------
 
+/// Bumped whenever the lock file's on-disk shape changes incompatibly.
+/// See tryRead — an old file (no formatVersion, or a mismatched one)
+/// fails loudly instead of silently loading with corrupt data.
+let internal currentFormatVersion = 2
+
 [<CLIMutable>]
 type ProjectInfoDto =
-    { [<JsonPropertyName("org")>]    org:    string
-      [<JsonPropertyName("number")>] number: int
-      [<JsonPropertyName("title")>]  title:  string
-      [<JsonPropertyName("url")>]    url:    string }
+    { [<JsonPropertyName("org")>]   org:   string
+      [<JsonPropertyName("id")>]   id:    string
+      [<JsonPropertyName("title")>] title: string
+      [<JsonPropertyName("url")>]  url:   string }
 
 [<CLIMutable>]
 type IssueRefDto =
     { [<JsonPropertyName("repo")>]      repo:      string
-      [<JsonPropertyName("number")>]    number:    int
+      [<JsonPropertyName("id")>]        id:        string
       [<JsonPropertyName("url")>]       url:       string
       [<JsonPropertyName("assignees")>] assignees: string[] }
 
@@ -37,7 +42,7 @@ type PullRequestRefDto =
     { [<JsonPropertyName("repo")>]        repo:        string
       [<JsonPropertyName("number")>]      number:      int
       [<JsonPropertyName("url")>]         url:         string
-      [<JsonPropertyName("closesIssue")>] closesIssue: int
+      [<JsonPropertyName("closesIssue")>] closesIssue: string
       [<JsonPropertyName("state")>]       state:       string }
 
 [<CLIMutable>]
@@ -52,7 +57,8 @@ type RepoFailureDto =
 
 [<CLIMutable>]
 type LockFileDto =
-    { [<JsonPropertyName("lockedAt")>]      lockedAt:     string
+    { [<JsonPropertyName("formatVersion")>] formatVersion: int
+      [<JsonPropertyName("lockedAt")>]      lockedAt:     string
       [<JsonPropertyName("yamlHash")>]      yamlHash:     string
       [<JsonPropertyName("templateHash")>]  templateHash: string
       [<JsonPropertyName("project")>]       project:      ProjectInfoDto
@@ -191,14 +197,16 @@ let mergeFailures
 
 let private toDto (lock: LockFile) : LockFileDto =
     let (OrgName orgStr) = lock.Project.Org
-    { lockedAt    = lock.LockedAt.ToString("o")
+    let (ProjectId projectId) = lock.Project.Id
+    { formatVersion = currentFormatVersion
+      lockedAt    = lock.LockedAt.ToString("o")
       yamlHash    = lock.YamlHash
       templateHash = lock.TemplateHash
       project  =
-          { org    = orgStr
-            number = lock.Project.Number
-            title  = lock.Project.Title
-            url    = lock.Project.Url }
+          { org   = orgStr
+            id    = projectId
+            title = lock.Project.Title
+            url   = lock.Project.Url }
       repos =
           lock.Repos
           |> List.map (fun (RepoName r) -> r)
@@ -206,19 +214,19 @@ let private toDto (lock: LockFile) : LockFileDto =
       issues =
           lock.Issues
           |> List.map (fun i ->
-              let (RepoName r)    = i.Repo
-              let (IssueNumber n) = i.Number
+              let (RepoName r) = i.Repo
+              let (IssueId n)  = i.Id
               { repo      = r
-                number    = n
+                id        = n
                 url       = i.Url
                 assignees = i.Assignees |> Array.ofList })
           |> Array.ofList
       pullRequests =
           lock.PullRequests
           |> List.map (fun pr ->
-              let (RepoName r)    = pr.Repo
-              let (PrNumber n)    = pr.Number
-              let (IssueNumber c) = pr.ClosesIssue
+              let (RepoName r) = pr.Repo
+              let (PrNumber n) = pr.Number
+              let (IssueId c)  = pr.ClosesIssue
               { repo        = r
                 number      = n
                 url         = pr.Url
@@ -247,10 +255,10 @@ let private ofDto (dto: LockFileDto) : LockFile =
       YamlHash     = dto.yamlHash
       TemplateHash = if isNull dto.templateHash then "" else dto.templateHash
       Project      =
-          { Org    = OrgName dto.project.org
-            Number = dto.project.number
-            Title  = dto.project.title
-            Url    = dto.project.url }
+          { Org   = OrgName dto.project.org
+            Id    = ProjectId dto.project.id
+            Title = dto.project.title
+            Url   = dto.project.url }
       Repos =
           dto.repos |> Array.toList |> List.map RepoName
       Issues =
@@ -258,7 +266,7 @@ let private ofDto (dto: LockFileDto) : LockFile =
           |> Array.toList
           |> List.map (fun i ->
               { Repo      = RepoName i.repo
-                Number    = IssueNumber i.number
+                Id        = IssueId i.id
                 Url       = i.url
                 Assignees = i.assignees |> Array.toList })
       PullRequests =
@@ -268,7 +276,7 @@ let private ofDto (dto: LockFileDto) : LockFile =
               { Repo        = RepoName pr.repo
                 Number      = PrNumber pr.number
                 Url         = pr.url
-                ClosesIssue = IssueNumber pr.closesIssue
+                ClosesIssue = IssueId pr.closesIssue
                 State       = if isNull pr.state || pr.state = "" then "OPEN" else pr.state })
       SkippedRepos =
           if isNull dto.skippedRepos then []
@@ -313,7 +321,10 @@ let tryRead (fs: IFileSystem) (yamlPath: string) : LockFile option =
         let json = fs.File.ReadAllText(path)
         match JsonSerializer.Deserialize<LockFileDto>(json, jsonOptions) |> Option.ofObj with
         | None     -> failwith $"Lock file '{path}' deserialised to null."
-        | Some dto -> Some (ofDto dto)
+        | Some dto ->
+            if dto.formatVersion <> currentFormatVersion then
+                failwith $"Lock file was written by an older OrcAI version with incompatible issue/project ids. Delete {path} and re-run."
+            Some (ofDto dto)
 
 /// Serialise and write a lock file to disk.
 let write (fs: IFileSystem) (yamlPath: string) (lock: LockFile) : unit =

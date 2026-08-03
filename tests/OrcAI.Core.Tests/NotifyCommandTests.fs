@@ -57,7 +57,7 @@ let ``notify posts comment to open issue`` () =
     let lock    = A.LockFile.defaults () |> A.LockFile.withIssues [ A.IssueRef.defaults repo 7 ]
     writeLock fs yaml lock
 
-    let comments = ConcurrentBag<IssueNumber>()
+    let comments = ConcurrentBag<IssueId>()
     let handlers =
         { FakeGhClient.defaults with
             GetIssueState = fun _ _ -> async { return Some "OPEN" }
@@ -145,11 +145,11 @@ let ``notify targets prs when target is prs`` () =
                   |> A.LockFile.withIssues []
     writeLock fs yaml lock
 
-    let comments = ConcurrentBag<int>()
+    let comments = ConcurrentBag<string>()
     let handlers =
         { FakeGhClient.defaults with
             GetPrState  = fun _ _ -> async { return Some "OPEN" }
-            PostComment = fun _ (IssueNumber n) _ -> comments.Add(n); async { return Ok () } }
+            PostComment = fun _ (IssueId n) _ -> comments.Add(n); async { return Ok () } }
     let deps  = Given.deps fs (FakeGhClient.from handlers)
     let input = { defaultInput yaml with Target = "prs" }
 

@@ -12,21 +12,26 @@ type OrgName = OrgName of string
 /// Identifies a GitHub repository (owner/repo).
 type RepoName = RepoName of string
 
-/// A GitHub issue number within a repository.
-type IssueNumber = IssueNumber of int
+/// Opaque, provider-assigned issue identifier.
+/// GitHub: the issue number as a string ("42"). Jira: the issue key ("PROJ-123").
+type IssueId = IssueId of string
+
+/// Opaque, provider-assigned project identifier.
+/// GitHub: the project number as a string ("7"). Jira: the project key ("PROJ").
+type ProjectId = ProjectId of string
 
 /// A GitHub pull-request number within a repository.
 type PrNumber = PrNumber of int
 
 type ProjectInfo =
-    { Org    : OrgName
-      Number : int
-      Title  : string
-      Url    : string }
+    { Org   : OrgName
+      Id    : ProjectId
+      Title : string
+      Url   : string }
 
 type IssueRef =
     { Repo      : RepoName
-      Number    : IssueNumber
+      Id        : IssueId
       Url       : string
       Assignees : string list }
 
@@ -41,7 +46,7 @@ type PullRequestRef =
     { Repo        : RepoName
       Number      : PrNumber
       Url         : string
-      ClosesIssue : IssueNumber
+      ClosesIssue : IssueId
       State       : string }
 
 type ClosedIssueAction = | Create | Reopen | Skip | Fail
