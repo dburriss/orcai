@@ -174,32 +174,19 @@ let ``execute with NoParallel=true processes files sequentially and returns corr
     Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
 
 // ---------------------------------------------------------------------------
-// Copilot assignment / mixed-auth tests
+// Assignment tests
 // ---------------------------------------------------------------------------
+// Copilot-vs-primary token selection is now an internal GhCliClient concern
+// (see OrcAI.GitHub.Tests), invisible to RunCommand — it always calls
+// tracker.AssignIssue directly, same as any other assignee.
 
 [<Fact>]
-let ``processRepo uses CopilotClient when Some for AssignIssue`` () =
+let ``processRepo calls AssignIssue via the tracker`` () =
     let fs          = MockFileSystem()
     let path        = Given.namedYamlFile fs "job.yml"
     let assignCalls = ConcurrentBag<string>()
-    let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
-    let copilot     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "copilot"  assignCalls }
-    let deps        = { Given.deps fs primary with CopilotClient = Some copilot }
-    let input       = A.RunInput.defaults () |> A.RunInput.withIsPrimaryAuthApp true
-
-    let results = execute deps [path] input |> Async.RunSynchronously
-
-    Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
-    Assert.Contains("copilot", assignCalls)
-    Assert.DoesNotContain("primary", assignCalls)
-
-[<Fact>]
-let ``processRepo uses primary client for AssignIssue when CopilotClient is None and IsPrimaryAuthApp=false`` () =
-    let fs          = MockFileSystem()
-    let path        = Given.namedYamlFile fs "job.yml"
-    let assignCalls = ConcurrentBag<string>()
-    let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
-    let deps        = Given.deps fs primary
+    let client      = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
+    let deps        = Given.deps fs client
     let input       = A.RunInput.defaults ()
 
     let results = execute deps [path] input |> Async.RunSynchronously
@@ -208,28 +195,13 @@ let ``processRepo uses primary client for AssignIssue when CopilotClient is None
     Assert.Contains("primary", assignCalls)
 
 [<Fact>]
-let ``processRepo skips assignment and does not call AssignIssue when CopilotClient=None and IsPrimaryAuthApp=true`` () =
-    let fs          = MockFileSystem()
-    let path        = Given.namedYamlFile fs "job.yml"
-    let assignCalls = ConcurrentBag<string>()
-    let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
-    let deps        = Given.deps fs primary
-    let input       = A.RunInput.defaults () |> A.RunInput.withIsPrimaryAuthApp true
-
-    let results = execute deps [path] input |> Async.RunSynchronously
-
-    Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
-    Assert.Empty(assignCalls)
-
-[<Fact>]
-let ``processRepo skips assignment entirely when action is noop regardless of CopilotClient`` () =
+let ``processRepo skips assignment entirely when action is noop`` () =
     let fs          = MockFileSystem()
     let path        = Given.namedNoopYamlFile fs "job.yml"
     let assignCalls = ConcurrentBag<string>()
-    let primary     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
-    let copilot     = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "copilot"  assignCalls }
-    let deps        = { Given.deps fs primary with CopilotClient = Some copilot }
-    let input       = A.RunInput.defaults () |> A.RunInput.withIsPrimaryAuthApp true
+    let client      = FakeGhClient.from { FakeGhClient.defaults with AssignIssue = FakeGhClient.trackingAssign "primary" assignCalls }
+    let deps        = Given.deps fs client
+    let input       = A.RunInput.defaults ()
 
     let results = execute deps [path] input |> Async.RunSynchronously
 

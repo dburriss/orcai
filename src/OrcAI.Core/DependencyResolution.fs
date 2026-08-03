@@ -9,7 +9,7 @@ open System
 open System.IO
 open System.IO.Abstractions
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
+open OrcAI.Core.Provider
 
 // ---------------------------------------------------------------------------
 // Topological ordering
@@ -94,42 +94,48 @@ let resolveChain (fs: IFileSystem) (userPaths: string list) : Result<(string * b
 // ---------------------------------------------------------------------------
 
 /// Check whether the condition is met for a repo tracked by the upstream lock.
-/// Returns false if the repo has no issue recorded in the lock.
+/// Returns Ok false if the repo has no issue recorded in the lock, or Error if the
+/// condition requires a capability (pr_merged → PR linking) the provider doesn't have.
 let private checkConditionForTrackedRepo
-    (client    : IGhClient)
+    (tracker   : IIssueTracker)
+    (prs       : IPullRequestLinker option)
     (lock      : LockFile)
     (condition : DependencyCondition)
     (repo      : RepoName)
-    : Async<bool> =
+    : Async<Result<bool, string>> =
     async {
         let issueOpt = lock.Issues |> List.tryFind (fun i -> i.Repo = repo)
         match issueOpt with
         | None ->
             // Repo is in lock.Repos but no issue was created — condition cannot be met.
-            return false
+            return Ok false
         | Some issue ->
             match condition with
             | IssueClosed ->
-                let! stateOpt = client.GetIssueState repo issue.Number
-                return stateOpt = Some "CLOSED"
+                let! stateOpt = tracker.GetIssueState repo issue.Number
+                return Ok (stateOpt = Some "CLOSED")
             | PrMerged ->
-                let mergedInLock =
-                    lock.PullRequests
-                    |> List.exists (fun pr ->
-                        pr.Repo         = repo
-                        && pr.ClosesIssue = issue.Number
-                        && pr.State       = "MERGED")
-                if mergedInLock then
-                    return true
-                else
-                    let! prs = client.FindPrsForIssue repo issue.Number
-                    return prs |> List.exists (fun pr -> pr.State = "MERGED")
+                match prs with
+                | None -> return Error "This provider does not support 'pr_merged' depends_on conditions (no pull-request linker available)."
+                | Some prs ->
+                    let mergedInLock =
+                        lock.PullRequests
+                        |> List.exists (fun pr ->
+                            pr.Repo         = repo
+                            && pr.ClosesIssue = issue.Number
+                            && pr.State       = "MERGED")
+                    if mergedInLock then
+                        return Ok true
+                    else
+                        let! foundPrs = prs.FindPrsForIssue repo issue.Number
+                        return Ok (foundPrs |> List.exists (fun pr -> pr.State = "MERGED"))
     }
 
 /// Apply a single depends_on entry to filter candidateRepos to those eligible.
-/// Returns Error if an all_repos gate is not met.
+/// Returns Error if an all_repos gate is not met, or if a condition check fails.
 let private applyDependency
-    (client         : IGhClient)
+    (tracker        : IIssueTracker)
+    (prs            : IPullRequestLinker option)
     (upstreamConfig : JobConfig)
     (upstreamLock   : LockFile option)
     (dep            : DependsOnConfig)
@@ -154,16 +160,20 @@ let private applyDependency
                     lock.Repos
                     |> List.map (fun repo ->
                         async {
-                            let! met = checkConditionForTrackedRepo client lock dep.Condition repo
+                            let! met = checkConditionForTrackedRepo tracker prs lock dep.Condition repo
                             return repo, met
                         })
                     |> Async.Parallel
-                let failing = condResults |> Array.filter (not << snd)
+                let firstError = condResults |> Array.tryPick (fun (_, r) -> match r with Error e -> Some e | Ok _ -> None)
+                match firstError with
+                | Some e -> return Error e
+                | None ->
+                let failing = condResults |> Array.choose (fun (repo, r) -> match r with Ok false -> Some repo | _ -> None)
                 if failing.Length > 0 then
                     let examples =
                         failing
                         |> Array.truncate 3
-                        |> Array.map (fun (RepoName r, _) -> r)
+                        |> Array.map (fun (RepoName r) -> r)
                         |> String.concat ", "
                     return Error $"Dependency gate not met: {failing.Length} repo(s) have not satisfied '{condStr}' in '{dep.Job}' (e.g. {examples})"
                 else
@@ -176,24 +186,29 @@ let private applyDependency
                 |> List.map (fun repo ->
                     async {
                         if not (isTracked repo) then
-                            return includeUntracked
+                            return Ok includeUntracked
                         else
                             match upstreamLock with
-                            | None   -> return false
+                            | None   -> return Ok false
                             | Some lock ->
-                                return! checkConditionForTrackedRepo client lock dep.Condition repo
+                                return! checkConditionForTrackedRepo tracker prs lock dep.Condition repo
                     })
                 |> Async.Parallel
+            let firstError = eligibility |> Array.tryPick (function Error e -> Some e | Ok _ -> None)
+            match firstError with
+            | Some e -> return Error e
+            | None ->
             let eligible =
                 List.zip candidateRepos (eligibility |> Array.toList)
-                |> List.choose (fun (repo, elig) -> if elig then Some repo else None)
+                |> List.choose (fun (repo, elig) -> match elig with Ok true -> Some repo | _ -> None)
             return Ok eligible
     }
 
 /// Apply all depends_on entries for config, returning the eligible subset of
 /// config.Repos. Returns Error if any all_repos gate is not met.
 let filterRepos
-    (client   : IGhClient)
+    (tracker  : IIssueTracker)
+    (prs      : IPullRequestLinker option)
     (fs       : IFileSystem)
     (config   : JobConfig)
     (yamlDir  : string)
@@ -211,6 +226,6 @@ let filterRepos
                         return Error $"Failed to read upstream job '{dep.Job}': {msg}"
                     | Ok upstreamConfig ->
                         let upstreamLock = LockFile.tryRead fs upstreamPath
-                        return! applyDependency client upstreamConfig upstreamLock dep repos
+                        return! applyDependency tracker prs upstreamConfig upstreamLock dep repos
             })
         (async { return Ok config.Repos })

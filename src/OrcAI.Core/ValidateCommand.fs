@@ -13,7 +13,7 @@ module OrcAI.Core.ValidateCommand
 // ---------------------------------------------------------------------------
 
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
+open OrcAI.Core.Provider
 open OrcAI.Core.Deps
 
 /// Input parameters derived from parsed CLI arguments.
@@ -80,8 +80,17 @@ let private executeSingle (deps: OrcAIDeps) (skipLock: bool) (path: string) : As
             return { ConfigErrors = []; ReposTrusted = reposTrusted; RepoSuccesses = []; RepoErrors = []; IsValid = true }
         else
 
+        match deps.ResolveProvider config with
+        | Error e ->
+            return { ConfigErrors = [e]; ReposTrusted = reposTrusted; RepoSuccesses = []; RepoErrors = []; IsValid = false }
+        | Ok providerClients ->
+
         // Live-check only the repos that need it via a single batched GraphQL call.
-        let! repoResultMap = deps.GhClient.ReposExist reposToCheck
+        // Providers with no repo inspector (e.g. Local) can't verify existence — trust them.
+        let! repoResultMap =
+            match providerClients.Repos with
+            | Some repos -> repos.ReposExist reposToCheck
+            | None       -> async { return reposToCheck |> List.map (fun r -> r, Ok ()) |> Map.ofList }
 
         let repoSuccesses, repoErrors =
             repoResultMap

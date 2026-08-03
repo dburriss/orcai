@@ -2,9 +2,9 @@ module OrcAI.Core.Tests.FakeGhClient
 
 open System.Collections.Concurrent
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
+open OrcAI.Core.Provider
 
-/// Injectable handler functions for a configurable fake IGhClient.
+/// Injectable handler functions for a configurable fake provider.
 /// Start from `defaults` or `neverCalledHandlers` and override only what the test needs.
 type Handlers =
     { FindProject      : OrgName     -> string      -> Async<ProjectInfo option>
@@ -27,7 +27,6 @@ type Handlers =
       GetPrState       : RepoName    -> PrNumber    -> Async<string option>
       GetIssueState    : RepoName    -> IssueNumber -> Async<string option>
       ListRepos        : OrgName                   -> Async<Result<string list, string>>
-      RepoExists       : RepoName                  -> Async<Result<unit, string>>
       ReposExist       : RepoName list             -> Async<Map<RepoName, Result<unit, string>>>
       IsArchived       : RepoName                  -> Async<Result<bool, string>>
       FetchReposState  : RepoName list -> string   -> Async<Map<RepoName, Result<RepoState, string>>>
@@ -66,7 +65,6 @@ let defaults : Handlers =
       GetPrState        = fun _ _        -> async { return Some "OPEN" }
       GetIssueState     = fun _ _        -> async { return Some "OPEN" }
       ListRepos         = fun _          -> async { return failwith "ListRepos not expected" }
-      RepoExists        = fun _          -> async { return Ok () }
       ReposExist        = fun repos      -> async { return repos |> List.map (fun r -> r, Ok ()) |> Map.ofList }
       IsArchived        = fun _          -> async { return Ok false }
       FetchReposState   = fun repos _    -> async { return repos |> List.map (fun r -> r, Ok { IsArchived = false; OpenIssue = None; ClosedIssue = None }) |> Map.ofList }
@@ -89,7 +87,6 @@ let neverCalledHandlers : Handlers =
         PostComment       = fun _ _ _      -> async { return failwith "GhClient should not be called" }
         GetPrState        = fun _ _        -> async { return failwith "GhClient should not be called" }
         GetIssueState     = fun _ _        -> async { return failwith "GhClient should not be called" }
-        RepoExists        = fun _          -> async { return failwith "GhClient should not be called" }
         ReposExist        = fun _          -> async { return failwith "GhClient should not be called" }
         // IsArchived / FetchReposState are the per-repo pre-checks in processRepo.
         // Callers that expect no write activity should still allow these reads to succeed.
@@ -97,9 +94,10 @@ let neverCalledHandlers : Handlers =
         FetchReposState   = fun repos _    -> async { return repos |> List.map (fun r -> r, Ok { IsArchived = false; OpenIssue = None; ClosedIssue = None }) |> Map.ofList }
         FetchCodeowners   = fun _          -> async { return failwith "GhClient should not be called" } }
 
-/// Wraps a Handlers record in an IGhClient interface.
-let from (h: Handlers) : IGhClient =
-    { new IGhClient with
+/// Wraps a Handlers record in a single fake that implements all three provider
+/// interfaces (least churn — fakes are allowed to over-implement).
+let from (h: Handlers) : IIssueTracker =
+    { new IIssueTracker with
         member _.FindProject org title      = h.FindProject org title
         member _.CreateProject org title    = h.CreateProject org title
         member _.DeleteProject proj         = h.DeleteProject proj
@@ -115,16 +113,27 @@ let from (h: Handlers) : IGhClient =
         member _.AssignIssue repo iss asgn   = h.AssignIssue repo iss asgn
         member _.UnassignIssue repo iss asgn = h.UnassignIssue repo iss asgn
         member _.PostComment repo iss body   = h.PostComment repo iss body
+        member _.GetIssueState repo iss     = h.GetIssueState repo iss
+
+      interface IPullRequestLinker with
         member _.FindPrsForIssue repo iss    = h.FindPrsForIssue repo iss
         member _.ClosePr repo pr            = h.ClosePr repo pr
         member _.GetPrState repo pr         = h.GetPrState repo pr
-        member _.GetIssueState repo iss     = h.GetIssueState repo iss
-        member _.ListRepos org              = h.ListRepos org
-        member _.RepoExists repo            = h.RepoExists repo
-        member _.ReposExist repos           = h.ReposExist repos
+
+      interface IRepoInspector with
+        member _.ListRepos org                = h.ListRepos org
+        member _.ReposExist repos             = h.ReposExist repos
         member _.IsArchived repo              = h.IsArchived repo
         member _.FetchReposState repos title  = h.FetchReposState repos title
         member _.FetchCodeowners repo         = h.FetchCodeowners repo }
+
+/// Wraps a Handlers record in a full ProviderClients fixture (Tracker + Prs + Repos
+/// all backed by the same fake).
+let providerClients (h: Handlers) : ProviderClients =
+    let fake = from h
+    { Tracker = fake
+      Prs     = Some (fake :?> IPullRequestLinker)
+      Repos   = Some (fake :?> IRepoInspector) }
 
 /// Returns a handler for AssignIssue that records calls by `label`.
 let trackingAssign (label: string) (calls: ConcurrentBag<string>) =

@@ -14,17 +14,20 @@ module OrcAI.Core.NudgeCommand
 
 open System
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
+open OrcAI.Core.Provider
 open OrcAI.Core.Deps
 
 type NudgeInput =
-    { YamlPath         : string
-      DryRun           : bool
-      Verbose          : bool
-      SaveLock         : bool
-      MaxConcurrency   : int
-      IsPrimaryAuthApp : bool
-      OnClosedPr       : ClosedPrAction }
+    { YamlPath             : string
+      DryRun               : bool
+      Verbose              : bool
+      SaveLock             : bool
+      MaxConcurrency       : int
+      /// True when the primary auth is a GitHub App and no PAT is configured for
+      /// Copilot (re)assignment — Apps cannot assign agents. Computed once at the
+      /// CLI entry point since it's known before any per-issue work begins.
+      CopilotAssignBlocked : bool
+      OnClosedPr           : ClosedPrAction }
 
 type NudgeOutcome =
     | Skipped
@@ -66,11 +69,11 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
     | None -> Error "No lock file found — run 'orcai run' first."
     | Some lock ->
 
-    let client = deps.GhClient
-    let assignClient =
-        match deps.CopilotClient, input.IsPrimaryAuthApp with
-        | Some c, true -> c
-        | _            -> client
+    match deps.ResolveProvider jobConfig with
+    | Error e -> Error $"Provider error: {e}"
+    | Ok providerClients ->
+
+    let client = providerClients.Tracker
 
     // Resolve effective nudge config: YAML wins, then global/local config, then defaults.
     let pickNudge f =
@@ -94,8 +97,7 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
         modeReassigns
         && not input.DryRun
         && assignTo.Equals("@copilot", StringComparison.OrdinalIgnoreCase)
-        && input.IsPrimaryAuthApp
-        && deps.CopilotClient.IsNone
+        && input.CopilotAssignBlocked
 
     if appCannotReassignCopilot then
         Error "Cannot reassign @copilot: primary auth is a GitHub App and no PAT is configured. \
@@ -120,7 +122,14 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                         if input.Verbose then eprintfn "[%s] PR already in lock file, skipping" repoStr
                         return { Repo = issue.Repo; Issue = issue.Number; Outcome = Skipped; LivePrs = [] }
                     else
-                        let! prs = client.FindPrsForIssue issue.Repo issue.Number
+
+                    match providerClients.Prs with
+                    | None ->
+                        return { Repo = issue.Repo; Issue = issue.Number
+                                 Outcome = NudgeFailed "This provider does not support PR-based nudge checks (no pull-request linker available)."
+                                 LivePrs = [] }
+                    | Some prsLinker ->
+                        let! prs = prsLinker.FindPrsForIssue issue.Repo issue.Number
                         let openOrMergedPrs = prs |> List.filter (fun pr -> pr.State = "OPEN" || pr.State = "MERGED")
                         let closedPrs       = prs |> List.filter (fun pr -> pr.State = "CLOSED")
 
@@ -155,7 +164,7 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                             if nudgeMode = "comment-only" || nudgeMode = "comment-and-reassign" then
                                 match nudgeComment with
                                 | Some tmpl ->
-                                    do! Comments.postTemplatedComment client issue.Repo issue.Number assignTo jobOwner tmpl input.Verbose "nudge" Map.empty
+                                    do! Comments.postTemplatedComment client providerClients.Repos issue.Repo issue.Number assignTo jobOwner tmpl input.Verbose "nudge" Map.empty
                                 | None -> ()
 
                             // Unassign + reassign when mode includes reassign.
@@ -163,11 +172,11 @@ let execute (deps: OrcAIDeps) (input: NudgeInput) : Result<NudgeResult list, str
                             let mutable failure : string option = None
                             if modeReassigns then
                                 if input.Verbose then eprintfn "[%s] Nudging %s (unassign + reassign)" repoStr assignTo
-                                match! assignClient.UnassignIssue issue.Repo issue.Number assignTo with
+                                match! client.UnassignIssue issue.Repo issue.Number assignTo with
                                 | Error e -> failure <- Some (nudgeFailureMessage assignTo e)
                                 | Ok ()   -> ()
                                 if failure.IsNone then
-                                    match! assignClient.AssignIssue issue.Repo issue.Number assignTo with
+                                    match! client.AssignIssue issue.Repo issue.Number assignTo with
                                     | Error e -> failure <- Some (nudgeFailureMessage assignTo e)
                                     | Ok ()   -> ()
 

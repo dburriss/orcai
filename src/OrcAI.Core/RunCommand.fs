@@ -9,8 +9,8 @@ module OrcAI.Core.RunCommand
 //   3. Adds the issue to the GitHub Project (idempotent).
 //   4. Assigns the issue to @copilot only if copilot is not already assigned.
 //
-// All GitHub API calls are delegated to the IGhClient abstraction so that
-// this module stays pure and testable.
+// All GitHub API calls are delegated to the IIssueTracker/IRepoInspector
+// abstractions so that this module stays pure and testable.
 // ---------------------------------------------------------------------------
 
 open System
@@ -18,7 +18,7 @@ open System.Diagnostics
 open System.IO
 open System.Text
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
+open OrcAI.Core.Provider
 open OrcAI.Core.Deps
 
 /// Input parameters derived from parsed CLI arguments.
@@ -32,9 +32,6 @@ type RunInput =
       ContinueOnError    : bool
       /// Extra labels to union-merge with the YAML labels (from config file).
       DefaultLabels      : string list
-      /// True when the primary auth is a GitHub App. Used to emit an appropriate
-      /// warning when no secondary PAT is available for Copilot assignment.
-      IsPrimaryAuthApp   : bool
       /// Overrides the YAML onClosedIssue value when explicitly set via CLI.
       OnClosedIssue      : ClosedIssueAction option
       /// When true, perform no GitHub mutations and do not write the lock file.
@@ -167,7 +164,8 @@ type private ProcessParams =
       Project             : ProjectInfo
       Verbose             : bool
       AutoCreateLabels    : bool
-      IsPrimaryAuthApp    : bool
+      Tracker             : IIssueTracker
+      Repos               : IRepoInspector option
       ClosedIssueAction   : ClosedIssueAction
       Action              : ActionConfig
       JobOwner            : string option
@@ -182,6 +180,7 @@ let private resolveProcessParams
     (input               : RunInput)
     (config              : JobConfig)
     (project             : ProjectInfo)
+    (providerClients     : ProviderClients)
     (yamlHashChanged     : bool)
     (templateHashChanged : bool)
     (checkoutRoot        : string)
@@ -200,7 +199,8 @@ let private resolveProcessParams
       Project             = project
       Verbose             = input.Verbose
       AutoCreateLabels    = input.AutoCreateLabels
-      IsPrimaryAuthApp    = input.IsPrimaryAuthApp
+      Tracker             = providerClients.Tracker
+      Repos               = providerClients.Repos
       ClosedIssueAction   = closedIssueAction
       Action              = config.Action
       JobOwner            = jobOwner
@@ -231,7 +231,7 @@ let private shouldAttempt
 /// Returns Ok () when all labels are present or successfully created.
 /// When dryRun is true, lists missing labels (and logs them when verbose) but does not create them.
 let private ensureLabelsExist
-    (client  : IGhClient)
+    (client  : IIssueTracker)
     (repo    : RepoName)
     (labels  : string list)
     (verbose : bool)
@@ -285,13 +285,12 @@ let private processRepo
     (repo            : RepoName)
     : Async<RepoOutcome> =
     async {
-        let client = deps.GhClient
+        let client = p.Tracker
         let (RepoName repoStr) = repo
         let config            = p.Config
         let project           = p.Project
         let verbose           = p.Verbose
         let autoCreateLabels  = p.AutoCreateLabels
-        let isPrimaryAuthApp  = p.IsPrimaryAuthApp
         let closedIssueAction = p.ClosedIssueAction
         let action            = p.Action
         let jobOwner          = p.JobOwner
@@ -309,7 +308,10 @@ let private processRepo
         let! archivedResult =
             match prefetchedState with
             | Some s -> async { return Ok s.IsArchived }
-            | None   -> client.IsArchived repo
+            | None   ->
+                match p.Repos with
+                | Some repos -> repos.IsArchived repo
+                | None       -> async { return Ok false }
         match archivedResult with
         | Ok true ->
             if verbose then eprintfn "[%s] Repo is archived — skipping." repoStr
@@ -440,7 +442,7 @@ let private processRepo
                 async { return issue, None }
             | Comment commentTmpl ->
                 async {
-                    do! Comments.postTemplatedComment client repo issue.Number "@" jobOwner commentTmpl verbose "trigger" Map.empty
+                    do! Comments.postTemplatedComment client p.Repos repo issue.Number "@" jobOwner commentTmpl verbose "trigger" Map.empty
                     return issue, None
                 }
             | AssignCopilot _ | Assign _ | CommentAndAssign _ ->
@@ -452,29 +454,21 @@ let private processRepo
                     | _                        -> failwith "unreachable"
                 async {
                     if wantsComment then
-                        do! Comments.postTemplatedComment client repo issue.Number assignTo jobOwner commentTmpl verbose "trigger" Map.empty
+                        do! Comments.postTemplatedComment client p.Repos repo issue.Number assignTo jobOwner commentTmpl verbose "trigger" Map.empty
                     if not (hasAssignee assignTo issue) then
                         if not (shouldAttempt p priorFailures AssignIssue) then
                             if verbose then eprintfn "[%s] Skipping AssignIssue (prior failure not retryable)" repoStr
                             return issue, None
                         else
-                            let isCopilot = assignTo.TrimStart('@').Equals("copilot", StringComparison.OrdinalIgnoreCase)
-                            let assignClient =
-                                if isCopilot then deps.CopilotClient |> Option.defaultValue client
-                                else client
-                            if isCopilot && deps.CopilotClient.IsNone && isPrimaryAuthApp then
-                                eprintfn "[%s] Warning: assigning @copilot requires a PAT. Set ORCAI_PAT or add a 'pat' profile to auth.json." repoStr
+                            if verbose then eprintfn "[%s] Assigning %s" repoStr assignTo
+                            match! client.AssignIssue repo issue.Number assignTo with
+                            | Error e ->
+                                record AssignIssue (Error e)
+                                eprintfn "[%s] Warning: failed to assign %s: %s" repoStr assignTo e
                                 return issue, None
-                            else
-                                if verbose then eprintfn "[%s] Assigning %s" repoStr assignTo
-                                match! assignClient.AssignIssue repo issue.Number assignTo with
-                                | Error e ->
-                                    record AssignIssue (Error e)
-                                    eprintfn "[%s] Warning: failed to assign %s: %s" repoStr assignTo e
-                                    return issue, None
-                                | Ok () ->
-                                    record AssignIssue (Ok ())
-                                    return { issue with Assignees = issue.Assignees @ [assignTo.TrimStart('@')] }, None
+                            | Ok () ->
+                                record AssignIssue (Ok ())
+                                return { issue with Assignees = issue.Assignees @ [assignTo.TrimStart('@')] }, None
                     else
                         return issue, None
                 }
@@ -772,13 +766,17 @@ let private runFull
     | Error e -> Error $"Auth error: {e}"
     | Ok _ ->
 
+    match deps.ResolveProvider config with
+    | Error e -> Error $"Provider error: {e}"
+    | Ok providerClients ->
+
     // 1. Find or create the GitHub Project (must complete before per-repo work).
     //    In dry-run mode, never call CreateProject — synthesise a placeholder so the
     //    rest of the pipeline can still report what would happen.
     let projectResult =
         async {
             let (OrgName orgStr) = config.Org
-            match! deps.GhClient.FindProject config.Org config.ProjectTitle with
+            match! providerClients.Tracker.FindProject config.Org config.ProjectTitle with
             | Some p -> return Ok p
             | None when input.DryRun ->
                 eprintfn "Project '%s' not found in '%s' — would create (dry run)." config.ProjectTitle orgStr
@@ -790,7 +788,7 @@ let private runFull
                 return Ok placeholder
             | None ->
                 eprintfn "Project '%s' not found in '%s', creating..." config.ProjectTitle orgStr
-                return! deps.GhClient.CreateProject config.Org config.ProjectTitle
+                return! providerClients.Tracker.CreateProject config.Org config.ProjectTitle
         }
         |> Async.RunSynchronously
 
@@ -803,7 +801,7 @@ let private runFull
         input.CheckoutRoot
         |> Option.defaultWith (fun () ->
             Path.Combine(Path.GetTempPath(), $"orcai-{Guid.NewGuid():N}"))
-    let processParams = resolveProcessParams deps input config project yamlHashChanged templateHashChanged checkoutRoot
+    let processParams = resolveProcessParams deps input config project providerClients yamlHashChanged templateHashChanged checkoutRoot
 
     let priorFailuresByRepo =
         priorLock
@@ -813,9 +811,12 @@ let private runFull
 
     // Bulk-prefetch isArchived, open issue, and closed issue for all repos in one
     // GraphQL call instead of N×3 individual REST calls inside processRepo.
+    // Providers with no repo inspector (e.g. Local) skip prefetch entirely — processRepo
+    // falls back to individual Tracker calls per repo.
     let prefetchedStates =
-        deps.GhClient.FetchReposState config.Repos config.IssueTitle
-        |> Async.RunSynchronously
+        match providerClients.Repos with
+        | Some repos -> repos.FetchReposState config.Repos config.IssueTitle |> Async.RunSynchronously
+        | None       -> Map.empty
 
     let repoOutcomes =
         config.Repos
@@ -950,6 +951,10 @@ let private refreshBodies
     if List.isEmpty toRefresh then
         Ok fullResult
     else
+
+    match deps.ResolveProvider config with
+    | Error e -> Error $"Provider error: {e}"
+    | Ok providerClients ->
         // Prior failures from the lock (which already includes runFull's merged failures)
         // drive the per-repo UpdateBody skip decision.
         let priorFailuresByRepo =
@@ -982,7 +987,7 @@ let private refreshBodies
                         if input.Verbose then eprintfn "[%s] Skipping UpdateBody (prior failure not retryable)" repoStr
                         return r, None
                     else
-                        match! deps.GhClient.UpdateIssue r.Issue.Repo r.Issue.Number config.IssueTitle config.IssueBody with
+                        match! providerClients.Tracker.UpdateIssue r.Issue.Repo r.Issue.Number config.IssueTitle config.IssueBody with
                         | Ok () ->
                             let newOutcome =
                                 match r.Outcome with
@@ -1014,7 +1019,7 @@ let private refreshBodies
                     input.CheckoutRoot
                     |> Option.defaultWith (fun () -> Path.Combine(Path.GetTempPath(), $"orcai-{Guid.NewGuid():N}"))
                 let processParams =
-                    resolveProcessParams deps input config fullResult.Lock.Project yamlHashChanged templateHashChanged checkoutRootForRefresh
+                    resolveProcessParams deps input config fullResult.Lock.Project providerClients yamlHashChanged templateHashChanged checkoutRootForRefresh
                 recreateStaleIssues deps processParams refreshed
         let refreshedByRepo =
             recoveredRefreshed |> List.map (fun r -> r.Issue.Repo, r) |> Map.ofList
@@ -1073,10 +1078,13 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
         if mergedConfig.DependsOn.IsEmpty then
             None
         else
-            let yamlDir = Path.GetDirectoryName(Path.GetFullPath(input.YamlPath)) |> Option.ofObj |> Option.defaultValue "."
-            DependencyResolution.filterRepos deps.GhClient deps.FileSystem mergedConfig yamlDir
-            |> Async.RunSynchronously
-            |> Some
+            match deps.ResolveProvider mergedConfig with
+            | Error e -> Some (Error $"Provider error: {e}")
+            | Ok providerClients ->
+                let yamlDir = Path.GetDirectoryName(Path.GetFullPath(input.YamlPath)) |> Option.ofObj |> Option.defaultValue "."
+                DependencyResolution.filterRepos providerClients.Tracker providerClients.Prs deps.FileSystem mergedConfig yamlDir
+                |> Async.RunSynchronously
+                |> Some
 
     match depFilter with
     | Some (Error reason) -> Ok (blockedResult mergedConfig reason)

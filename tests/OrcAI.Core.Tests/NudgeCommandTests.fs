@@ -17,13 +17,13 @@ let private nudgeYaml =
     "  template: \"TEMPLATE_PLACEHOLDER\"\n"
 
 let private defaultInput yamlPath : NudgeInput =
-    { YamlPath         = yamlPath
-      DryRun           = false
-      Verbose          = false
-      SaveLock         = false
-      MaxConcurrency   = 4
-      IsPrimaryAuthApp = false
-      OnClosedPr       = ClosedPrAction.Skip }
+    { YamlPath             = yamlPath
+      DryRun               = false
+      Verbose              = false
+      SaveLock             = false
+      MaxConcurrency       = 4
+      CopilotAssignBlocked = false
+      OnClosedPr           = ClosedPrAction.Skip }
 
 let private writeLock (fs: MockFileSystem) (yamlPath: string) (lock: LockFile) =
     OrcAI.Core.LockFile.write (fs :> System.IO.Abstractions.IFileSystem) yamlPath lock
@@ -56,7 +56,7 @@ let ``pre-flight refuses when App auth + no PAT + reassign copilot`` () =
     writeLock fs yaml (lockWithUnpairedIssue ())
 
     let deps  = Given.deps fs (FakeGhClient.from FakeGhClient.neverCalledHandlers)
-    let input = { defaultInput yaml with IsPrimaryAuthApp = true }
+    let input = { defaultInput yaml with CopilotAssignBlocked = true }
 
     let result = execute deps input
 
@@ -72,15 +72,12 @@ let ``pre-flight does not trip when PAT is configured`` () =
     let yaml = Given.yamlFile fs nudgeYaml "# body"
     writeLock fs yaml (lockWithUnpairedIssue ())
 
-    let copilotClient = FakeGhClient.from FakeGhClient.defaults
     let primary =
         { FakeGhClient.defaults with
             FindPrsForIssue = fun _ _ -> async { return [] } }
         |> FakeGhClient.from
-    let deps =
-        { Given.deps fs primary with
-            CopilotClient = Some copilotClient }
-    let input = { defaultInput yaml with IsPrimaryAuthApp = true }
+    let deps  = Given.deps fs primary
+    let input = { defaultInput yaml with CopilotAssignBlocked = false }
 
     let result = execute deps input
 
@@ -99,7 +96,7 @@ let ``pre-flight does not trip in dry-run`` () =
         { FakeGhClient.defaults with
             FindPrsForIssue = fun _ _ -> async { return [] } }
     let deps  = Given.deps fs (FakeGhClient.from handlers)
-    let input = { defaultInput yaml with IsPrimaryAuthApp = true; DryRun = true }
+    let input = { defaultInput yaml with CopilotAssignBlocked = true; DryRun = true }
 
     let result = execute deps input
 
@@ -108,6 +105,27 @@ let ``pre-flight does not trip in dry-run`` () =
         Assert.Equal(1, results.Length)
         Assert.Equal(DryRunWouldNudge, results.[0].Outcome)
     | Error e -> failwith $"dry-run should not short-circuit, got: {e}"
+
+[<Fact>]
+let ``Prs=None fails clearly instead of silently nudging`` () =
+    let fs   = MockFileSystem()
+    let yaml = Given.yamlFile fs nudgeYaml "# body"
+    writeLock fs yaml (lockWithUnpairedIssue ())
+
+    let deps =
+        Given.deps fs (FakeGhClient.from FakeGhClient.neverCalledHandlers)
+        |> Given.mapProviderClients (fun pc -> { pc with Prs = None })
+    let input = defaultInput yaml
+
+    let result = execute deps input
+
+    match result with
+    | Ok results ->
+        Assert.Equal(1, results.Length)
+        match results.[0].Outcome with
+        | NudgeFailed reason -> Assert.Contains("does not support", reason)
+        | other -> failwith $"expected NudgeFailed, got {other}"
+    | Error e -> failwith $"expected Ok results, got Error: {e}"
 
 [<Fact>]
 let ``failed AssignIssue surfaces as NudgeFailed (not NudgeSent)`` () =

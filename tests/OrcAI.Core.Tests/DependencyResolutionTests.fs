@@ -3,6 +3,7 @@ module OrcAI.Core.Tests.DependencyResolutionTests
 open System.IO
 open Testably.Abstractions.Testing
 open OrcAI.Core.Domain
+open OrcAI.Core.Provider
 open OrcAI.Core.DependencyResolution
 open Xunit
 
@@ -264,7 +265,7 @@ let ``filterRepos per_repo pr_merged includes only repos with merged PR`` () =
     let client = FakeGhClient.from { FakeGhClient.defaults with
                                          FindPrsForIssue = fun _ _ -> async { return [] } }
     let result =
-        filterRepos client (fs :> System.IO.Abstractions.IFileSystem) config dir
+        filterRepos client (Some (client :?> IPullRequestLinker)) (fs :> System.IO.Abstractions.IFileSystem) config dir
         |> Async.RunSynchronously
     Assert.Equal(Ok [ repoA ], result)
 
@@ -290,7 +291,7 @@ let ``filterRepos per_repo issue_closed includes only repos with closed issue`` 
                                    return if repo = repoA then Some "CLOSED" else Some "OPEN"
                                } }
     let result =
-        filterRepos client (fs :> System.IO.Abstractions.IFileSystem) config dir
+        filterRepos client (Some (client :?> IPullRequestLinker)) (fs :> System.IO.Abstractions.IFileSystem) config dir
         |> Async.RunSynchronously
     Assert.Equal(Ok [ repoA ], result)
 
@@ -313,7 +314,7 @@ let ``filterRepos per_repo untracked_repos skip excludes repos not in upstream l
     let client = FakeGhClient.from { FakeGhClient.defaults with
                                          FindPrsForIssue = fun _ _ -> async { return [] } }
     let result =
-        filterRepos client (fs :> System.IO.Abstractions.IFileSystem) config dir
+        filterRepos client (Some (client :?> IPullRequestLinker)) (fs :> System.IO.Abstractions.IFileSystem) config dir
         |> Async.RunSynchronously
     Assert.Equal(Ok [ repoA ], result)
 
@@ -336,7 +337,7 @@ let ``filterRepos per_repo untracked_repos include keeps repos not in upstream l
     let client = FakeGhClient.from { FakeGhClient.defaults with
                                          FindPrsForIssue = fun _ _ -> async { return [] } }
     let result =
-        filterRepos client (fs :> System.IO.Abstractions.IFileSystem) config dir
+        filterRepos client (Some (client :?> IPullRequestLinker)) (fs :> System.IO.Abstractions.IFileSystem) config dir
         |> Async.RunSynchronously
     match result with
     | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
@@ -366,7 +367,7 @@ let ``filterRepos all_repos returns Ok when all upstream repos have met conditio
     let client = FakeGhClient.from { FakeGhClient.defaults with
                                          FindPrsForIssue = fun _ _ -> async { return [] } }
     let result =
-        filterRepos client (fs :> System.IO.Abstractions.IFileSystem) config dir
+        filterRepos client (Some (client :?> IPullRequestLinker)) (fs :> System.IO.Abstractions.IFileSystem) config dir
         |> Async.RunSynchronously
     match result with
     | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
@@ -390,7 +391,7 @@ let ``filterRepos all_repos returns Error when some upstream repos have not met 
     let client = FakeGhClient.from { FakeGhClient.defaults with
                                          FindPrsForIssue = fun _ _ -> async { return [] } }
     let result =
-        filterRepos client (fs :> System.IO.Abstractions.IFileSystem) config dir
+        filterRepos client (Some (client :?> IPullRequestLinker)) (fs :> System.IO.Abstractions.IFileSystem) config dir
         |> Async.RunSynchronously
     match result with
     | Ok _    -> Assert.Fail("Expected Error but got Ok")
@@ -409,8 +410,31 @@ let ``filterRepos all_repos returns Error when no lock file exists`` () =
         | Error e -> failwith e
     let client = FakeGhClient.from FakeGhClient.defaults
     let result =
-        filterRepos client (fs :> System.IO.Abstractions.IFileSystem) config dir
+        filterRepos client (Some (client :?> IPullRequestLinker)) (fs :> System.IO.Abstractions.IFileSystem) config dir
         |> Async.RunSynchronously
     match result with
     | Ok _    -> Assert.Fail("Expected Error but got Ok")
     | Error _ -> ()
+
+[<Fact>]
+let ``filterRepos pr_merged with Prs=None fails clearly instead of silently passing`` () =
+    let fs    = MockFileSystem()
+    setup fs
+    let upPath   = writeNoDeps fs "upstream.yml"
+    let downPath = writeFullDeps fs "downstream.yml"
+                       [ ("./upstream.yml", "pr_merged", "per_repo", "include") ]
+    writeLock fs upPath
+        [ repoA ]
+        [ (repoA, 10) ]
+        [ (repoA, 1, 10, "MERGED") ]
+    let config =
+        match OrcAI.Core.YamlConfig.parseFile (fs :> System.IO.Abstractions.IFileSystem) downPath with
+        | Ok c -> c
+        | Error e -> failwith e
+    let client = FakeGhClient.from FakeGhClient.neverCalledHandlers
+    let result =
+        filterRepos client None (fs :> System.IO.Abstractions.IFileSystem) config dir
+        |> Async.RunSynchronously
+    match result with
+    | Ok _      -> Assert.Fail("Expected Error but got Ok")
+    | Error msg -> Assert.Contains("pr_merged", msg)

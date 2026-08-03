@@ -1,17 +1,20 @@
-module OrcAI.Core.GhClient
+module OrcAI.Core.Provider
 
 // ---------------------------------------------------------------------------
-// Abstraction over the `gh` CLI subprocess.
+// Abstraction over a job tracker provider (GitHub today; Local/Jira later).
 //
-// Defined here in OrcAI.Core so command modules can depend on the interface
-// without creating a circular reference. The production implementation lives
-// in OrcAI.GitHub.GhClient.
+// Defined here in OrcAI.Core so command modules can depend on the interfaces
+// without creating a circular reference. The production GitHub implementation
+// lives in OrcAI.GitHub.GhClient.
+//
+// Split into a mandatory tracker interface every provider implements, plus
+// two optional capability interfaces that only GitHub-like providers support.
 // ---------------------------------------------------------------------------
 
 open OrcAI.Core.Domain
 
-/// Contract for all GitHub operations used by command modules.
-type IGhClient =
+/// Mandatory — every provider (GitHub, Local, future Jira) implements this.
+type IIssueTracker =
     // Projects
     abstract FindProject      : org:OrgName -> title:string -> Async<ProjectInfo option>
     abstract CreateProject    : org:OrgName -> title:string -> Async<Result<ProjectInfo, string>>
@@ -33,18 +36,25 @@ type IGhClient =
     abstract UnassignIssue    : repo:RepoName -> issue:IssueNumber -> assignee:string -> Async<Result<unit, string>>
     abstract PostComment      : repo:RepoName -> issue:IssueNumber -> body:string    -> Async<Result<unit, string>>
 
-    // Pull requests
+    // State
+    abstract GetIssueState    : repo:RepoName -> issue:IssueNumber  -> Async<string option>
+
+/// Optional — GitHub-API PR tracking. None for providers with no PR concept.
+type IPullRequestLinker =
     abstract FindPrsForIssue  : repo:RepoName -> issue:IssueNumber -> Async<PullRequestRef list>
     abstract ClosePr          : repo:RepoName -> pr:PrNumber        -> Async<Result<unit, string>>
     abstract GetPrState       : repo:RepoName -> pr:PrNumber        -> Async<string option>
 
-    // State
-    abstract GetIssueState    : repo:RepoName -> issue:IssueNumber  -> Async<string option>
-
-    // Repos
+/// Optional — GitHub-API repo metadata. None for providers with no repo concept.
+type IRepoInspector =
     abstract ListRepos        : org:OrgName -> Async<Result<string list, string>>
-    abstract RepoExists       : repo:RepoName -> Async<Result<unit, string>>
     abstract ReposExist       : repos:RepoName list -> Async<Map<RepoName, Result<unit, string>>>
     abstract IsArchived        : repo:RepoName -> Async<Result<bool, string>>
     abstract FetchReposState   : repos:RepoName list -> title:string -> Async<Map<RepoName, Result<RepoState, string>>>
     abstract FetchCodeowners   : repo:RepoName -> Async<string option>
+
+/// What a resolved provider offers for one job.
+type ProviderClients =
+    { Tracker : IIssueTracker
+      Prs     : IPullRequestLinker option
+      Repos   : IRepoInspector option }

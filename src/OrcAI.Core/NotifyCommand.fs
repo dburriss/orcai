@@ -9,7 +9,7 @@ module OrcAI.Core.NotifyCommand
 // ---------------------------------------------------------------------------
 
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
+open OrcAI.Core.Provider
 open OrcAI.Core.Deps
 
 type NotifyInput =
@@ -44,7 +44,11 @@ let execute (deps: OrcAIDeps) (input: NotifyInput) : Result<NotifyResult list, s
     | None -> Error "No lock file found — run 'orcai run' first."
     | Some lock ->
 
-    let client = deps.GhClient
+    match deps.ResolveProvider jobConfig with
+    | Error e -> Error $"Provider error: {e}"
+    | Ok providerClients ->
+
+    let client = providerClients.Tracker
 
     let pickNotify f =
         jobConfig.Notify |> Option.bind f
@@ -97,7 +101,10 @@ let execute (deps: OrcAIDeps) (input: NotifyInput) : Result<NotifyResult list, s
                             let! liveState =
                                 match item with
                                 | IssueItem _ -> client.GetIssueState repo issueNum
-                                | PrItem p    -> client.GetPrState repo p.Number
+                                | PrItem p    ->
+                                    match providerClients.Prs with
+                                    | Some prs -> prs.GetPrState repo p.Number
+                                    | None     -> async { return None }
                             return
                                 match liveState with
                                 | None        -> false
@@ -116,7 +123,7 @@ let execute (deps: OrcAIDeps) (input: NotifyInput) : Result<NotifyResult list, s
 
                 match effectiveTemplate with
                 | Some tmpl ->
-                    do! Comments.postTemplatedComment client repo issueNum assignTo jobOwner tmpl input.Verbose "notify" input.ExtraVars
+                    do! Comments.postTemplatedComment client providerClients.Repos repo issueNum assignTo jobOwner tmpl input.Verbose "notify" input.ExtraVars
                 | None ->
                     if input.Verbose then eprintfn "[%s #%d] No notify.comment configured, skipping" repoStr num
 

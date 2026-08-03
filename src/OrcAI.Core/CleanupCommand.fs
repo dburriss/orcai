@@ -19,7 +19,7 @@ module OrcAI.Core.CleanupCommand
 // ---------------------------------------------------------------------------
 
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
+open OrcAI.Core.Provider
 open OrcAI.Core.Deps
 
 /// Input parameters derived from parsed CLI arguments.
@@ -44,37 +44,48 @@ type CleanupResult =
 // ---------------------------------------------------------------------------
 
 /// Process cleanup for a single issue: close its PRs then delete the issue.
-/// In dry-run mode, makes no API calls.
+/// In dry-run mode, makes no API calls. When `prs` is None (provider has no PR
+/// concept), skips straight to deleting the issue.
 /// Returns Ok with the list of resources acted on, or Error.
 let private cleanupIssue
-    (client : IGhClient)
-    (issue  : IssueRef)
-    (dryRun : bool)
+    (tracker : IIssueTracker)
+    (prs     : IPullRequestLinker option)
+    (issue   : IssueRef)
+    (dryRun  : bool)
     : Async<Result<CleanedResource list, string>> =
     async {
         let (RepoName repoStr)   = issue.Repo
         let (IssueNumber issueN) = issue.Number
 
-        // 1. Find PRs that close this issue
-        let! prs = client.FindPrsForIssue issue.Repo issue.Number
+        match prs with
+        | None ->
+            if dryRun then
+                return Ok [ CleanedIssue(repoStr, issueN) ]
+            else
+                match! tracker.DeleteIssue issue.Repo issue.Number with
+                | Error e -> return Error $"Failed to delete issue #{issueN} in {repoStr}: {e}"
+                | Ok ()   -> return Ok [ CleanedIssue(repoStr, issueN) ]
+        | Some prsLinker ->
+            // 1. Find PRs that close this issue
+            let! foundPrs = prsLinker.FindPrsForIssue issue.Repo issue.Number
 
-        // 2. Close each PR
-        let mutable prResources : CleanedResource list = []
-        for pr in prs do
-            let (PrNumber prN) = pr.Number
-            if not dryRun then
-                match! client.ClosePr issue.Repo pr.Number with
-                | Error e -> eprintfn "Warning: failed to close PR #%d in %s: %s" prN repoStr e
-                | Ok ()   -> ()
-            prResources <- prResources @ [CleanedPr(repoStr, prN)]
+            // 2. Close each PR
+            let mutable prResources : CleanedResource list = []
+            for pr in foundPrs do
+                let (PrNumber prN) = pr.Number
+                if not dryRun then
+                    match! prsLinker.ClosePr issue.Repo pr.Number with
+                    | Error e -> eprintfn "Warning: failed to close PR #%d in %s: %s" prN repoStr e
+                    | Ok ()   -> ()
+                prResources <- prResources @ [CleanedPr(repoStr, prN)]
 
-        // 3. Delete the issue
-        if dryRun then
-            return Ok (prResources @ [CleanedIssue(repoStr, issueN)])
-        else
-            match! client.DeleteIssue issue.Repo issue.Number with
-            | Error e -> return Error $"Failed to delete issue #{issueN} in {repoStr}: {e}"
-            | Ok ()   -> return Ok (prResources @ [CleanedIssue(repoStr, issueN)])
+            // 3. Delete the issue
+            if dryRun then
+                return Ok (prResources @ [CleanedIssue(repoStr, issueN)])
+            else
+                match! tracker.DeleteIssue issue.Repo issue.Number with
+                | Error e -> return Error $"Failed to delete issue #{issueN} in {repoStr}: {e}"
+                | Ok ()   -> return Ok (prResources @ [CleanedIssue(repoStr, issueN)])
     }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +105,10 @@ let execute (deps: OrcAIDeps) (input: CleanupInput) : Result<CleanupResult, stri
     | Error e -> Error $"Auth error: {e}"
     | Ok _ ->
 
+    match deps.ResolveProvider config with
+    | Error e -> Error $"Provider error: {e}"
+    | Ok providerClients ->
+
     // 3. Resolve project and issues — prefer lock file
     let projectAndIssues : Result<ProjectInfo * IssueRef list, string> =
         match LockFile.tryRead deps.FileSystem input.YamlPath with
@@ -102,7 +117,7 @@ let execute (deps: OrcAIDeps) (input: CleanupInput) : Result<CleanupResult, stri
         | None ->
             // No lock file: find project by title, build stub IssueRefs from config
             // (without issue numbers we cannot delete — require a lock file or live query)
-            match deps.GhClient.FindProject config.Org config.ProjectTitle |> Async.RunSynchronously with
+            match providerClients.Tracker.FindProject config.Org config.ProjectTitle |> Async.RunSynchronously with
             | None ->
                 let (OrgName orgStr) = config.Org
                 Error $"Project '{config.ProjectTitle}' not found in '{orgStr}'. Nothing to clean up."
@@ -113,7 +128,7 @@ let execute (deps: OrcAIDeps) (input: CleanupInput) : Result<CleanupResult, stri
                 let issues =
                     config.Repos
                     |> List.choose (fun repo ->
-                        match deps.GhClient.FindIssue repo config.IssueTitle |> Async.RunSynchronously with
+                        match providerClients.Tracker.FindIssue repo config.IssueTitle |> Async.RunSynchronously with
                         | Ok issueOpt -> issueOpt
                         | Error e ->
                             let (RepoName repoStr) = repo
@@ -129,7 +144,7 @@ let execute (deps: OrcAIDeps) (input: CleanupInput) : Result<CleanupResult, stri
     let issueCleanupResults =
         issues
         |> List.map (fun issue ->
-            cleanupIssue deps.GhClient issue input.DryRun
+            cleanupIssue providerClients.Tracker providerClients.Prs issue input.DryRun
             |> Async.RunSynchronously)
 
     let issueErrors =
@@ -152,7 +167,7 @@ let execute (deps: OrcAIDeps) (input: CleanupInput) : Result<CleanupResult, stri
         if input.DryRun then
             Ok projectResource
         else
-            match deps.GhClient.DeleteProject project |> Async.RunSynchronously with
+            match providerClients.Tracker.DeleteProject project |> Async.RunSynchronously with
             | Error e -> Error $"Failed to delete project: {e}"
             | Ok ()   -> Ok projectResource
 

@@ -1,7 +1,7 @@
 module OrcAI.Core.Comments
 
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
+open OrcAI.Core.Provider
 
 let buildCommentVars (assignTo: string) (jobOwner: string option) (repoOwners: string option) : Map<string, string> =
     [ "assignee", assignTo
@@ -10,7 +10,8 @@ let buildCommentVars (assignTo: string) (jobOwner: string option) (repoOwners: s
     |> Map.ofList
 
 let postTemplatedComment
-        (client    : IGhClient)
+        (tracker   : IIssueTracker)
+        (repos     : IRepoInspector option)
         (repo      : RepoName)
         (issue     : IssueNumber)
         (assignTo  : string)
@@ -22,13 +23,16 @@ let postTemplatedComment
         : Async<unit> =
     async {
         let (RepoName repoStr)   = repo
-        let! codeownersContent   = client.FetchCodeowners repo
+        let! codeownersContent   =
+            match repos with
+            | Some r -> r.FetchCodeowners repo
+            | None   -> async { return None }
         let repoOwners           = codeownersContent |> Option.bind Codeowners.parseCatchAll
         let builtIn              = buildCommentVars assignTo jobOwner repoOwners
         let vars                 = Map.fold (fun acc k v -> Map.add k v acc) builtIn extraVars
         let body                 = renderTemplate vars template
         if verbose then eprintfn "[%s] Posting %s comment" repoStr label
-        match! client.PostComment repo issue body with
+        match! tracker.PostComment repo issue body with
         | Error e -> eprintfn "[%s] Warning: failed to post %s comment: %s" repoStr label e
         | Ok ()   -> ()
     }

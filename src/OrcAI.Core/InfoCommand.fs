@@ -11,7 +11,7 @@ module OrcAI.Core.InfoCommand
 
 open System
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
+open OrcAI.Core.Provider
 open OrcAI.Core.Deps
 
 /// Input parameters derived from parsed CLI arguments.
@@ -33,7 +33,8 @@ and InfoSource = | FromLockFile | FromGitHub
 
 /// Fetch the current state of a job from GitHub, assembling a LockFile snapshot.
 let private fetchFromGitHub
-    (client       : IGhClient)
+    (tracker      : IIssueTracker)
+    (prs          : IPullRequestLinker option)
     (config       : JobConfig)
     (yamlHash     : string)
     (templateHash : string)
@@ -42,7 +43,7 @@ let private fetchFromGitHub
         let (OrgName orgStr) = config.Org
 
         // 1. Find the GitHub Project
-        match! client.FindProject config.Org config.ProjectTitle with
+        match! tracker.FindProject config.Org config.ProjectTitle with
         | None ->
             return Error $"GitHub Project '{config.ProjectTitle}' not found in org '{orgStr}'."
         | Some project ->
@@ -52,12 +53,15 @@ let private fetchFromGitHub
             config.Repos
             |> List.map (fun repo ->
                 async {
-                    match! client.FindIssue repo config.IssueTitle with
+                    match! tracker.FindIssue repo config.IssueTitle with
                     | Error e -> return Error $"Failed to look up issue in {repo}: {e}"
                     | Ok None -> return Ok ([], [])
                     | Ok (Some issue) ->
-                        let! prs = client.FindPrsForIssue repo issue.Number
-                        return Ok ([issue], prs)
+                        let! foundPrs =
+                            match prs with
+                            | Some p -> p.FindPrsForIssue repo issue.Number
+                            | None   -> async { return [] }
+                        return Ok ([issue], foundPrs)
                 })
             |> Async.Parallel
 
@@ -107,6 +111,11 @@ let execute (deps: OrcAIDeps) (input: InfoInput) : Result<InfoResult, string> =
         Ok { Lock = lock; Source = FromLockFile }
 
     | None ->
+
+    match deps.ResolveProvider config with
+    | Error e -> Error $"Provider error: {e}"
+    | Ok providerClients ->
+
         // Fetch live state from GitHub
         let yamlHash     = YamlConfig.computeHash deps.FileSystem input.YamlPath
         let templateHash =
@@ -114,7 +123,7 @@ let execute (deps: OrcAIDeps) (input: InfoInput) : Result<InfoResult, string> =
             | Some p -> YamlConfig.computeTemplateHash deps.FileSystem p
             | None   -> ""
         let result   =
-            fetchFromGitHub deps.GhClient config yamlHash templateHash
+            fetchFromGitHub providerClients.Tracker providerClients.Prs config yamlHash templateHash
             |> Async.RunSynchronously
 
         match result with

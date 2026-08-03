@@ -1,6 +1,7 @@
 module OrcAI.Core.Deps
 
-open OrcAI.Core.GhClient
+open OrcAI.Core.Domain
+open OrcAI.Core.Provider
 open OrcAI.Core.AuthContext
 open OrcAI.Core.OrcAIConfig
 open System.IO.Abstractions
@@ -11,11 +12,9 @@ open System.IO.Abstractions
 
 /// Dependencies injected by the CLI entry point into every command.
 type OrcAIDeps =
-    { GhClient      : IGhClient
-      /// Secondary client authenticated with a PAT, used only for Copilot assignment
-      /// when the primary auth is a GitHub App (Apps cannot assign @copilot).
-      /// None when primary auth is already PAT-based, or when no PAT could be resolved.
-      CopilotClient : IGhClient option
-      AuthContext   : IAuthContext
-      FileSystem    : IFileSystem
-      Config        : OrcAIConfig }
+    { /// Resolves the provider bundle for a given job config. Token resolution is
+      /// deferred to first use (via a Lazy closed over by the CLI entry point).
+      ResolveProvider : JobConfig -> Result<ProviderClients, string>
+      AuthContext     : IAuthContext
+      FileSystem      : IFileSystem
+      Config          : OrcAIConfig }

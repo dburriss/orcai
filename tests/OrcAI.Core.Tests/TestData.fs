@@ -3,7 +3,7 @@ module OrcAI.Core.Tests.TestData
 open System
 open Testably.Abstractions.Testing
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
+open OrcAI.Core.Provider
 open OrcAI.Core.Deps
 open OrcAI.Core.OrcAIConfig
 
@@ -82,12 +82,10 @@ module A =
               NoParallel       = false
               ContinueOnError  = false
               DefaultLabels    = []
-              IsPrimaryAuthApp = false
               OnClosedIssue    = None
               DryRun           = false
               CheckoutRoot     = None }
 
-        let withIsPrimaryAuthApp v (i: OrcAI.Core.RunCommand.RunInput)    = { i with IsPrimaryAuthApp = v }
         let withOnClosedIssue a (i: OrcAI.Core.RunCommand.RunInput)       = { i with OnClosedIssue = a }
         let withNoParallel v (i: OrcAI.Core.RunCommand.RunInput)          = { i with NoParallel = v }
         let withContinueOnError v (i: OrcAI.Core.RunCommand.RunInput)     = { i with ContinueOnError = v }
@@ -150,10 +148,18 @@ module Given =
         fs.File.WriteAllText(yamlPath, yaml)
         yamlPath
 
-    let deps (fs: MockFileSystem) (client: IGhClient) : OrcAIDeps =
-        { GhClient      = client
-          CopilotClient = None
-          AuthContext   = { new OrcAI.Core.AuthContext.IAuthContext with
-                               member _.GetToken() = async { return Ok "fake-token" } }
-          FileSystem    = fs :> System.IO.Abstractions.IFileSystem
-          Config        = empty }
+    let deps (fs: MockFileSystem) (client: IIssueTracker) : OrcAIDeps =
+        let providerClients : ProviderClients =
+            { Tracker = client
+              Prs     = Some (client :?> IPullRequestLinker)
+              Repos   = Some (client :?> IRepoInspector) }
+        { ResolveProvider = fun _ -> Ok providerClients
+          AuthContext     = { new OrcAI.Core.AuthContext.IAuthContext with
+                                 member _.GetToken() = async { return Ok "fake-token" } }
+          FileSystem      = fs :> System.IO.Abstractions.IFileSystem
+          Config          = empty }
+
+    /// Rewrites the resolved ProviderClients (e.g. to set Prs/Repos = None), simulating
+    /// a provider that lacks PR-linking or repo-inspection capability.
+    let mapProviderClients (f: ProviderClients -> ProviderClients) (deps: OrcAIDeps) : OrcAIDeps =
+        { deps with ResolveProvider = fun cfg -> deps.ResolveProvider cfg |> Result.map f }

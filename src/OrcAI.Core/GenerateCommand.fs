@@ -2,6 +2,7 @@ module OrcAI.Core.GenerateCommand
 
 open System
 open System.IO
+open OrcAI.Core.Provider
 open OrcAI.Core.Deps
 
 // ---------------------------------------------------------------------------
@@ -77,9 +78,11 @@ let private buildMarkdown (name: string) : string =
 """
 
 /// Fetch org repos from GitHub (short names only).
-/// Exposed so Program.fs can call it before the interactive TUI.
-let listOrgRepos (deps: OrcAIDeps) (org: string) : Async<Result<string list, string>> =
-    deps.GhClient.ListRepos(OrcAI.Core.Domain.OrgName org)
+/// Exposed so Program.fs can call it before the interactive TUI. Generate scaffolds a
+/// brand new job (no JobConfig exists yet to resolve a provider for), so it takes the
+/// GitHub repo inspector directly rather than going through OrcAIDeps.ResolveProvider.
+let listOrgRepos (repos: IRepoInspector) (org: string) : Async<Result<string list, string>> =
+    repos.ListRepos(OrcAI.Core.Domain.OrgName org)
 
 /// Execute the generate command.
 /// All interactive input (name, org, repo selection) must be resolved

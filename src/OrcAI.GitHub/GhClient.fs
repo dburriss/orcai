@@ -1,7 +1,8 @@
 module OrcAI.GitHub.GhClient
 
 // ---------------------------------------------------------------------------
-// Production implementation of OrcAI.Core.GhClient.IGhClient.
+// Production implementation of OrcAI.Core.Provider's IIssueTracker,
+// IPullRequestLinker, and IRepoInspector.
 //
 // All GitHub API calls are delegated to the `gh` CLI via SimpleExec.
 // GH_TOKEN is injected into each subprocess environment by the caller
@@ -13,7 +14,7 @@ open System.Text.Json
 open Microsoft.Extensions.Logging
 open SimpleExec
 open OrcAI.Core.Domain
-open OrcAI.Core.GhClient
+open OrcAI.Core.Provider
 
 // ------------------------------------------------------------------
 // Helper: run a gh command and return stdout as a string
@@ -203,9 +204,16 @@ let private intProp (el: JsonElement) (name: string) =
 // ------------------------------------------------------------------
 
 /// Production implementation that shells out to `gh` via SimpleExec.
-type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, logger: ILogger) =
+/// `copilotToken` is a secondary PAT used only when assigning `@copilot` — GitHub Apps
+/// cannot assign agents, so when the primary auth is an App, callers resolve a PAT
+/// separately and pass it here; `None` falls back to `ghToken` for every assignee.
+type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: int, rateLimitRetries: int, logger: ILogger) =
     let bucket  = ApiBucket(writesPerMinute)
     let retries = rateLimitRetries
+    let tokenFor (assignee: string) =
+        if assignee.TrimStart('@').Equals("copilot", StringComparison.OrdinalIgnoreCase)
+        then copilotToken |> Option.defaultValue ghToken
+        else ghToken
 
     // ------------------------------------------------------------------
     // Projects
@@ -408,15 +416,14 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
         }
 
     // ------------------------------------------------------------------
-    // IGhClient interface
+    // IIssueTracker interface
     // ------------------------------------------------------------------
 
-    interface IGhClient with
+    interface IIssueTracker with
         member this.FindProject      org title       = this.FindProjectImpl org title
         member this.FindIssue        repo title      = this.FindIssueImpl repo title
         member this.FindClosedIssue  repo title      = this.FindClosedIssueImpl repo title
         member this.ReopenIssue      repo issue      = this.ReopenIssueImpl repo issue
-        member this.FindPrsForIssue  repo issue      = this.FindPrsForIssueImpl repo issue
 
         member _.ListLabels repo =
             async {
@@ -545,7 +552,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
             async {
                 let (RepoName repoStr)   = repo
                 let (IssueNumber issueN) = issue
-                match! runGhApi bucket retries ghToken $"issue edit {issueN} --repo {repoStr} --add-assignee {assignee}" with
+                match! runGhApi bucket retries (tokenFor assignee) $"issue edit {issueN} --repo {repoStr} --add-assignee {assignee}" with
                 | Error e -> return Error e
                 | Ok _    -> return Ok ()
             }
@@ -554,7 +561,7 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
             async {
                 let (RepoName repoStr)   = repo
                 let (IssueNumber issueN) = issue
-                match! runGhApi bucket retries ghToken $"issue edit {issueN} --repo {repoStr} --remove-assignee {assignee}" with
+                match! runGhApi bucket retries (tokenFor assignee) $"issue edit {issueN} --repo {repoStr} --remove-assignee {assignee}" with
                 | Error e -> return Error e
                 | Ok _    -> return Ok ()
             }
@@ -573,6 +580,24 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                     System.IO.File.Delete(tmpFile)
             }
 
+        member _.GetIssueState repo issue =
+            async {
+                let (RepoName repoStr)   = repo
+                let (IssueNumber issueN) = issue
+                match! runGhApi bucket retries ghToken $"issue view {issueN} --repo {repoStr} --json state" with
+                | Error _ -> return None
+                | Ok json ->
+                    let el = JsonDocument.Parse(json).RootElement
+                    return strProp el "state"
+            }
+
+    // ------------------------------------------------------------------
+    // IPullRequestLinker interface
+    // ------------------------------------------------------------------
+
+    interface IPullRequestLinker with
+        member this.FindPrsForIssue  repo issue      = this.FindPrsForIssueImpl repo issue
+
         member _.ClosePr repo pr =
             async {
                 let (RepoName repoStr) = repo
@@ -587,6 +612,22 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                 | Ok _    -> return Ok ()
             }
 
+        member _.GetPrState repo pr =
+            async {
+                let (RepoName repoStr) = repo
+                let (PrNumber prN)     = pr
+                match! runGhApi bucket retries ghToken $"pr view {prN} --repo {repoStr} --json state" with
+                | Error _ -> return None
+                | Ok json ->
+                    let el = JsonDocument.Parse(json).RootElement
+                    return strProp el "state"
+            }
+
+    // ------------------------------------------------------------------
+    // IRepoInspector interface
+    // ------------------------------------------------------------------
+
+    interface IRepoInspector with
         member _.ListRepos org =
             async {
                 let (OrgName orgStr) = org
@@ -599,14 +640,6 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                         |> Seq.choose (fun el -> strProp el "name")
                         |> List.ofSeq
                     return Ok names
-            }
-
-        member _.RepoExists repo =
-            async {
-                let (RepoName repoStr) = repo
-                match! runGhApi bucket retries ghToken $"repo view {repoStr} --json name" with
-                | Ok _    -> return Ok ()
-                | Error e -> return Error e
             }
 
         member _.ReposExist repos =
@@ -816,26 +849,4 @@ type GhCliClient(ghToken: string, writesPerMinute: int, rateLimitRetries: int, l
                                 | _ -> return! tryPaths rest
                         }
                 return! tryPaths paths
-            }
-
-        member _.GetIssueState repo issue =
-            async {
-                let (RepoName repoStr)   = repo
-                let (IssueNumber issueN) = issue
-                match! runGhApi bucket retries ghToken $"issue view {issueN} --repo {repoStr} --json state" with
-                | Error _ -> return None
-                | Ok json ->
-                    let el = JsonDocument.Parse(json).RootElement
-                    return strProp el "state"
-            }
-
-        member _.GetPrState repo pr =
-            async {
-                let (RepoName repoStr) = repo
-                let (PrNumber prN)     = pr
-                match! runGhApi bucket retries ghToken $"pr view {prN} --repo {repoStr} --json state" with
-                | Error _ -> return None
-                | Ok json ->
-                    let el = JsonDocument.Parse(json).RootElement
-                    return strProp el "state"
             }

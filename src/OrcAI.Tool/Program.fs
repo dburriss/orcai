@@ -15,6 +15,7 @@ open OrcAI.Core.Deps
 open OrcAI.Core.OrcAIConfig
 open OrcAI.Core.InfoCommand
 open OrcAI.Core.Domain
+open OrcAI.Core.Provider
 open OrcAI.Core.GenerateCommand
 open System.IO.Abstractions
 open Testably.Abstractions
@@ -72,65 +73,77 @@ let private resolveLogLevel () =
         | true, level -> level
         | _           -> LogLevel.Warning
 
-/// Resolve auth, obtain a token, create the gh client, and invoke `f`.
+/// Resolve auth, build a lazily-initialized GitHub provider bundle, and invoke `f`.
 /// Returns 1 on any auth failure, otherwise returns the result of `f`.
-let private withClient (f: OrcAIDeps -> bool -> int) : int =
+///
+/// `f` receives: the deps record, `copilotAssignBlocked` (true when the primary auth
+/// is a GitHub App and no PAT is configured for Copilot (re)assignment — used only by
+/// `nudge`), and a thunk resolving the concrete GitHub provider bundle directly (used
+/// only by `generate`, which scaffolds a job before any JobConfig exists to dispatch
+/// on). Token resolution is deferred until one of these is actually forced, so a
+/// command that never touches GitHub never pays for auth resolution.
+let private withClient (f: OrcAIDeps -> bool -> (unit -> Result<ProviderClients, string>) -> int) : int =
     match resolveAuthContext () with
     | Error e ->
         eprintfn "Auth error: %s" e
         1
     | Ok authCtx ->
-        match authCtx.GetToken() |> Async.RunSynchronously with
-        | Error e ->
-            eprintfn "Auth error: %s" e
-            1
-        | Ok ghToken ->
-            let isPrimaryAuthApp =
-                match authCtx with
-                | :? AppAuthContext -> true
-                | _ -> false
-            let fs   = RealFileSystem() :> IFileSystem
-            let home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile)
-            let cwd  = System.Environment.CurrentDirectory
-            let cfg  = OrcAI.Core.OrcAIConfig.resolve fs home cwd
-            // Env > config > default. ORCAI_WRITES_PER_MINUTE and
-            // ORCAI_RATE_LIMIT_RETRIES let a developer override the throttle
-            // for a single invocation without editing config files.
-            let envInt (name: string) =
-                match Environment.GetEnvironmentVariable(name) with
-                | null | "" -> None
-                | s ->
-                    match Int32.TryParse(s) with
-                    | true, n when n > 0 -> Some n
-                    | _ -> None
-            let writesPerMinute =
-                envInt "ORCAI_WRITES_PER_MINUTE"
-                |> Option.orElse cfg.WritesPerMinute
-                |> Option.defaultValue 60
-            let rateLimitRetries =
-                envInt "ORCAI_RATE_LIMIT_RETRIES"
-                |> Option.orElse cfg.RateLimitRetries
-                |> Option.defaultValue 3
-            let logLevel    = resolveLogLevel ()
-            let logFactory  = LoggerFactory.Create(fun b -> b.AddConsole().SetMinimumLevel(logLevel) |> ignore)
-            let ghLogger    = logFactory.CreateLogger("OrcAI.GitHub.GhCliClient")
-            // When the primary auth is a GitHub App, attempt to resolve a secondary
-            // PAT for use exclusively in @copilot assignment (Apps cannot assign copilot).
-            let copilotClient : OrcAI.Core.GhClient.IGhClient option =
-                if isPrimaryAuthApp then
-                    match loadToken () with
-                    | Ok pat -> Some (OrcAI.GitHub.GhClient.GhCliClient(pat, writesPerMinute, rateLimitRetries, ghLogger) :> OrcAI.Core.GhClient.IGhClient)
-                    | Error _ -> None
-                else
-                    None
-            let client = OrcAI.GitHub.GhClient.GhCliClient(ghToken, writesPerMinute, rateLimitRetries, ghLogger)
-            let deps : OrcAIDeps =
-                { GhClient      = client :> OrcAI.Core.GhClient.IGhClient
-                  CopilotClient = copilotClient
-                  AuthContext   = authCtx
-                  FileSystem    = fs
-                  Config        = cfg }
-            f deps isPrimaryAuthApp
+        let isPrimaryAuthApp =
+            match authCtx with
+            | :? AppAuthContext -> true
+            | _ -> false
+        let fs   = RealFileSystem() :> IFileSystem
+        let home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile)
+        let cwd  = System.Environment.CurrentDirectory
+        let cfg  = OrcAI.Core.OrcAIConfig.resolve fs home cwd
+        // Env > config > default. ORCAI_WRITES_PER_MINUTE and
+        // ORCAI_RATE_LIMIT_RETRIES let a developer override the throttle
+        // for a single invocation without editing config files.
+        let envInt (name: string) =
+            match Environment.GetEnvironmentVariable(name) with
+            | null | "" -> None
+            | s ->
+                match Int32.TryParse(s) with
+                | true, n when n > 0 -> Some n
+                | _ -> None
+        let writesPerMinute =
+            envInt "ORCAI_WRITES_PER_MINUTE"
+            |> Option.orElse cfg.WritesPerMinute
+            |> Option.defaultValue 60
+        let rateLimitRetries =
+            envInt "ORCAI_RATE_LIMIT_RETRIES"
+            |> Option.orElse cfg.RateLimitRetries
+            |> Option.defaultValue 3
+        let logLevel    = resolveLogLevel ()
+        let logFactory  = LoggerFactory.Create(fun b -> b.AddConsole().SetMinimumLevel(logLevel) |> ignore)
+        let ghLogger    = logFactory.CreateLogger("OrcAI.GitHub.GhCliClient")
+        let lazyGithub : Lazy<Result<ProviderClients, string>> =
+            lazy (
+                match authCtx.GetToken() |> Async.RunSynchronously with
+                | Error e -> Error e
+                | Ok ghToken ->
+                    // When the primary auth is a GitHub App, attempt to resolve a secondary
+                    // PAT for use exclusively in @copilot assignment (Apps cannot assign copilot).
+                    let copilotToken =
+                        if isPrimaryAuthApp then
+                            match loadToken () with
+                            | Ok pat  -> Some pat
+                            | Error _ -> None
+                        else None
+                    let client = OrcAI.GitHub.GhClient.GhCliClient(ghToken, copilotToken, writesPerMinute, rateLimitRetries, ghLogger)
+                    Ok { Tracker = client :> IIssueTracker
+                         Prs     = Some (client :> IPullRequestLinker)
+                         Repos   = Some (client :> IRepoInspector) }
+            )
+        let copilotAssignBlocked =
+            isPrimaryAuthApp
+            && (match loadToken () with Ok _ -> false | Error _ -> true)
+        let deps : OrcAIDeps =
+            { ResolveProvider = fun (_: JobConfig) -> lazyGithub.Value
+              AuthContext     = authCtx
+              FileSystem      = fs
+              Config          = cfg }
+        f deps copilotAssignBlocked (fun () -> lazyGithub.Value)
 
 /// Format an InfoResult for console output.
 let private printInfoResult (result: InfoResult) =
@@ -375,7 +388,7 @@ let main argv =
                 eprintfn "Error: %s" e
                 1
             | Ok paths ->
-            withClient (fun deps isPrimaryAuthApp ->
+            withClient (fun deps _ _ ->
                 // Apply config fallbacks — CLI flags win, then config, then built-in defaults.
                 let effectiveAutoCreateLabels = autoCreateLabels || (deps.Config.AutoCreateLabels |> Option.defaultValue false)
                 let effectiveContinueOnError  = continueOnError  || (deps.Config.ContinueOnError  |> Option.defaultValue false)
@@ -392,7 +405,6 @@ let main argv =
                       NoParallel         = noParallel
                       ContinueOnError    = effectiveContinueOnError
                       DefaultLabels      = deps.Config.DefaultLabels |> Option.defaultValue []
-                      IsPrimaryAuthApp   = isPrimaryAuthApp
                       OnClosedIssue      = onClosedIssue
                       DryRun             = dryRun
                       CheckoutRoot       = deps.Config.CheckoutRoot }
@@ -531,7 +543,7 @@ let main argv =
                 printfn "Aborted."
                 0
             else
-            withClient (fun deps _ ->
+            withClient (fun deps _ _ ->
                 let input : OrcAI.Core.CleanupCommand.CleanupInput = { YamlPath = yamlFile; DryRun = dryRun }
                 match OrcAI.Core.CleanupCommand.execute deps input with
                 | Error e ->
@@ -565,7 +577,7 @@ let main argv =
             let skipLock  = args.Contains(InfoArgs.Skip_Lock)
             let saveLock  = args.Contains(InfoArgs.Save_Lock)
             let json      = args.Contains(InfoArgs.Json)
-            withClient (fun deps _ ->
+            withClient (fun deps _ _ ->
                 let input  = { YamlPath = yamlFile; SkipLock = skipLock; SaveLock = saveLock }
                 match OrcAI.Core.InfoCommand.execute deps input with
                 | Error e ->
@@ -589,15 +601,15 @@ let main argv =
                 | Some other          ->
                     eprintfn "Unknown --on-closed-pr value '%s'. Valid values: skip, nudge, fail." other
                     OrcAI.Core.Domain.ClosedPrAction.Skip
-            withClient (fun deps isPrimaryAuthApp ->
+            withClient (fun deps copilotAssignBlocked _ ->
                 let input : OrcAI.Core.NudgeCommand.NudgeInput =
-                    { YamlPath         = yamlFile
-                      DryRun           = dryRun
-                      Verbose          = verbose
-                      SaveLock         = saveLock
-                      MaxConcurrency   = maxConcurrency
-                      IsPrimaryAuthApp = isPrimaryAuthApp
-                      OnClosedPr       = onClosedPr }
+                    { YamlPath             = yamlFile
+                      DryRun               = dryRun
+                      Verbose              = verbose
+                      SaveLock             = saveLock
+                      MaxConcurrency       = maxConcurrency
+                      CopilotAssignBlocked = copilotAssignBlocked
+                      OnClosedPr           = onClosedPr }
                 match OrcAI.Core.NudgeCommand.execute deps input with
                 | Error e ->
                     eprintfn "Error: %s" e
@@ -686,7 +698,7 @@ let main argv =
                     dict |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq)
                 |> Option.defaultValue Map.empty
             let extraVars = Map.fold (fun acc k v -> Map.add k v acc) jsonKvs dataKvs
-            withClient (fun deps _ ->
+            withClient (fun deps _ _ ->
                 let input : OrcAI.Core.NotifyCommand.NotifyInput =
                     { YamlPath  = yamlFile
                       DryRun    = dryRun
@@ -879,7 +891,7 @@ let main argv =
             let interactive   = args.Contains(GenerateArgs.Interactive)
             let explicitRepos = args.GetResults(GenerateArgs.Repo)
 
-            withClient (fun deps _ ->
+            withClient (fun deps _ resolveGitHub ->
 
                 // --- Resolve name ---
                 let nameResult =
@@ -913,7 +925,14 @@ let main argv =
                                 if slash >= 0 then r.[slash + 1..] else r))
                         elif interactive then
                             // Fetch org repos and let the user multi-select.
-                            match listOrgRepos deps org |> Async.RunSynchronously with
+                            let reposFetch =
+                                match resolveGitHub () with
+                                | Error e -> Error e
+                                | Ok providerClients ->
+                                    match providerClients.Repos with
+                                    | Some repos -> listOrgRepos repos org |> Async.RunSynchronously
+                                    | None       -> Error "This provider does not support listing repos."
+                            match reposFetch with
                             | Error e ->
                                 eprintfn "Warning: could not fetch repos for org '%s': %s" org e
                                 Ok []
@@ -973,7 +992,7 @@ let main argv =
                 eprintfn "Error: %s" e
                 1
             | Ok paths ->
-            withClient (fun deps _ ->
+            withClient (fun deps _ _ ->
                 // Apply config fallbacks for validate.
                 let effectiveContinueOnError =
                     continueOnError || (deps.Config.ContinueOnError |> Option.defaultValue false)
@@ -1027,7 +1046,7 @@ let main argv =
         | Graph args ->
             let yamlPath = args.GetResult(GraphArgs.Yaml_File)
             let json     = args.Contains(GraphArgs.Json)
-            withClient (fun deps _ ->
+            withClient (fun deps _ _ ->
                 let input : OrcAI.Core.GraphCommand.GraphInput = { YamlPath = yamlPath }
                 match OrcAI.Core.GraphCommand.execute deps input with
                 | Error e ->
