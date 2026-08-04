@@ -237,6 +237,23 @@ let private printInfoResult (result: InfoResult) =
 let private jsonOptions =
     JsonSerializerOptions(WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase)
 
+/// Human-readable line(s) for one migrated file (`orcai migrate`).
+let private printMigrateFileReport (label: string) (dryRun: bool) (report: OrcAI.Core.MigrateCommand.MigrateFileReport) =
+    let suffix = if dryRun then " (dry run — nothing written)" else ""
+    if report.Changed then
+        let range =
+            match report.FromVersion, report.ToVersion with
+            | Some f, Some t -> $"v{f} -> v{t}"
+            | _              -> "migrated"
+        AnsiConsole.MarkupLine($"[green]{Markup.Escape(label)}[/] {Markup.Escape(report.Path)}: {range}{suffix}")
+        match report.BackupPath with
+        | Some b -> AnsiConsole.MarkupLine($"  backup written to {Markup.Escape(b)}")
+        | None   -> ()
+    else
+        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(label)}[/] {Markup.Escape(report.Path)}: already up to date")
+    for w in report.Warnings do
+        AnsiConsole.MarkupLine($"  [yellow][[warn]][/] {Markup.Escape(w)}")
+
 /// Emit JSON for `orcai info --json`.
 let private printInfoJson (result: InfoResult) =
     let lock = result.Lock
@@ -1089,6 +1106,35 @@ let main argv =
                     else
                         for line in result.Lines do
                             printfn "%s" line
+                    0)
+        | Migrate args ->
+            let yamlPath = args.GetResult(MigrateArgs.Yaml_File)
+            let dryRun   = args.Contains(MigrateArgs.Dryrun)
+            let json     = args.Contains(MigrateArgs.Json)
+            withClient (fun deps _ _ ->
+                let input : OrcAI.Core.MigrateCommand.MigrateInput = { YamlPath = yamlPath; DryRun = dryRun }
+                match OrcAI.Core.MigrateCommand.execute deps.FileSystem input with
+                | Error e ->
+                    eprintfn "Error: %s" e
+                    1
+                | Ok result ->
+                    if json then
+                        let toJson (r: OrcAI.Core.MigrateCommand.MigrateFileReport) =
+                            {| path        = r.Path
+                               changed     = r.Changed
+                               fromVersion = r.FromVersion |> Option.toNullable
+                               toVersion   = r.ToVersion   |> Option.toNullable
+                               warnings    = r.Warnings |> Array.ofList
+                               backupPath  = r.BackupPath |> Option.toObj |}
+                        let doc =
+                            {| yaml = toJson result.Yaml
+                               lock = result.Lock |> Option.map toJson |> Option.toObj |}
+                        printfn "%s" (JsonSerializer.Serialize(doc, jsonOptions))
+                    else
+                        printMigrateFileReport "yaml" dryRun result.Yaml
+                        match result.Lock with
+                        | Some lockReport -> printMigrateFileReport "lock" dryRun lockReport
+                        | None            -> AnsiConsole.MarkupLine("[grey]lock[/] no lock file found — nothing to migrate.")
                     0)
         | Version -> 0
     with

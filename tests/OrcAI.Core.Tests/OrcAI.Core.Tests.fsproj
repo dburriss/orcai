@@ -21,6 +21,7 @@
     <Compile Include="NotifyCommandTests.fs" />
     <Compile Include="NudgeCommandTests.fs" />
     <Compile Include="ValidateCommandTests.fs" />
+    <Compile Include="MigrateCommandTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -20,6 +20,7 @@ Complete reference for all `orcai` commands, flags, configuration, and output fo
 - [info](#info)
 - [cleanup](#cleanup)
 - [graph](#graph)
+- [migrate](#migrate)
 - [YAML configuration](#yaml-configuration)
 - [Layered configuration](#layered-configuration)
 - [Lock file format](#lock-file-format)
@@ -42,6 +43,7 @@ Complete reference for all `orcai` commands, flags, configuration, and output fo
 | `orcai info` | Display the current state of a job |
 | `orcai cleanup` | Tear down everything created by `run` |
 | `orcai graph` | Render the `dependsOn` job dependency graph as ASCII |
+| `orcai migrate` | Upgrade a job YAML and its lock file to the current schema version |
 
 ---
 
@@ -589,9 +591,88 @@ orcai graph upgrade.yml --json
 
 ---
 
+## migrate
+
+Upgrade a job YAML and its sibling `<basename>.lock.json` (if present) to the current schema version, in place. Run this after an OrcAI upgrade if `orcai run`/`validate`/etc. start rejecting a previously-working YAML, or if a lock file fails to load with an "incompatible issue/project ids" error.
+
+The lock file step never calls GitHub — it's a pure, local JSON transform. That's the point: deleting the lock file instead would force every repo in the job back onto the live, rate-limited lookup path on the next run, just to recover from a field rename. Migrating preserves the cached state.
+
+```
+orcai migrate <yaml_file> [--dryrun] [--json]
+```
+
+### Flags
+
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `<yaml_file>` | path | Yes | Path to the YAML job config to migrate. |
+| `--dryrun` | flag | No | Preview what would change without writing anything (no files, no `.bak` backups). |
+| `--json` | flag | No | Emit machine-readable JSON output to stdout. |
+
+### Behavior
+
+1. Detects the YAML's schema version (from an explicit `version:` field if present, otherwise structurally — e.g. a legacy `assign:`/`job.skipCopilot` field means v1) and runs it through every applicable migration step in order, oldest first.
+2. Runtime behaviour is preserved, not just field names — e.g. `assign:` + `job.skipCopilot` are translated into the equivalent `action:` block (`assign.via: comment` templates using the `{assignee}` token get the literal handle inlined, since the new `comment` action type has no `to` field to resolve it); an absent `onClosedIssue` gets set to `create` explicitly, since the default changed to `skip`.
+3. If a `<basename>.lock.json` exists, it's migrated the same way (its own version steps, keyed off the lock file's `formatVersion` field). A missing lock file is not an error.
+4. Before writing a changed file, the original is backed up to `<file>.bak` (overwriting any previous backup). Nothing is written for `--dryrun`.
+5. A file already at the current version is left untouched and reported as "already up to date". Running `migrate` again on an already-migrated file is always a no-op.
+6. Any file with a conflicting or unresolvable legacy value (e.g. both `assign:` and `action:` present, or an unrecognised `assign.via`) fails with an error before anything is written — never a half-migrated file on disk.
+
+### Output
+
+```
+yaml /path/to/job.yml: v1 -> v2
+  backup written to /path/to/job.yml.bak
+lock /path/to/job.lock.json: v1 -> v2
+  backup written to /path/to/job.lock.json.bak
+  [warn] 1 pull request(s) had 'state' defaulted to OPEN (this field didn't exist before this schema version) — run 'orcai nudge --save-lock' afterwards to refresh accurate states from GitHub.
+```
+
+### JSON output
+
+```json
+{
+  "yaml": {
+    "path": "/path/to/job.yml",
+    "changed": true,
+    "fromVersion": 1,
+    "toVersion": 2,
+    "warnings": [],
+    "backupPath": "/path/to/job.yml.bak"
+  },
+  "lock": {
+    "path": "/path/to/job.lock.json",
+    "changed": true,
+    "fromVersion": 1,
+    "toVersion": 2,
+    "warnings": ["1 pull request(s) had 'state' defaulted to OPEN ..."],
+    "backupPath": "/path/to/job.lock.json.bak"
+  }
+}
+```
+
+`lock` is `null` when no lock file exists for the YAML.
+
+### Examples
+
+```bash
+# Preview what would change
+orcai migrate upgrade.yml --dryrun
+
+# Migrate the YAML and its lock file in place
+orcai migrate upgrade.yml
+
+# Machine-readable output
+orcai migrate upgrade.yml --json
+```
+
+---
+
 ## YAML configuration
 
 ```yaml
+version: 2  # schema version; used by 'orcai migrate' — don't edit by hand
+
 job:
   title: "My Project Title"
   org:   "my-github-org"
@@ -622,6 +703,8 @@ issue:
 #     scope: per_repo           # per_repo (default) | all_repos
 #     untrackedRepos: include   # include (default) | skip
 ```
+
+`version` is written by `orcai generate` and `orcai migrate`; it's optional and ignored by every other command today — it exists so `migrate` can detect a file's schema version without guessing from its shape. You don't need to add it to a hand-written YAML.
 
 `job.title` and `job.org` are required. `repos` must be a non-empty list. `issue.template` must point to a real Markdown file relative to the YAML. Missing labels will cause an error during `run` unless `--auto-create-labels` is supplied. `job.owner` is optional — it sets the `{job.owner}` token in comment templates; if omitted, OrcAI falls back to the catch-all owner in the local CODEOWNERS file.
 
@@ -790,11 +873,12 @@ Lock files are written as `<basename>.lock.json` next to the YAML config.
 
 ```json
 {
+  "formatVersion": 2,
   "lockedAt": "2026-03-02T20:34:21.046+00:00",
   "yamlHash": "<sha256>",
   "project": {
     "org": "my-org",
-    "number": 13,
+    "id": "13",
     "title": "My Project Title",
     "url": "https://github.com/users/my-org/projects/13"
   },
@@ -802,7 +886,7 @@ Lock files are written as `<basename>.lock.json` next to the YAML config.
   "issues": [
     {
       "repo": "my-org/repo-one",
-      "number": 7,
+      "id": "7",
       "url": "https://github.com/my-org/repo-one/issues/7",
       "assignees": ["copilot"]
     }
@@ -812,13 +896,14 @@ Lock files are written as `<basename>.lock.json` next to the YAML config.
       "repo": "my-org/repo-one",
       "number": 3,
       "url": "https://github.com/my-org/repo-one/pull/3",
-      "closesIssue": 7
+      "closesIssue": "7",
+      "state": "OPEN"
     }
   ]
 }
 ```
 
-Lock files are consumed by `run`, `info`, and `cleanup`. Deleting the file forces a live refresh.
+Lock files are consumed by `run`, `info`, and `cleanup`. `formatVersion` guards against loading a file written by an incompatible older version — `issue`/`project` ids are opaque strings, not the GitHub-shaped integers older versions used. A lock file with a missing or older `formatVersion` fails to load with a pointer to `orcai migrate <yaml>` (see [migrate](#migrate)), which upgrades it in place without any GitHub calls. Deleting the file instead also works, but forces a live refresh of every repo on the next run.
 
 ---
 

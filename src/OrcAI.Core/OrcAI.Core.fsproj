@@ -16,6 +16,9 @@
     <Compile Include="Deps.fs" />
     <Compile Include="YamlConfig.fs" />
     <Compile Include="LockFile.fs" />
+    <Compile Include="Migrations/YamlStep1To2.fs" />
+    <Compile Include="Migrations/LockStep1To2.fs" />
+    <Compile Include="MigrateCommand.fs" />
     <Compile Include="FileGlob.fs" />
     <Compile Include="DependencyResolution.fs" />
     <Compile Include="CheckoutManager.fs" />

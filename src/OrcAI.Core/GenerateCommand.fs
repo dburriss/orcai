@@ -57,7 +57,9 @@ let private buildYaml (name: string) (org: string) (repos: string list) (slug: s
     let providerBlock =
         if localProvider then "provider:\n  type: local\n\n" else ""
 
-    $"""job:
+    $"""version: 2  # schema version; used by 'orcai migrate' — don't edit by hand
+
+job:
   title: "{name}"
   org: "{org}"
 

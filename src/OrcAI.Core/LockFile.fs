@@ -323,7 +323,7 @@ let tryRead (fs: IFileSystem) (yamlPath: string) : LockFile option =
         | None     -> failwith $"Lock file '{path}' deserialised to null."
         | Some dto ->
             if dto.formatVersion <> currentFormatVersion then
-                failwith $"Lock file was written by an older OrcAI version with incompatible issue/project ids. Delete {path} and re-run."
+                failwith $"Lock file was written by an older OrcAI version with incompatible issue/project ids. Run 'orcai migrate {yamlPath}' to upgrade it in place (recommended — avoids re-fetching state from GitHub), or delete {path} and re-run."
             Some (ofDto dto)
 
 /// Serialise and write a lock file to disk.
