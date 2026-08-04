@@ -18,9 +18,15 @@ action:
   # body ({{issue_text}}) is handed to OpenCode as a single argument. This
   # avoids the quoting/escaping pitfalls of the string ("shell") form when the
   # prompt contains newlines, quotes, or backticks.
+  # --auto auto-approves OpenCode's tool use (headless `run` has no TTY to approve
+  # file writes). -m pins the model: with no default model configured, headless
+  # `run` resolves nothing and exits 0 having changed nothing.
   execute:
     - "opencode"
     - "run"
+    - "--auto"
+    - "-m"
+    - "github-copilot/claude-sonnet-5"
     - "{{issue_text}}"
 
   # Push the branch straight to the target repo and open a PR in-place.

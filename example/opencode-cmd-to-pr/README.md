@@ -42,12 +42,23 @@ uses the **exec (list) form** of `execute:`:
 execute:
   - "opencode"
   - "run"
+  - "--auto"
+  - "-m"
+  - "github-copilot/claude-sonnet-5"
   - "{{issue_text}}"
 ```
 
 No shell is involved, so the multi-line Markdown body — quotes, backticks and all —
 is delivered to OpenCode as a single argument. Prefer this over the string form for
 anything but the simplest one-line commands.
+
+Two flags are essential for headless `opencode run`, or it exits 0 having changed
+nothing (which `cmd-to-pr` then records as "no changes"):
+
+- **`--auto`** — there's no TTY to approve OpenCode's edit/write tools.
+- **`-m <provider/model>`** — with no default model in your OpenCode config, headless
+  `run` resolves no model and silently no-ops. Pin one (e.g. a `github-copilot/…`
+  model if you use Copilot as your provider; run `opencode models` to list).
 
 The template instructs the agent to edit the working tree only (not commit/push);
 orcai owns the git and PR steps.
