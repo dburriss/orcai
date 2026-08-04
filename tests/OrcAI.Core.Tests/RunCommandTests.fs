@@ -1095,6 +1095,43 @@ let ``buildPrCreatePsi passes repo, head, title and body as gh pr create argumen
         args)
 
 // ---------------------------------------------------------------------------
+// runExecCommand — closes the child's stdin so processes that eagerly read
+// stdin to EOF before doing anything (e.g. `opencode run` with no TTY) don't
+// hang or silently no-op on an inherited, non-EOF-terminated stdin handle.
+// `cat`/`more` (no args) block reading stdin until EOF as a portable stand-in.
+// Note: whether this test actually demonstrates the hang pre-fix depends on
+// the ambient stdin of the process running the test — if that's already at
+// EOF (e.g. some CI runners redirect step stdin from /dev/null), the bug
+// won't reproduce here even unfixed. It reliably hangs when run from an
+// interactive shell with a real TTY stdin.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``runExecCommand closes child stdin so a process reading stdin to EOF exits immediately instead of hanging`` () =
+    let exe, args =
+        if System.OperatingSystem.IsWindows() then "cmd", ["/C"; "more"]
+        else "cat", []
+    let task = runExecCommand exe args (Path.GetTempPath()) |> Async.StartAsTask
+    let finished = task.Wait(System.TimeSpan.FromSeconds(5.0))
+    Assert.True(finished, "runExecCommand did not return within 5s — the child is blocked reading an inherited, non-EOF stdin handle")
+    let exitCode, _ = task.Result
+    Assert.Equal(0, exitCode)
+
+// ---------------------------------------------------------------------------
+// buildExecPsi — PWD must be overridden to match workingDir, because
+// WorkingDirectory only chdir's the child; it doesn't update the inherited
+// PWD env var. Confirmed against a real `opencode run` invocation that it
+// otherwise resolves its project root from the stale inherited PWD instead of
+// the real cwd, writing files outside the intended checkout entirely.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``buildExecPsi sets PWD to match workingDir so children that trust inherited PWD over the real cwd aren't misdirected`` () =
+    let psi = buildExecPsi "opencode" ["run"] "/some/checkout/path"
+    Assert.Equal("/some/checkout/path", psi.WorkingDirectory)
+    Assert.Equal("/some/checkout/path", psi.Environment["PWD"])
+
+// ---------------------------------------------------------------------------
 // Regression: the resolved GitHub token now round-trips through ProcessParams
 // into a cmd-checkout action (previously discarded via `Result.map ignore`).
 // Uses a real local (non-network) bare git repo so ensureClone/getWorktree

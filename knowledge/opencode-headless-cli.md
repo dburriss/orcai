@@ -29,65 +29,99 @@ opencode run --auto -m github-copilot/claude-sonnet-5 "<prompt>"
 List available models (including Copilot-backed ones, if that's your provider)
 with `opencode models`.
 
-## 3. Direct (no-shell) process launch silently no-ops opencode
+## 3. Direct (no-shell) process launch could hang or silently no-op opencode — fixed
 
 This is the one that actually cost debugging time, because `1` and `2` alone did
 **not** explain the failure — even with `--auto` and `-m` set, `opencode run`
 launched as a **direct child process** (no shell in between — i.e. `execve`-style,
 which is how .NET's `Process.Start`, Python's `subprocess.Popen`, and most
-non-shell process launchers work) with stdio redirected, **exits 0 and never runs
-its write tool**. No error, no diff — a clean-looking success that changed
-nothing.
+non-shell process launchers work) with stdio redirected could hang, or exit 0
+having never run its write tool. No error, no diff — a clean-looking success
+that changed nothing.
 
-Reproduced independently in plain Python (not orcai-specific — this is an
-`opencode` behavior triggered by how it's spawned):
+**Root cause (confirmed from opencode's source):** `packages/opencode/src/cli/cmd/run.ts`
+does `process.stdin.isTTY ? undefined : await Bun.stdin.text()` before doing
+anything else — whenever stdin isn't a TTY (true for any non-shell/headless
+launch), it eagerly reads stdin **to EOF** first. If the child inherits an
+ambiguous stdin handle that never closes, this blocks forever. If stdin instead
+reaches EOF immediately, it proceeds normally. There's a matching unresolved
+upstream report of the same symptom class in CI/subprocess contexts:
+[sst/opencode#13851](https://github.com/sst/opencode/issues/13851) — treat this
+fix as addressing the one confirmed mechanism, not as a guaranteed cure for
+every headless-invocation failure mode.
 
-| launch shape | result |
-|---|---|
-| direct `execve` (`Process.Start` / `subprocess.Popen`, no shell) | exit 0, **no file written** |
-| `sh -c 'exec "$0" "$@"'` (shell re-execs immediately) | **hangs** |
-| shebang launcher script (`#!/bin/sh` + `exec "$@"`), itself `execve`'d | exit 0, **file written correctly** |
+### The fix (implemented in orcai)
 
-So the *only* shape that reliably worked was going through an actual shebang
-script file that `exec`s the real command — not an inline `sh -c` (which
-deadlocked in testing) and not a direct launch (which silently no-ops).
+`src/OrcAI.Core/RunCommand.fs` now explicitly sets `RedirectStandardInput <- true`
+and immediately calls `proc.StandardInput.Close()` right after `Process.Start`,
+via a shared `runExecCommand` helper used by all three of `cmd` / `cmd-checkout` /
+`cmd-to-pr`. This guarantees the child observes an instant EOF on stdin instead
+of inheriting orcai's own ambiguous stdin handle — no shell wrapping, no shebang
+script, and no Windows-vs-Unix branching required; `RedirectStandardInput` +
+`StandardInput.Close()` is a plain, cross-platform .NET `Process` API pattern.
 
-### Why this matters for orcai specifically
+The previously-considered shebang-script/`exec` workaround (Unix-only, no
+Windows equivalent — no `#!` interpreter line, no `exec` syscall to replace the
+process image) is **no longer needed** and was not implemented.
 
-`orcai`'s `cmd` / `cmd-checkout` / `cmd-to-pr` action types launch the configured
-`execute` command as a direct child process (`System.Diagnostics.Process.Start`,
-no shell) when using the exec/list form — exactly the shape that triggers this.
-**A `cmd-to-pr` job that runs `opencode run` today will report `CmdToPrNoDiff`
-("no diff after cmd succeeded") even when correctly configured with `--auto` and
-`-m`**, because opencode itself made no change under this launch shape.
+### Verification status
 
-### Why a fix was not applied
+- A regression unit test (`runExecCommand closes child stdin so a process
+  reading stdin to EOF exits immediately instead of hanging`,
+  `tests/OrcAI.Core.Tests/RunCommandTests.fs`) exercises the general mechanism
+  using `cat`/`more` as a stand-in for "a process that blocks reading stdin to
+  EOF" — no opencode/API-key dependency required to run it in CI.
+  **Caveat:** whether this test can actually demonstrate the bug pre-fix depends
+  on the *ambient* stdin of whatever process runs the test suite. In sandboxed
+  environments (and likely most CI runners, which redirect step stdin from
+  something already closed/`/dev/null`), the test passes even *before* the fix
+  is applied, because the ambient stdin is already at EOF regardless. It only
+  reliably reproduces the hang when run from a shell with a real,
+  open/non-closing stdin handle.
+- An A/B repro against the real, locally installed `opencode` CLI, launched
+  exactly like orcai's `ProcessStartInfo`, succeeded identically with and
+  without this specific fix, for the same ambient-stdin reason above — it did
+  **not** reproduce a hang in that environment either way. This fix stays in
+  place because it's correct and harmless regardless, but it turned out **not**
+  to be the cause of the `CmdToPrNoDiff` failure actually observed in
+  production — see §4 below for that.
 
-The shebang-launcher workaround only exists on Unix — there is no equivalent
-concept on Windows (no `#!` interpreter line, no `exec` syscall to replace the
-process image), so any change to `orcai`'s process-launch behavior built around
-this workaround would either not work on Windows or need a wholly different,
-unverified mechanism there. Given `orcai` targets Windows as a supported platform
-(`win-x64` is a published target — see `ARCHITECTURE.md` distribution section),
-this was **not** implemented as a fix in `orcai`. It stays a documented limitation
-here instead.
+## 4. Child resolves its working directory from inherited `PWD`, not the real cwd
 
-### Workarounds available today (without changing orcai)
+This is the actual cause of a real `cmd-to-pr` run against `opencode run`
+reporting `CmdToPrNoDiff` ("no diff after cmd succeeded") in production, even
+with `--auto`, `-m`, and the stdin fix from §3 all in place.
 
-- Wrap the `execute` command in your own shebang script (checked into the target
-  repo or referenced by absolute path) instead of invoking `opencode` directly:
-  ```sh
-  #!/bin/sh
-  exec opencode run --auto -m github-copilot/claude-sonnet-5 "$@"
-  ```
-  Then point the job's `execute:` at that script. This only helps on Unix
-  runners/machines, for the same reason above.
-- Run `opencode` under a shell explicitly via the **string (shell) form** of
-  `execute:` rather than the list/exec form, if orcai's shell-dispatch path
-  (`sh -c "..."` on Unix) turns out to behave differently — **not yet verified**;
-  the deadlock reproduced above was with an *inline* `-c "exec ..."` construction,
-  which may or may not match how orcai's own shell dispatch invokes it. Treat as
-  untested until confirmed.
-- If neither works reliably, treat `opencode run` as needing an interactive-ish
-  invocation (e.g. `opencode run` behind `script`/a pty allocator) rather than a
-  bare redirected-stdio child process — not explored here.
+**Root cause:** .NET's `ProcessStartInfo.WorkingDirectory` changes the child's
+OS-level working directory (a `chdir` before exec) but does **not** touch the
+inherited `PWD` environment variable — the child gets whatever `PWD` was in
+*orcai's own* environment (typically whatever directory the user's shell was
+in when they launched `orcai`). `opencode run` — a Bun/Node CLI — resolves its
+own project root from that inherited `PWD` rather than the real cwd, so it
+silently operates on (and writes into) wherever the invoking shell happened to
+be, ignoring `WorkingDirectory`/the checkout worktree entirely. Confirmed by
+direct repro: launching `opencode run` with a worktree's path as
+`WorkingDirectory` but an unrelated `PWD` inherited from the parent shell wrote
+the requested file into that unrelated directory instead — reproduced both as
+"one level up" from an ephemeral checkout and, separately, into a completely
+different real repo on disk that happened to match the invoking shell's `PWD`.
+Because `commitAll`/`git diff` only look inside the actual worktree, this shows
+up as "no diff after cmd succeeded", not an error.
+
+### The fix (implemented in orcai)
+
+`buildExecPsi` in `src/OrcAI.Core/RunCommand.fs` now explicitly sets
+`psi.Environment["PWD"] <- workingDir`, keeping the env var in sync with
+`WorkingDirectory` for every child process launched via `runExecCommand`
+(`cmd`/`cmd-checkout`/`cmd-to-pr`). Confirmed by re-running the same direct
+repro with this override in place: the file landed inside the intended
+worktree and `git status` picked it up correctly.
+
+A unit test (`buildExecPsi sets PWD to match workingDir so children that trust
+inherited PWD over the real cwd aren't misdirected`,
+`tests/OrcAI.Core.Tests/RunCommandTests.fs`) asserts this deterministically —
+no opencode dependency, since it only inspects the constructed `ProcessStartInfo`.
+
+`errorIfNoDiff: true` remains a good safety net for `cmd-to-pr` jobs driving
+opencode regardless, given [sst/opencode#13851](https://github.com/sst/opencode/issues/13851)
+suggests other headless-invocation failure modes may still exist upstream.

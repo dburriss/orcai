@@ -89,6 +89,42 @@ let private resolveExec (render: string -> string) (exec: CmdExec) : string * st
     | Shell cmd       -> shellDispatch (render cmd)
     | Exec(cmd, args) -> render cmd, args |> List.map render
 
+/// Build the `ProcessStartInfo` for an `execute:` command, shared by the
+/// `cmd`/`cmd-checkout`/`cmd-to-pr` action handlers.
+/// Stdin is redirected and immediately closed (by the caller) so the child sees
+/// an instant EOF instead of inheriting an ambiguous, non-EOF-terminated handle
+/// — some CLIs (e.g. `opencode run` with no TTY) block reading stdin to EOF
+/// before doing anything, and hang or misbehave on a handle that never closes.
+/// `PWD` is explicitly set to `workingDir` because `WorkingDirectory` only
+/// changes the OS-level cwd of the child (a `chdir`) — it does not update the
+/// inherited `PWD` environment variable. Some CLIs (again, `opencode run` — a
+/// Bun/Node program) resolve their own project root from `PWD` rather than the
+/// real cwd, so a stale inherited `PWD` silently redirects them to wherever
+/// *this* process happened to be launched from instead of `workingDir`.
+let internal buildExecPsi (executable: string) (args: string list) (workingDir: string) : Diagnostics.ProcessStartInfo =
+    let psi = Diagnostics.ProcessStartInfo(executable)
+    psi.WorkingDirectory       <- workingDir
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError  <- true
+    psi.RedirectStandardInput  <- true
+    psi.UseShellExecute        <- false
+    for arg in args do psi.ArgumentList.Add(arg)
+    psi.Environment["PWD"] <- workingDir
+    psi
+
+let internal runExecCommand (executable: string) (args: string list) (workingDir: string) : Async<int * string> =
+    async {
+        let psi = buildExecPsi executable args workingDir
+        use proc = Diagnostics.Process.Start(psi)
+        proc.StandardInput.Close()
+        let stdoutTask = proc.StandardOutput.ReadToEndAsync()
+        let stderrTask = proc.StandardError.ReadToEndAsync()
+        do! proc.WaitForExitAsync() |> Async.AwaitTask
+        let! _   = stdoutTask |> Async.AwaitTask
+        let! err = stderrTask |> Async.AwaitTask
+        return proc.ExitCode, err
+    }
+
 /// True if the issue already has the given assignee (case-insensitive, strips leading @).
 let private hasAssignee (assignee: string) (issue: IssueRef) =
     let handle = assignee.TrimStart('@')
@@ -526,18 +562,9 @@ let private processRepo
                     | Ok written ->
                     if verbose then
                         eprintfn "[%s] Executing: %s %s" repoStr executable (String.concat " " allArgs)
-                    let psi = Diagnostics.ProcessStartInfo(executable)
-                    psi.WorkingDirectory       <- workingDir
-                    psi.RedirectStandardOutput <- true
-                    psi.RedirectStandardError  <- true
-                    psi.UseShellExecute        <- false
-                    for arg in allArgs do psi.ArgumentList.Add(arg)
-                    use proc = Diagnostics.Process.Start(psi)
-                    let stderrTask = proc.StandardError.ReadToEndAsync()
-                    do! proc.WaitForExitAsync() |> Async.AwaitTask
-                    if proc.ExitCode <> 0 then
-                        let! err = stderrTask |> Async.AwaitTask
-                        eprintfn "[%s] Warning: cmd exited with code %d: %s" repoStr proc.ExitCode err
+                    let! exitCode, err = runExecCommand executable allArgs workingDir
+                    if exitCode <> 0 then
+                        eprintfn "[%s] Warning: cmd exited with code %d: %s" repoStr exitCode err
                     FileGlob.cleanupCopies written
                     return issue, None
                 }
@@ -593,19 +620,10 @@ let private processRepo
                             | Ok written ->
                             if verbose then
                                 eprintfn "[%s] Executing in checkout: %s %s" repoStr executable (String.concat " " allArgs)
-                            let psi = Diagnostics.ProcessStartInfo(executable)
-                            psi.WorkingDirectory       <- workingDir
-                            psi.RedirectStandardOutput <- true
-                            psi.RedirectStandardError  <- true
-                            psi.UseShellExecute        <- false
-                            for arg in allArgs do psi.ArgumentList.Add(arg)
-                            use proc = Diagnostics.Process.Start(psi)
-                            let stderrTask = proc.StandardError.ReadToEndAsync()
-                            do! proc.WaitForExitAsync() |> Async.AwaitTask
-                            if proc.ExitCode <> 0 then
-                                let! err = stderrTask |> Async.AwaitTask
-                                record CmdCheckoutFailed (Error $"cmd exited {proc.ExitCode}: {err.Trim()}")
-                                eprintfn "[%s] Warning: cmd-checkout exited with code %d: %s" repoStr proc.ExitCode err
+                            let! exitCode, err = runExecCommand executable allArgs workingDir
+                            if exitCode <> 0 then
+                                record CmdCheckoutFailed (Error $"cmd exited {exitCode}: {err.Trim()}")
+                                eprintfn "[%s] Warning: cmd-checkout exited with code %d: %s" repoStr exitCode err
                             FileGlob.cleanupCopies written
                             CheckoutManager.cleanup checkoutRoot repo branchSlug
                             return issue, None
@@ -675,19 +693,10 @@ let private processRepo
                             | Ok written ->
                             if verbose then
                                 eprintfn "[%s] Executing in checkout: %s %s" repoStr executable (String.concat " " allArgs)
-                            let psi = Diagnostics.ProcessStartInfo(executable)
-                            psi.WorkingDirectory       <- workingDir
-                            psi.RedirectStandardOutput <- true
-                            psi.RedirectStandardError  <- true
-                            psi.UseShellExecute        <- false
-                            for arg in allArgs do psi.ArgumentList.Add(arg)
-                            use proc = Diagnostics.Process.Start(psi)
-                            let stderrTask = proc.StandardError.ReadToEndAsync()
-                            do! proc.WaitForExitAsync() |> Async.AwaitTask
-                            if proc.ExitCode <> 0 then
-                                let! err = stderrTask |> Async.AwaitTask
-                                record CmdToPrCheckoutFailed (Error $"cmd exited {proc.ExitCode}: {err.Trim()}")
-                                eprintfn "[%s] Warning: cmd-to-pr cmd exited with code %d: %s" repoStr proc.ExitCode err
+                            let! exitCode, err = runExecCommand executable allArgs workingDir
+                            if exitCode <> 0 then
+                                record CmdToPrCheckoutFailed (Error $"cmd exited {exitCode}: {err.Trim()}")
+                                eprintfn "[%s] Warning: cmd-to-pr cmd exited with code %d: %s" repoStr exitCode err
                                 FileGlob.cleanupCopies written
                                 CheckoutManager.cleanup checkoutRoot repo branchSlug
                                 return issue, None
