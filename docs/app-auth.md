@@ -199,7 +199,7 @@ The `cmd-checkout` and `cmd-to-pr` action types clone target repositories and, f
 1. **Contents: Read & write** on the GitHub App (already set in Step 1 above).
 2. **Pull requests: Read & write** on the GitHub App (already required for other features).
 
-OrcAI configures `git` to use the same token automatically — no separate credential setup is needed. If a push is denied, OrcAI fails fast with a clear error message rather than hanging.
+OrcAI injects the resolved App/PAT token as `GH_TOKEN` into the clone, push, and PR-create subprocesses, so no ambient `GH_TOKEN` or a prior `gh auth login` is required on the runner. If a push is denied, OrcAI fails fast with a clear error message rather than hanging.
 
 ### Token scope for `fork-and-pr`
 

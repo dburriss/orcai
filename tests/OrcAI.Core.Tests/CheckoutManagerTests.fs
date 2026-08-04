@@ -128,7 +128,7 @@ let ``pushToOrigin can push HEAD to a remote branch whose name differs from the 
         //    Before fix: fails with "src refspec orcai/test-slug does not match any".
         //    After fix:  succeeds via HEAD:refs/heads/orcai/test-slug.
         let result =
-            pushToOrigin baseDir wtDir "orcai/test-slug"
+            pushToOrigin "" baseDir wtDir "orcai/test-slug"
             |> Async.RunSynchronously
         Assert.True((result = Ok ()), $"Expected push to succeed but got: {result}")
     finally
@@ -136,6 +136,33 @@ let ``pushToOrigin can push HEAD to a remote branch whose name differs from the 
         try Directory.Delete(remoteDir, true) with _ -> ()
         try Directory.Delete(baseDir,   true) with _ -> ()
         try if Directory.Exists(wtDir) then Directory.Delete(wtDir, true) with _ -> ()
+
+// ---------------------------------------------------------------------------
+// runProcess — GH_TOKEN env injection, used by ensureClone/pushToOrigin/forkAndPush
+// to hand the already-resolved App/PAT token to the gh credential helper.
+// ---------------------------------------------------------------------------
+
+let private echoGhTokenExe, echoGhTokenArgs =
+    if System.OperatingSystem.IsWindows() then "cmd", ["/C"; "echo %GH_TOKEN%"]
+    else "sh", ["-c"; "echo \"$GH_TOKEN\""]
+
+[<Fact>]
+let ``runProcess injects GH_TOKEN into the child environment when provided`` () =
+    let result =
+        runProcess echoGhTokenExe echoGhTokenArgs ["GH_TOKEN", "orcai-test-token-abc123"] (Path.GetTempPath())
+        |> Async.RunSynchronously
+    match result with
+    | Ok stdout -> Assert.Contains("orcai-test-token-abc123", stdout)
+    | Error e   -> Assert.Fail($"Expected process to succeed, got: {e}")
+
+[<Fact>]
+let ``runProcess injects no GH_TOKEN into the child environment when env is empty`` () =
+    let result =
+        runProcess echoGhTokenExe echoGhTokenArgs [] (Path.GetTempPath())
+        |> Async.RunSynchronously
+    match result with
+    | Ok stdout -> Assert.DoesNotContain("orcai-test-token-abc123", stdout)
+    | Error e   -> Assert.Fail($"Expected process to succeed, got: {e}")
 
 // ---------------------------------------------------------------------------
 // LockFile failure category round-trip — all RepoFailureCategory values must

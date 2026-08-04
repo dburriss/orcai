@@ -63,10 +63,14 @@ auth token` shell-out — since it needs no GitHub token at all.
 
 ## Auth Resolution (runtime priority)
 
-1. `ORCAI_PAT` env var or stored PAT profile
-2. `ORCAI_APP_*` env vars or stored GitHub App profile
+1. `ORCAI_APP_*` env vars or stored GitHub App profile
+2. `ORCAI_PAT` env var or stored PAT profile
 3. `GH_TOKEN` env var
 4. Ambient `gh auth token`
+
+The resolved token is injected as `GH_TOKEN` into every auth-requiring subprocess
+(`gh` API calls, and the checkout `git clone`/`git push`/`gh pr create` subprocesses),
+not just ambient `gh` API calls.
 
 ## CLI Commands
 

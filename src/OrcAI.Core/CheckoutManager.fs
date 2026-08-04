@@ -22,7 +22,9 @@ let slugify (s: string) : string =
 /// Run a process, collecting stdout and stderr concurrently to avoid deadlocks
 /// when either buffer fills. Args are passed via ArgumentList so no shell
 /// escaping is needed — each element is passed verbatim to the OS.
-let private runProcess (executable: string) (args: string list) (workingDir: string) : Async<Result<string, string>> =
+/// `env` entries are set on the child process only (e.g. GH_TOKEN for the gh
+/// credential helper), never mutating the parent/global environment.
+let internal runProcess (executable: string) (args: string list) (env: (string * string) list) (workingDir: string) : Async<Result<string, string>> =
     async {
         let psi = ProcessStartInfo(executable)
         psi.WorkingDirectory       <- workingDir
@@ -30,6 +32,7 @@ let private runProcess (executable: string) (args: string list) (workingDir: str
         psi.RedirectStandardError  <- true
         psi.UseShellExecute        <- false
         for arg in args do psi.ArgumentList.Add(arg)
+        for (k, v) in env do psi.Environment[k] <- v
         use proc = Process.Start(psi)
         // Read stdout and stderr concurrently before waiting for exit to avoid
         // deadlock when both output streams fill their OS buffers simultaneously.
@@ -59,10 +62,14 @@ let worktreePath (checkoutRoot: string) (RepoName repo) (branchSlug: string) : s
 // Core operations
 // ---------------------------------------------------------------------------
 
+/// Env entries to inject a resolved gh token for the credential helper, or none
+/// when the token is empty (e.g. Local provider).
+let private tokenEnv (token: string) = if token = "" then [] else [ "GH_TOKEN", token ]
+
 /// Ensure a bare shallow clone of `repo` exists at the base path.
 /// If the directory already exists, assumes a valid clone and skips.
 /// Returns the absolute base path on success.
-let ensureClone (checkoutRoot: string) (repo: RepoName) : Async<Result<string, string>> =
+let ensureClone (token: string) (checkoutRoot: string) (repo: RepoName) : Async<Result<string, string>> =
     async {
         let base' = basePath checkoutRoot repo
         if Directory.Exists(base') then
@@ -75,7 +82,7 @@ let ensureClone (checkoutRoot: string) (repo: RepoName) : Async<Result<string, s
                 let dirName = Path.GetFileName(base')
                 // Configure the gh credential helper inline so we don't mutate global git config.
                 let cloneArgs = ["-c"; "credential.helper=!gh auth git-credential"; "clone"; "--bare"; "--depth"; "1"; url; dirName]
-                let! result = runProcess "git" cloneArgs parent
+                let! result = runProcess "git" cloneArgs (tokenEnv token) parent
                 match result with
                 | Ok _ -> return Ok base'
                 | Error e ->
@@ -91,7 +98,7 @@ let ensureClone (checkoutRoot: string) (repo: RepoName) : Async<Result<string, s
 let getDefaultBranch (checkoutRoot: string) (repo: RepoName) : Async<Result<string, string>> =
     async {
         let base' = basePath checkoutRoot repo
-        let! result = runProcess "git" ["symbolic-ref"; "HEAD"] base'
+        let! result = runProcess "git" ["symbolic-ref"; "HEAD"] [] base'
         match result with
         | Error e -> return Error $"Could not read default branch: {e}"
         | Ok symref ->
@@ -111,8 +118,8 @@ let getWorktree (checkoutRoot: string) (repo: RepoName) (branchSlug: string) : A
             return Ok wt
         else
             // Prune stale registrations so a re-added branch slug doesn't fail.
-            let! _ = runProcess "git" ["worktree"; "prune"] base'
-            let! result = runProcess "git" ["worktree"; "add"; wt; "-b"; branchSlug] base'
+            let! _ = runProcess "git" ["worktree"; "prune"] [] base'
+            let! result = runProcess "git" ["worktree"; "add"; wt; "-b"; branchSlug] [] base'
             match result with
             | Ok _    -> return Ok wt
             | Error e -> return Error $"Failed to create worktree for {branchSlug}: {e}"
@@ -152,12 +159,12 @@ let cleanupAll (checkoutRoot: string) (repo: RepoName) : unit =
 /// Injects a fallback git identity for CI runners that have none configured.
 let commitAll (worktreeDir: string) (message: string) : Async<Result<unit, string>> =
     async {
-        let! addResult = runProcess "git" ["add"; "-A"] worktreeDir
+        let! addResult = runProcess "git" ["add"; "-A"] [] worktreeDir
         match addResult with
         | Error e -> return Error $"git add failed: {e}"
         | Ok _ ->
             // Exit 0 from diff --quiet means no staged changes; non-zero means changes exist.
-            let! diffResult = runProcess "git" ["diff"; "--cached"; "--quiet"] worktreeDir
+            let! diffResult = runProcess "git" ["diff"; "--cached"; "--quiet"] [] worktreeDir
             match diffResult with
             | Ok _ ->
                 return Error "no-diff"
@@ -190,10 +197,10 @@ let commitAll (worktreeDir: string) (message: string) : Async<Result<unit, strin
 /// Push the worktree's current HEAD to a named remote branch with force-with-lease.
 /// Uses HEAD:refs/heads/<remoteBranch> so the local branch name is irrelevant —
 /// only the current HEAD commit and the desired remote branch name matter.
-let pushToOrigin (_basePath: string) (worktreeDir: string) (remoteBranch: string) : Async<Result<unit, string>> =
+let pushToOrigin (token: string) (_basePath: string) (worktreeDir: string) (remoteBranch: string) : Async<Result<unit, string>> =
     async {
         let pushArgs = ["-c"; "credential.helper=!gh auth git-credential"; "push"; "--force-with-lease"; "origin"; $"HEAD:refs/heads/{remoteBranch}"]
-        let! result = runProcess "git" pushArgs worktreeDir
+        let! result = runProcess "git" pushArgs (tokenEnv token) worktreeDir
         match result with
         | Ok _    -> return Ok ()
         | Error e -> return Error $"git push failed: {e}"
@@ -201,17 +208,17 @@ let pushToOrigin (_basePath: string) (worktreeDir: string) (remoteBranch: string
 
 /// Fork the repo and push the branch to the fork.
 /// Returns the fork's owner/repo string on success.
-let forkAndPush (repo: RepoName) (worktreeDir: string) (branchSlug: string) : Async<Result<string, string>> =
+let forkAndPush (token: string) (repo: RepoName) (worktreeDir: string) (branchSlug: string) : Async<Result<string, string>> =
     async {
         let (RepoName repoStr) = repo
         // Fork (idempotent — gh fork returns existing fork if already forked).
-        let! forkResult = runProcess "gh" ["repo"; "fork"; repoStr; "--clone=false"] worktreeDir
+        let! forkResult = runProcess "gh" ["repo"; "fork"; repoStr; "--clone=false"] (tokenEnv token) worktreeDir
         match forkResult with
         | Error e -> return Error $"gh repo fork failed: {e}"
         | Ok _ ->
             // Determine the authenticated user's login to construct the fork name.
             // gh repo view (no --repo) would return the *origin* repo, not the fork.
-            let! userResult = runProcess "gh" ["api"; "user"; "-q"; ".login"] worktreeDir
+            let! userResult = runProcess "gh" ["api"; "user"; "-q"; ".login"] (tokenEnv token) worktreeDir
             match userResult with
             | Error e -> return Error $"Failed to resolve authenticated user: {e}"
             | Ok userLogin ->
@@ -219,10 +226,10 @@ let forkAndPush (repo: RepoName) (worktreeDir: string) (branchSlug: string) : As
                 let repoName = repoStr.Split('/') |> Array.last
                 let forkRepo = $"{login}/{repoName}"
                 let forkUrl  = $"https://github.com/{forkRepo}.git"
-                let! _ = runProcess "git" ["remote"; "add"; "fork"; forkUrl] worktreeDir
+                let! _ = runProcess "git" ["remote"; "add"; "fork"; forkUrl] [] worktreeDir
                 // Ignore error if remote already exists.
                 let pushArgs = ["-c"; "credential.helper=!gh auth git-credential"; "push"; "--force-with-lease"; "fork"; $"HEAD:refs/heads/{branchSlug}"]
-                let! pushResult = runProcess "git" pushArgs worktreeDir
+                let! pushResult = runProcess "git" pushArgs (tokenEnv token) worktreeDir
                 match pushResult with
                 | Error e -> return Error $"Push to fork failed: {e}"
                 | Ok _    -> return Ok forkRepo

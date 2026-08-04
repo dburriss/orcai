@@ -158,6 +158,28 @@ let private dryRunCreatePlaceholder (repo: RepoName) : IssueRef =
 /// Default maximum retry attempts per (repo, category) failure before a step is skipped.
 let defaultMaxAttempts = 3
 
+/// Build the `gh pr create` ProcessStartInfo. Sets GH_TOKEN on the child process
+/// when `token` is non-empty, so the resolved App/PAT token reaches `gh` instead of
+/// relying on ambient credentials.
+let buildPrCreatePsi (token: string) (repo: string) (head: string) (title: string) (body: string) (workingDir: string) : Diagnostics.ProcessStartInfo =
+    let psi = Diagnostics.ProcessStartInfo("gh")
+    psi.WorkingDirectory       <- workingDir
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError  <- true
+    psi.UseShellExecute        <- false
+    psi.ArgumentList.Add("pr")
+    psi.ArgumentList.Add("create")
+    psi.ArgumentList.Add("--repo")
+    psi.ArgumentList.Add(repo)
+    psi.ArgumentList.Add("--head")
+    psi.ArgumentList.Add(head)
+    psi.ArgumentList.Add("--title")
+    psi.ArgumentList.Add(title)
+    psi.ArgumentList.Add("--body")
+    psi.ArgumentList.Add(body)
+    if token <> "" then psi.Environment["GH_TOKEN"] <- token
+    psi
+
 /// Resolved per-run parameters shared by `processRepo` (used by both `runFull` and
 /// the stale-issue recovery path inside `refreshBodies`).
 type private ProcessParams =
@@ -174,7 +196,8 @@ type private ProcessParams =
       MaxAttempts         : int
       YamlHashChanged     : bool
       TemplateHashChanged : bool
-      CheckoutRoot        : string }
+      CheckoutRoot        : string
+      CheckoutToken       : string }
 
 let private resolveProcessParams
     (deps                : OrcAIDeps)
@@ -185,6 +208,7 @@ let private resolveProcessParams
     (yamlHashChanged     : bool)
     (templateHashChanged : bool)
     (checkoutRoot        : string)
+    (checkoutToken       : string)
     : ProcessParams =
     let closedIssueAction =
         input.OnClosedIssue |> Option.defaultValue config.OnClosedIssue
@@ -209,7 +233,8 @@ let private resolveProcessParams
       MaxAttempts         = config.MaxAttempts |> Option.defaultValue defaultMaxAttempts
       YamlHashChanged     = yamlHashChanged
       TemplateHashChanged = templateHashChanged
-      CheckoutRoot        = checkoutRoot }
+      CheckoutRoot        = checkoutRoot
+      CheckoutToken       = checkoutToken }
 
 /// Decide whether to attempt `cat` for this repo, given prior failures.
 /// Skips when attempts hit the cap, or when the cause is UserError and the
@@ -522,7 +547,7 @@ let private processRepo
                     let (OrgName orgStr) = config.Org
                     let branchSlug = CheckoutManager.slugify config.ProjectTitle
                     if verbose then eprintfn "[%s] Cloning repo for cmd-checkout" repoStr
-                    let! cloneResult = CheckoutManager.ensureClone checkoutRoot repo
+                    let! cloneResult = CheckoutManager.ensureClone p.CheckoutToken checkoutRoot repo
                     match cloneResult with
                     | Error e ->
                         record CmdCheckoutFailed (Error e)
@@ -604,7 +629,7 @@ let private processRepo
                             | Some "fork-and-pr"      -> ForkAndPr
                             | _                       -> PrToOrigin
                     if verbose then eprintfn "[%s] Cloning repo for cmd-to-pr" repoStr
-                    let! cloneResult = CheckoutManager.ensureClone checkoutRoot repo
+                    let! cloneResult = CheckoutManager.ensureClone p.CheckoutToken checkoutRoot repo
                     match cloneResult with
                     | Error e ->
                         record CmdToPrCheckoutFailed (Error e)
@@ -692,21 +717,7 @@ let private processRepo
                                     let (RepoName repoStr') = repo
                                     let openPr (head: string) =
                                         async {
-                                            let psi2 = Diagnostics.ProcessStartInfo("gh")
-                                            psi2.WorkingDirectory       <- worktreePath
-                                            psi2.RedirectStandardOutput <- true
-                                            psi2.RedirectStandardError  <- true
-                                            psi2.UseShellExecute        <- false
-                                            psi2.ArgumentList.Add("pr")
-                                            psi2.ArgumentList.Add("create")
-                                            psi2.ArgumentList.Add("--repo")
-                                            psi2.ArgumentList.Add(repoStr')
-                                            psi2.ArgumentList.Add("--head")
-                                            psi2.ArgumentList.Add(head)
-                                            psi2.ArgumentList.Add("--title")
-                                            psi2.ArgumentList.Add(renderedPrTitle)
-                                            psi2.ArgumentList.Add("--body")
-                                            psi2.ArgumentList.Add(renderedPrBody)
+                                            let psi2 = buildPrCreatePsi p.CheckoutToken repoStr' head renderedPrTitle renderedPrBody worktreePath
                                             use proc2 = Diagnostics.Process.Start(psi2)
                                             let stdoutTask2 = proc2.StandardOutput.ReadToEndAsync()
                                             let stderrTask2 = proc2.StandardError.ReadToEndAsync()
@@ -728,7 +739,7 @@ let private processRepo
                                         match effectiveWriteBack with
                                         | CommitToOrigin ->
                                             async {
-                                                let! pushResult = CheckoutManager.pushToOrigin "" worktreePath renderedBranch
+                                                let! pushResult = CheckoutManager.pushToOrigin p.CheckoutToken "" worktreePath renderedBranch
                                                 match pushResult with
                                                 | Error e ->
                                                     record CmdToPrPushFailed (Error e)
@@ -740,7 +751,7 @@ let private processRepo
                                             }
                                         | PrToOrigin ->
                                             async {
-                                                let! pushResult = CheckoutManager.pushToOrigin "" worktreePath renderedBranch
+                                                let! pushResult = CheckoutManager.pushToOrigin p.CheckoutToken "" worktreePath renderedBranch
                                                 match pushResult with
                                                 | Error e ->
                                                     record CmdToPrPushFailed (Error e)
@@ -751,7 +762,7 @@ let private processRepo
                                             }
                                         | ForkAndPr ->
                                             async {
-                                                let! forkResult = CheckoutManager.forkAndPush repo worktreePath renderedBranch
+                                                let! forkResult = CheckoutManager.forkAndPush p.CheckoutToken repo worktreePath renderedBranch
                                                 match forkResult with
                                                 | Error e ->
                                                     record CmdToPrPushFailed (Error e)
@@ -787,14 +798,16 @@ let private runFull
 
     // Only GitHub jobs need a token; a Local job's ResolveProvider needs no
     // auth at all, so skip this precheck rather than forcing it unconditionally.
+    // The resolved token is reused as GH_TOKEN for the checkout git/gh subprocesses
+    // (clone, push, PR create), which otherwise only see the runner's ambient auth.
     let tokenResult =
         match config.Provider with
-        | Local  -> Ok ()
-        | GitHub -> deps.AuthContext.GetToken() |> Async.RunSynchronously |> Result.map ignore
+        | Local  -> Ok ""
+        | GitHub -> deps.AuthContext.GetToken() |> Async.RunSynchronously
 
     match tokenResult with
     | Error e -> Error $"Auth error: {e}"
-    | Ok () ->
+    | Ok checkoutToken ->
 
     match deps.ResolveProvider config with
     | Error e -> Error $"Provider error: {e}"
@@ -831,7 +844,7 @@ let private runFull
         input.CheckoutRoot
         |> Option.defaultWith (fun () ->
             Path.Combine(Path.GetTempPath(), $"orcai-{Guid.NewGuid():N}"))
-    let processParams = resolveProcessParams deps input config project providerClients yamlHashChanged templateHashChanged checkoutRoot
+    let processParams = resolveProcessParams deps input config project providerClients yamlHashChanged templateHashChanged checkoutRoot checkoutToken
 
     let priorFailuresByRepo =
         priorLock
@@ -1045,11 +1058,15 @@ let private refreshBodies
             if not hasStale then
                 refreshed, Map.empty
             else
+                let checkoutToken =
+                    match config.Provider with
+                    | Local  -> ""
+                    | GitHub -> deps.AuthContext.GetToken() |> Async.RunSynchronously |> Result.defaultValue ""
                 let checkoutRootForRefresh =
                     input.CheckoutRoot
                     |> Option.defaultWith (fun () -> Path.Combine(Path.GetTempPath(), $"orcai-{Guid.NewGuid():N}"))
                 let processParams =
-                    resolveProcessParams deps input config fullResult.Lock.Project providerClients yamlHashChanged templateHashChanged checkoutRootForRefresh
+                    resolveProcessParams deps input config fullResult.Lock.Project providerClients yamlHashChanged templateHashChanged checkoutRootForRefresh checkoutToken
                 recreateStaleIssues deps processParams refreshed
         let refreshedByRepo =
             recoveredRefreshed |> List.map (fun r -> r.Issue.Repo, r) |> Map.ofList

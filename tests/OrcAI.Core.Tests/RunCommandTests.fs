@@ -1,6 +1,8 @@
 module OrcAI.Core.Tests.RunCommandTests
 
 open System.Collections.Concurrent
+open System.Diagnostics
+open System.IO
 open Xunit
 open Testably.Abstractions.Testing
 open OrcAI.Core.Domain
@@ -1067,3 +1069,83 @@ let ``execute never calls AuthContext.GetToken for a provider: local job`` () =
     let results = execute deps [path] (A.RunInput.defaults ()) |> Async.RunSynchronously
 
     Assert.True(results |> Map.forall (fun _ r -> match r with Ok _ -> true | Error _ -> false))
+
+// ---------------------------------------------------------------------------
+// buildPrCreatePsi — the `gh pr create` ProcessStartInfo builder used by openPr.
+// GH_TOKEN must be set on the child process iff the resolved token is non-empty,
+// so App/PAT auth reaches `gh` without relying on ambient credentials.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``buildPrCreatePsi sets GH_TOKEN when the token is non-empty`` () =
+    let psi = buildPrCreatePsi "resolved-token" "myorg/repo-a" "head-branch" "title" "body" "/work"
+    Assert.Equal("resolved-token", psi.Environment["GH_TOKEN"])
+
+[<Fact>]
+let ``buildPrCreatePsi sets no GH_TOKEN when the token is empty`` () =
+    let psi = buildPrCreatePsi "" "myorg/repo-a" "head-branch" "title" "body" "/work"
+    Assert.False(psi.Environment.ContainsKey("GH_TOKEN"))
+
+[<Fact>]
+let ``buildPrCreatePsi passes repo, head, title and body as gh pr create arguments`` () =
+    let psi = buildPrCreatePsi "t" "myorg/repo-a" "head-branch" "My Title" "My Body" "/work"
+    let args = psi.ArgumentList |> List.ofSeq
+    Assert.Equal<string list>(
+        ["pr"; "create"; "--repo"; "myorg/repo-a"; "--head"; "head-branch"; "--title"; "My Title"; "--body"; "My Body"],
+        args)
+
+// ---------------------------------------------------------------------------
+// Regression: the resolved GitHub token now round-trips through ProcessParams
+// into a cmd-checkout action (previously discarded via `Result.map ignore`).
+// Uses a real local (non-network) bare git repo so ensureClone/getWorktree
+// exercise the actual CheckoutManager plumbing without contacting github.com.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``execute round-trips the resolved token through a cmd-checkout action without regressing existing behaviour`` () =
+    let fs   = MockFileSystem()
+    let yaml =
+        "job:\n  title: \"Checkout Job\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"TEMPLATE_PLACEHOLDER\"\n  labels: []\n" +
+        "action:\n  type: cmd-checkout\n  execute: \"echo hi\"\n"
+    let path   = Given.yamlFile fs yaml "# body"
+    let deps   = Given.deps fs (FakeGhClient.from FakeGhClient.defaults) // AuthContext.GetToken() = Ok "fake-token"
+
+    let guid         = System.Guid.NewGuid().ToString("N")
+    let checkoutRoot = Path.Combine(Path.GetTempPath(), $"orcai-ckt-{guid}")
+    let seedDir      = Path.Combine(Path.GetTempPath(), $"orcai-ckt-seed-{guid}")
+    let baseDir      = OrcAI.Core.CheckoutManager.basePath checkoutRoot (RepoName "myorg/repo-a")
+    let run (exe: string) (args: string list) (wd: string) =
+        let psi = ProcessStartInfo(exe)
+        psi.WorkingDirectory       <- wd
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError  <- true
+        psi.UseShellExecute        <- false
+        for a in args do psi.ArgumentList.Add(a)
+        use p = Process.Start(psi)
+        p.WaitForExit()
+        p.ExitCode = 0
+    try
+        // Seed a real, network-free bare git repo at the exact path ensureClone
+        // expects, so it short-circuits ("already cloned") and getWorktree/the
+        // cmd exec run against a genuine local repo — proving CheckoutToken
+        // flows through processRepo/ProcessParams without an arity regression.
+        Directory.CreateDirectory(seedDir) |> ignore
+        Assert.True(run "git" ["-c"; "init.defaultBranch=main"; "init"; seedDir] (Path.GetTempPath()), "git init seed")
+        File.WriteAllText(Path.Combine(seedDir, "README.md"), "init")
+        Assert.True(run "git" ["add"; "README.md"] seedDir, "git add in seed")
+        Assert.True(run "git" ["-c"; "user.email=t@t.com"; "-c"; "user.name=t"; "commit"; "-m"; "init"] seedDir, "git commit in seed")
+        Directory.CreateDirectory(Path.GetDirectoryName(baseDir)) |> ignore
+        Assert.True(run "git" ["clone"; "--bare"; seedDir; baseDir] (Path.GetTempPath()), "git clone bare as base")
+
+        let input   = { A.RunInput.defaults () with CheckoutRoot = Some checkoutRoot }
+        let results = execute deps [path] input |> Async.RunSynchronously
+
+        match results.TryFind path with
+        | Some (Ok runResult) -> Assert.Empty(runResult.Lock.Failures)
+        | Some (Error e)      -> Assert.Fail($"Expected Ok RunResult, got Error: {e}")
+        | None                -> Assert.Fail("Expected an entry for the yaml path")
+    finally
+        try Directory.Delete(seedDir, true) with _ -> ()
+        try Directory.Delete(checkoutRoot, true) with _ -> ()

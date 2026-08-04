@@ -97,6 +97,12 @@ No message is printed when an environment variable overrides a file value.
 
 ---
 
+## Checkout-based actions (`cmd-checkout`, `cmd-to-pr`)
+
+`cmd-checkout` and `cmd-to-pr` (clone, push, `gh pr create`) work under `ORCAI_APP_*` or a stored PAT profile alone — no ambient `GH_TOKEN` or `gh auth login` is required on the runner. The resolved token is injected directly into those subprocesses.
+
+---
+
 ## Storing config to file
 
 The `orcai auth` commands always write to the config file regardless of whether env vars are present. Env var resolution happens at command-execution time, not at store time.
