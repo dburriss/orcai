@@ -1,0 +1,40 @@
+job:
+  title: "Add AGENTS.md via OpenCode"
+  org: "dburriss"
+
+repos:
+  - "wye"
+  - "fennel"
+  - "unique"
+
+issue:
+  template: "./add-agents-md.md"
+  labels: ["documentation", "automated"]
+
+action:
+  type: cmd-to-pr
+
+  # Exec (list) form — no shell is involved, so the multi-line rendered issue
+  # body ({{issue_text}}) is handed to OpenCode as a single argument. This
+  # avoids the quoting/escaping pitfalls of the string ("shell") form when the
+  # prompt contains newlines, quotes, or backticks.
+  execute:
+    - "opencode"
+    - "run"
+    - "{{issue_text}}"
+
+  # Push the branch straight to the target repo and open a PR in-place.
+  # Requires the token to have write access to each target repo (see README).
+  writeBack: pr-to-origin
+
+  branch: "orcai/{{job_title_slug}}"
+  commitMessage: "docs: add AGENTS.md [#{{issue_number}}]"
+  prTitle: "docs: add AGENTS.md"
+  prBody: |
+    Automated by OpenCode via OrcAI.
+
+    Closes #{{issue_number}}
+
+  # AGENTS.md may already exist — in that case OpenCode makes no change and the
+  # empty diff is skipped silently (no PR, no failure).
+  errorIfNoDiff: false

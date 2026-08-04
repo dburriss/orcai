@@ -10,6 +10,7 @@ This folder contains example migration specifications and their corresponding ex
 - **add-agents-md** - Adds an AGENTS.md file to instruct agents on how to build and run the project
 - **dotnet-upgrade-to-10** - Upgrades .NET projects to version 10
 - **local-provider-demo** - Demonstrates `provider: local`, tracking project/issue state as files under `.orcai-local/` instead of GitHub
+- **opencode-cmd-to-pr/** - Runs OpenCode against many org repos via a `cmd-to-pr` action and opens a PR in each (checkout → run agent → commit → push → PR). See its own [README](opencode-cmd-to-pr/README.md).
 
 Each example includes:
 - `.md` file - The migration specification describing what changes to make

@@ -1,0 +1,60 @@
+# Example GitHub Actions workflow.
+#
+# Place this at .github/workflows/orcai-bulk-pr.yml in your ORCHESTRATION repo —
+# the repo that holds the orcai job config. It runs the job against the OTHER
+# repos listed in add-agents-md.yml and opens a PR in each.
+#
+# This uses a GitHub App token exported as GH_TOKEN. Exporting the cross-repo
+# token as GH_TOKEN is what makes today's orcai use it uniformly for the gh API,
+# git clone/push, and gh pr create. (Once the token-propagation fix lands —
+# see plans/checkout-auth-token-propagation.md — setting ORCAI_APP_* directly
+# will also cover the checkout steps and this explicit export becomes optional.)
+
+name: Bulk AGENTS.md via OpenCode
+
+on:
+  workflow_dispatch:
+
+jobs:
+  add-agents-md:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Mint a token scoped to the target repos. The App must be installed on the
+      # org with Contents: Read & write and Pull requests: Read & write.
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.ORCAI_APP_ID }}
+          private-key: ${{ secrets.ORCAI_APP_PRIVATE_KEY }}
+          owner: dburriss              # org/user that owns the target repos
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Set up Node (for OpenCode)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install orcai
+        run: |
+          dotnet tool install --global OrcAI.Tool
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      - name: Install OpenCode
+        run: npm install -g opencode-ai
+
+      - name: Run bulk cmd-to-pr
+        run: >
+          orcai run example/opencode-cmd-to-pr/add-agents-md.yml
+          --continue-on-error --json
+        env:
+          # Cross-repo token used for the gh API, git clone/push, and gh pr create.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # OpenCode's model provider key (adjust to your provider).
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
