@@ -2,6 +2,7 @@ module OrcAI.Core.Tests.FileGlobTests
 
 open System.IO
 open Xunit
+open OrcAI.Core.Domain
 open OrcAI.Core.FileGlob
 open Microsoft.Extensions.FileSystemGlobbing.Abstractions
 
@@ -22,6 +23,17 @@ let private withTempDir (files: string list) (f: string -> unit) =
         f dir
     finally
         Directory.Delete(dir, recursive = true)
+
+/// Create two temporary directories (source, populated with `files`; dest, empty),
+/// run a test, then clean up both.
+let private withSourceAndDestDir (files: string list) (f: string -> string -> unit) =
+    withTempDir files (fun sourceDir ->
+        let destDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName())
+        Directory.CreateDirectory(destDir) |> ignore
+        try
+            f sourceDir destDir
+        finally
+            Directory.Delete(destDir, recursive = true))
 
 // ---------------------------------------------------------------------------
 // expand — plain path
@@ -128,3 +140,77 @@ let ``expandWith returns Error when pattern matches nothing`` () =
         match expandWith wrapper "*.yaml" with
         | Ok _    -> Assert.Fail("Expected Error but got Ok")
         | Error e -> Assert.Contains("No files matched", e))
+
+// ---------------------------------------------------------------------------
+// copyEntry / copyAll / cleanupCopies
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``copyEntry copies single-match file to exact destination path`` () =
+    withSourceAndDestDir ["script.sh"] (fun sourceDir destDir ->
+        let entry = { From = "script.sh"; To = "staged.sh"; Keep = false }
+        match copyEntry sourceDir destDir entry with
+        | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+        | Ok paths ->
+            let expected = Path.Combine(destDir, "staged.sh")
+            Assert.Equal<string list>([ expected ], paths)
+            Assert.True(File.Exists(expected)))
+
+[<Fact>]
+let ``copyEntry copies glob matches into destination directory preserving relative structure`` () =
+    withSourceAndDestDir ["scripts/a.sh"; "scripts/nested/b.sh"] (fun sourceDir destDir ->
+        let entry = { From = "scripts/**/*.sh"; To = "staged"; Keep = false }
+        match copyEntry sourceDir destDir entry with
+        | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+        | Ok paths ->
+            Assert.Equal(2, paths.Length)
+            Assert.True(File.Exists(Path.Combine(destDir, "staged", "a.sh")))
+            Assert.True(File.Exists(Path.Combine(destDir, "staged", "nested", "b.sh"))))
+
+[<Fact>]
+let ``copyEntry returns Error when pattern matches zero files`` () =
+    withSourceAndDestDir ["notes.txt"] (fun sourceDir destDir ->
+        let entry = { From = "*.sh"; To = "staged.sh"; Keep = false }
+        match copyEntry sourceDir destDir entry with
+        | Ok _    -> Assert.Fail("Expected Error but got Ok")
+        | Error e -> Assert.Contains("No files matched", e))
+
+[<Fact>]
+let ``copyAll copies every entry and short-circuits on first zero-match error`` () =
+    withSourceAndDestDir ["a.sh"; "b.sh"] (fun sourceDir destDir ->
+        let entries =
+            [ { From = "a.sh"; To = "a.sh"; Keep = false }
+              { From = "missing.sh"; To = "missing.sh"; Keep = false }
+              { From = "b.sh"; To = "b.sh"; Keep = false } ]
+        match copyAll sourceDir destDir entries with
+        | Ok _    -> Assert.Fail("Expected Error but got Ok")
+        | Error e -> Assert.Contains("not found", e)
+        // The third entry (b.sh) must not have been copied since the second entry failed.
+        Assert.False(File.Exists(Path.Combine(destDir, "b.sh"))))
+
+[<Fact>]
+let ``copyAll pairs each destination path with its entry's Keep flag`` () =
+    withSourceAndDestDir ["a.sh"; "b.sh"] (fun sourceDir destDir ->
+        let entries =
+            [ { From = "a.sh"; To = "a.sh"; Keep = false }
+              { From = "b.sh"; To = "b.sh"; Keep = true } ]
+        match copyAll sourceDir destDir entries with
+        | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+        | Ok written ->
+            Assert.Equal<(string * bool) list>(
+                [ Path.Combine(destDir, "a.sh"), false
+                  Path.Combine(destDir, "b.sh"), true ],
+                written))
+
+[<Fact>]
+let ``cleanupCopies removes only entries where Keep is false`` () =
+    withSourceAndDestDir ["a.sh"; "b.sh"] (fun sourceDir destDir ->
+        let entries =
+            [ { From = "a.sh"; To = "a.sh"; Keep = false }
+              { From = "b.sh"; To = "b.sh"; Keep = true } ]
+        match copyAll sourceDir destDir entries with
+        | Error e -> Assert.Fail($"Expected Ok but got Error: {e}")
+        | Ok written ->
+            cleanupCopies written
+            Assert.False(File.Exists(Path.Combine(destDir, "a.sh")))
+            Assert.True(File.Exists(Path.Combine(destDir, "b.sh"))))

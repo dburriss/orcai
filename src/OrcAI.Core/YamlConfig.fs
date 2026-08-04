@@ -39,6 +39,12 @@ type YamlIssue =
       labels:   System.Collections.Generic.List<string> }
 
 [<CLIMutable>]
+type YamlCopyEntry =
+    { from : string
+      ``to`` : string
+      keep : System.Nullable<bool> }
+
+[<CLIMutable>]
 type YamlAction =
     { ``type``        : string
       comment         : string
@@ -50,7 +56,8 @@ type YamlAction =
       branch          : string
       commitMessage   : string
       prTitle         : string
-      prBody          : string }
+      prBody          : string
+      copy            : System.Collections.Generic.List<YamlCopyEntry> }
 
 [<CLIMutable>]
 type YamlNudge =
@@ -110,6 +117,15 @@ let private parseCmdExec (execute: obj) (typeName: string) : CmdExec =
         failwith $"action type '{typeName}': exec list form requires at least one element (the command)."
     | _ ->
         failwith $"action type '{typeName}': 'execute' must be a string (shell form) or a list e.g. [cmd, arg1, arg2] (exec form)."
+
+let private parseCopyEntry (dto: YamlCopyEntry) : CopyEntry =
+    if String.IsNullOrWhiteSpace(dto.from) then
+        failwith "A copy entry is missing the required 'from' field."
+    if String.IsNullOrWhiteSpace(dto.``to``) then
+        failwith "A copy entry is missing the required 'to' field."
+    { From = dto.from
+      To   = dto.``to``
+      Keep = dto.keep |> Option.ofNullable |> Option.defaultValue false }
 
 /// Pure: parse YAML text and a pre-loaded template body into a JobConfig.
 /// `org` is taken from the parsed YAML; repos are prefixed with it.
@@ -173,11 +189,14 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                     | "cmd" | "cmd-checkout" | "cmd-to-pr" ->
                         let typeName = root.action.``type``
                         let cmdExec  = parseCmdExec root.action.execute typeName
+                        let copyList =
+                            if isNull (box root.action.copy) then []
+                            else root.action.copy |> Seq.map parseCopyEntry |> List.ofSeq
                         match typeName with
                         | "cmd" ->
-                            Cmd(cmdExec, nullStr root.action.cwd)
+                            Cmd(cmdExec, nullStr root.action.cwd, copyList)
                         | "cmd-checkout" ->
-                            CmdCheckout(cmdExec, nullStr root.action.cwd)
+                            CmdCheckout(cmdExec, nullStr root.action.cwd, copyList)
                         | _ ->
                             let writeBack =
                                 match root.action.writeBack with
@@ -194,7 +213,8 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                                   Branch        = nullStr root.action.branch
                                   CommitMessage = nullStr root.action.commitMessage
                                   PrTitle       = nullStr root.action.prTitle
-                                  PrBody        = nullStr root.action.prBody }
+                                  PrBody        = nullStr root.action.prBody
+                                  Copy          = copyList }
                     | "noop" -> Noop
                     | other  -> failwith $"Unknown action type: '{other}'. Valid: assign-copilot, assign, comment, comment-and-assign, cmd, cmd-checkout, cmd-to-pr, noop."
             let nudgeConfig =

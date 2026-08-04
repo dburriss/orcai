@@ -91,6 +91,14 @@ type CmdExec =
 /// Write-back strategy for cmd-to-pr.
 type WriteBackMode = PrToOrigin | CommitToOrigin | ForkAndPr
 
+/// A single Docker-COPY-style entry: stage file(s) from the invocation directory
+/// into the command's working directory before it runs.
+type CopyEntry =
+    { From : string
+      To   : string
+      /// false (default) → delete the copied destination(s) after the command runs.
+      Keep : bool }
+
 /// Configuration for the cmd-to-pr type.
 type CmdToPrConfig =
     { Execute       : CmdExec
@@ -105,7 +113,8 @@ type CmdToPrConfig =
       /// None → same default as CommitMessage
       PrTitle       : string option
       /// None → empty string
-      PrBody        : string option }
+      PrBody        : string option
+      Copy          : CopyEntry list }
 
 /// The action to perform after an issue is created/found.
 type ActionConfig =
@@ -113,8 +122,8 @@ type ActionConfig =
     | Assign           of ``to``: string * comment: string option
     | Comment          of comment: string
     | CommentAndAssign of ``to``: string * comment: string
-    | Cmd              of exec: CmdExec * cwd: string option
-    | CmdCheckout      of exec: CmdExec * cwd: string option
+    | Cmd              of exec: CmdExec * cwd: string option * copy: CopyEntry list
+    | CmdCheckout      of exec: CmdExec * cwd: string option * copy: CopyEntry list
     | CmdToPr          of config: CmdToPrConfig
     | Noop
 

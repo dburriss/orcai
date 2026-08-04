@@ -720,9 +720,9 @@ The `action:` block controls what happens after the issue is created. If omitted
 | `assign` | `to` | `comment` | Assign any user or bot. `to` is the GitHub handle (e.g. `@alice`). |
 | `comment` | `comment` | — | Post a comment only — no assignment. |
 | `comment-and-assign` | `to`, `comment` | — | Post a comment and then assign. |
-| `cmd` | `execute` | `cwd` | Run a command per repo. `execute` accepts a string (shell form — passed through `sh -c`/`cmd /C`; shell syntax like pipes and redirects works) or a YAML list (exec form — no shell, arguments passed directly). |
-| `cmd-checkout` | `execute` | `cwd` | Same as `cmd` but clones the target repo first. The command runs inside the checkout; `cwd` is relative to the checkout root. Two extra template variables are available: `{{checkout_path}}` and `{{job_title_slug}}`. |
-| `cmd-to-pr` | `execute` | `cwd`, `writeBack`, `errorIfNoDiff`, `branch`, `commitMessage`, `prTitle`, `prBody` | Clone the repo, run the command, commit all changed files, and open a PR (or push a branch). If the command exits non-zero, no PR is opened. If it exits 0 with no diff, the behaviour is controlled by `errorIfNoDiff`. |
+| `cmd` | `execute` | `cwd`, `copy` | Run a command per repo. `execute` accepts a string (shell form — passed through `sh -c`/`cmd /C`; shell syntax like pipes and redirects works) or a YAML list (exec form — no shell, arguments passed directly). |
+| `cmd-checkout` | `execute` | `cwd`, `copy` | Same as `cmd` but clones the target repo first. The command runs inside the checkout; `cwd` is relative to the checkout root. Two extra template variables are available: `{{checkout_path}}` and `{{job_title_slug}}`. |
+| `cmd-to-pr` | `execute` | `cwd`, `writeBack`, `errorIfNoDiff`, `branch`, `commitMessage`, `prTitle`, `prBody`, `copy` | Clone the repo, run the command, commit all changed files, and open a PR (or push a branch). If the command exits non-zero, no PR is opened. If it exits 0 with no diff, the behaviour is controlled by `errorIfNoDiff`. |
 | `noop` | — | — | Do nothing after issue creation. |
 
 **`cmd-to-pr` fields:**
@@ -735,6 +735,18 @@ The `action:` block controls what happens after the issue is created. If omitted
 | `commitMessage` | string | `[{{issue_number}}] {{job_title}}` | Commit message. Supports `{{var}}` template variables. |
 | `prTitle` | string | same as `commitMessage` | PR title. Supports `{{var}}` template variables. |
 | `prBody` | string | `""` | PR body. Supports `{{var}}` template variables. |
+
+**`copy:` list** (available on `cmd`, `cmd-checkout`, and `cmd-to-pr`):
+
+Docker-`COPY`-style staging of input files (e.g. a helper script or prompt file) from where `orcai` is invoked into the command's working directory before it runs.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `from` | string | — (required) | Source path or glob, resolved against the directory `orcai` was invoked from. A pattern matching zero files is a hard error that aborts the step. |
+| `to` | string | — (required) | Destination path. If `from` matches exactly one file, `to` is the exact destination file path. If `from` matches multiple files (glob), `to` is treated as a directory and each file is copied into it, preserving its path relative to the glob's static (non-wildcard) prefix directory. |
+| `keep` | bool | `false` | If `false` (default), the copied file(s) are deleted again after the command finishes — for `cmd-to-pr`, this happens before the commit, so scratch files never leak into the PR diff. Set `true` to leave them in place. |
+
+`from`/`to` are static paths — they are not rendered with `{{var}}` templates.
 
 **Template variables for `cmd`, `cmd-checkout`, and `cmd-to-pr`** (use `{{var}}` double-brace syntax):
 
@@ -809,6 +821,19 @@ action:
   type: cmd-to-pr
   execute: [dotnet, upgrade, --target, "10"]
   writeBack: pr-to-origin
+
+# Stage a helper script and a prompt file into the checkout before running opencode.
+# Both are deleted after the command runs (keep defaults to false), so neither
+# leaks into the committed diff or the opened PR.
+action:
+  type: cmd-to-pr
+  execute: "./drive-opencode.sh"
+  copy:
+    - from: "./scripts/drive-opencode.sh"
+      to: "drive-opencode.sh"
+    - from: "./prompts/upgrade.md"
+      to: "upgrade.md"
+      keep: false
 ```
 
 The `nudge` block is optional — omitting it keeps the default behaviour (nudge by reassignment).

@@ -368,14 +368,14 @@ let ``parse parses action type cmd with execute`` () =
     let yaml = actionBaseYaml + "action:\n  type: cmd\n  execute: \"echo hello\"\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
-    | Ok cfg  -> Assert.Equal(Cmd(Shell "echo hello", None), cfg.Action)
+    | Ok cfg  -> Assert.Equal(Cmd(Shell "echo hello", None, []), cfg.Action)
 
 [<Fact>]
 let ``parse parses action type cmd with execute containing path`` () =
     let yaml = actionBaseYaml + "action:\n  type: cmd\n  execute: \"./run.sh\"\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
-    | Ok cfg  -> Assert.Equal(Cmd(Shell "./run.sh", None), cfg.Action)
+    | Ok cfg  -> Assert.Equal(Cmd(Shell "./run.sh", None, []), cfg.Action)
 
 [<Fact>]
 let ``parse returns error for cmd without execute`` () =
@@ -401,14 +401,14 @@ let ``parse parses action type cmd-checkout with execute`` () =
     let yaml = actionBaseYaml + "action:\n  type: cmd-checkout\n  execute: \"echo hi\"\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
-    | Ok cfg  -> Assert.Equal(CmdCheckout(Shell "echo hi", None), cfg.Action)
+    | Ok cfg  -> Assert.Equal(CmdCheckout(Shell "echo hi", None, []), cfg.Action)
 
 [<Fact>]
 let ``parse parses action type cmd-checkout with cwd`` () =
     let yaml = actionBaseYaml + "action:\n  type: cmd-checkout\n  execute: \"echo hi\"\n  cwd: \"./sub\"\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
-    | Ok cfg  -> Assert.Equal(CmdCheckout(Shell "echo hi", Some "./sub"), cfg.Action)
+    | Ok cfg  -> Assert.Equal(CmdCheckout(Shell "echo hi", Some "./sub", []), cfg.Action)
 
 [<Fact>]
 let ``parse returns error for cmd-checkout without execute`` () =
@@ -477,6 +477,80 @@ let ``parse returns error for cmd-to-pr without execute`` () =
     Assert.True(Result.isError (parse yaml "" "body"))
 
 // ---------------------------------------------------------------------------
+// copy: list
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``parse parses copy list on cmd action`` () =
+    let yaml =
+        actionBaseYaml
+        + "action:\n  type: cmd\n  execute: \"echo hi\"\n  copy:\n    - from: \"./script.sh\"\n      to: \"script.sh\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  ->
+        Assert.Equal(Cmd(Shell "echo hi", None, [ { From = "./script.sh"; To = "script.sh"; Keep = false } ]), cfg.Action)
+
+[<Fact>]
+let ``parse parses copy list on cmd-checkout action`` () =
+    let yaml =
+        actionBaseYaml
+        + "action:\n  type: cmd-checkout\n  execute: \"echo hi\"\n  copy:\n    - from: \"./script.sh\"\n      to: \"script.sh\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  ->
+        Assert.Equal(CmdCheckout(Shell "echo hi", None, [ { From = "./script.sh"; To = "script.sh"; Keep = false } ]), cfg.Action)
+
+[<Fact>]
+let ``parse parses copy list on cmd-to-pr action`` () =
+    let yaml =
+        actionBaseYaml
+        + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  copy:\n    - from: \"./script.sh\"\n      to: \"script.sh\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  ->
+        match cfg.Action with
+        | CmdToPr c -> Assert.Equal<CopyEntry list>([ { From = "./script.sh"; To = "script.sh"; Keep = false } ], c.Copy)
+        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+
+[<Fact>]
+let ``parse defaults copy entry keep to false`` () =
+    let yaml =
+        actionBaseYaml
+        + "action:\n  type: cmd\n  execute: \"echo hi\"\n  copy:\n    - from: \"./script.sh\"\n      to: \"script.sh\"\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  ->
+        match cfg.Action with
+        | Cmd(_, _, [ entry ]) -> Assert.False(entry.Keep)
+        | other -> Assert.True(false, $"Expected Cmd with one copy entry, got {other}")
+
+[<Fact>]
+let ``parse honors explicit copy entry keep true`` () =
+    let yaml =
+        actionBaseYaml
+        + "action:\n  type: cmd\n  execute: \"echo hi\"\n  copy:\n    - from: \"./script.sh\"\n      to: \"script.sh\"\n      keep: true\n"
+    match parse yaml "" "body" with
+    | Error e -> Assert.True(false, $"Expected Ok: {e}")
+    | Ok cfg  ->
+        match cfg.Action with
+        | Cmd(_, _, [ entry ]) -> Assert.True(entry.Keep)
+        | other -> Assert.True(false, $"Expected Cmd with one copy entry, got {other}")
+
+[<Fact>]
+let ``parse returns error for copy entry missing from`` () =
+    let yaml =
+        actionBaseYaml
+        + "action:\n  type: cmd\n  execute: \"echo hi\"\n  copy:\n    - to: \"script.sh\"\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+[<Fact>]
+let ``parse returns error for copy entry missing to`` () =
+    let yaml =
+        actionBaseYaml
+        + "action:\n  type: cmd\n  execute: \"echo hi\"\n  copy:\n    - from: \"./script.sh\"\n"
+    Assert.True(Result.isError (parse yaml "" "body"))
+
+// ---------------------------------------------------------------------------
 // execute: exec list form
 // ---------------------------------------------------------------------------
 
@@ -485,14 +559,14 @@ let ``parse parses action type cmd with execute as list (exec form)`` () =
     let yaml = actionBaseYaml + "action:\n  type: cmd\n  execute: [\"./run.sh\", \"--flag\", \"val\"]\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
-    | Ok cfg  -> Assert.Equal(Cmd(Exec("./run.sh", ["--flag"; "val"]), None), cfg.Action)
+    | Ok cfg  -> Assert.Equal(Cmd(Exec("./run.sh", ["--flag"; "val"]), None, []), cfg.Action)
 
 [<Fact>]
 let ``parse parses action type cmd-checkout with execute as list (exec form)`` () =
     let yaml = actionBaseYaml + "action:\n  type: cmd-checkout\n  execute: [\"./build.sh\", \"arg1\"]\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
-    | Ok cfg  -> Assert.Equal(CmdCheckout(Exec("./build.sh", ["arg1"]), None), cfg.Action)
+    | Ok cfg  -> Assert.Equal(CmdCheckout(Exec("./build.sh", ["arg1"]), None, []), cfg.Action)
 
 [<Fact>]
 let ``parse parses action type cmd-to-pr with execute as list (exec form)`` () =

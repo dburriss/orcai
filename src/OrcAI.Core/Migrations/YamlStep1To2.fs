@@ -105,7 +105,8 @@ let private emptyAction (t: string) : YamlAction =
       branch          = null
       commitMessage   = null
       prTitle         = null
-      prBody          = null }
+      prBody          = null
+      copy            = null }
 
 /// True for "@copilot", "copilot", case-insensitive — matches the old
 /// RunCommand.fs check for whether the assignee is the Copilot bot.

@@ -20,6 +20,7 @@ open System.Text
 open OrcAI.Core.Domain
 open OrcAI.Core.Provider
 open OrcAI.Core.Deps
+open OrcAI.Core.FileGlob
 
 /// Input parameters derived from parsed CLI arguments.
 type RunInput =
@@ -472,7 +473,7 @@ let private processRepo
                     else
                         return issue, None
                 }
-            | Cmd(exec, cwd) ->
+            | Cmd(exec, cwd, copy) ->
                 async {
                     let (IssueId issueNum) = issue.Id
                     let (OrgName orgStr) = config.Org
@@ -493,6 +494,11 @@ let private processRepo
                     let render (s: string) = renderActionTemplate vars s
                     let executable, allArgs = resolveExec render exec
                     let workingDir = cwd |> Option.map render |> Option.defaultValue "."
+                    match FileGlob.copyAll Environment.CurrentDirectory (Path.GetFullPath workingDir) copy with
+                    | Error e ->
+                        eprintfn "[%s] Warning: copy failed: %s" repoStr e
+                        return issue, None
+                    | Ok written ->
                     if verbose then
                         eprintfn "[%s] Executing: %s %s" repoStr executable (String.concat " " allArgs)
                     let psi = Diagnostics.ProcessStartInfo(executable)
@@ -507,9 +513,10 @@ let private processRepo
                     if proc.ExitCode <> 0 then
                         let! err = stderrTask |> Async.AwaitTask
                         eprintfn "[%s] Warning: cmd exited with code %d: %s" repoStr proc.ExitCode err
+                    FileGlob.cleanupCopies written
                     return issue, None
                 }
-            | CmdCheckout(exec, cwd) ->
+            | CmdCheckout(exec, cwd, copy) ->
                 async {
                     let (IssueId issueNum) = issue.Id
                     let (OrgName orgStr) = config.Org
@@ -552,6 +559,13 @@ let private processRepo
                             let executable, allArgs = resolveExec render exec
                             // cwd is relative to the checkout root, not the process CWD.
                             let workingDir = cwd |> Option.map (fun c -> Path.Combine(worktreePath, render c)) |> Option.defaultValue worktreePath
+                            match FileGlob.copyAll Environment.CurrentDirectory workingDir copy with
+                            | Error e ->
+                                record CmdCheckoutFailed (Error e)
+                                eprintfn "[%s] Warning: copy failed: %s" repoStr e
+                                CheckoutManager.cleanup checkoutRoot repo branchSlug
+                                return issue, None
+                            | Ok written ->
                             if verbose then
                                 eprintfn "[%s] Executing in checkout: %s %s" repoStr executable (String.concat " " allArgs)
                             let psi = Diagnostics.ProcessStartInfo(executable)
@@ -567,6 +581,7 @@ let private processRepo
                                 let! err = stderrTask |> Async.AwaitTask
                                 record CmdCheckoutFailed (Error $"cmd exited {proc.ExitCode}: {err.Trim()}")
                                 eprintfn "[%s] Warning: cmd-checkout exited with code %d: %s" repoStr proc.ExitCode err
+                            FileGlob.cleanupCopies written
                             CheckoutManager.cleanup checkoutRoot repo branchSlug
                             return issue, None
                 }
@@ -626,6 +641,13 @@ let private processRepo
                             let executable, allArgs = resolveExec render cfg.Execute
                             // cwd is relative to the checkout root, not the process CWD.
                             let workingDir = cfg.Cwd |> Option.map (fun c -> Path.Combine(worktreePath, render c)) |> Option.defaultValue worktreePath
+                            match FileGlob.copyAll Environment.CurrentDirectory workingDir cfg.Copy with
+                            | Error e ->
+                                record CmdToPrCheckoutFailed (Error e)
+                                eprintfn "[%s] Warning: copy failed: %s" repoStr e
+                                CheckoutManager.cleanup checkoutRoot repo branchSlug
+                                return issue, None
+                            | Ok written ->
                             if verbose then
                                 eprintfn "[%s] Executing in checkout: %s %s" repoStr executable (String.concat " " allArgs)
                             let psi = Diagnostics.ProcessStartInfo(executable)
@@ -641,9 +663,11 @@ let private processRepo
                                 let! err = stderrTask |> Async.AwaitTask
                                 record CmdToPrCheckoutFailed (Error $"cmd exited {proc.ExitCode}: {err.Trim()}")
                                 eprintfn "[%s] Warning: cmd-to-pr cmd exited with code %d: %s" repoStr proc.ExitCode err
+                                FileGlob.cleanupCopies written
                                 CheckoutManager.cleanup checkoutRoot repo branchSlug
                                 return issue, None
                             else
+                                FileGlob.cleanupCopies written
                                 let renderedMsg    = render commitMsg
                                 let! commitResult  = CheckoutManager.commitAll worktreePath renderedMsg
                                 match commitResult with
