@@ -536,7 +536,7 @@ let private processRepo
                             return Error "CreateIssue skipped (prior failure not retryable)"
                         else
                             if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
-                            match! client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels with
+                            match! client.CreateIssue repo config.IssueTitle config.IssueBodyByRepo.[repo] config.Labels with
                             | Ok issue -> record CreateIssue (Ok ()); return Ok (issue, Created)
                             | Error e  -> record CreateIssue (Error e); return Error e
                     | Ok (Some closed) ->
@@ -549,7 +549,7 @@ let private processRepo
                                 return Error "CreateIssue skipped (prior failure not retryable)"
                             else
                                 if verbose then eprintfn "[%s] Creating issue '%s'" repoStr config.IssueTitle
-                                match! client.CreateIssue repo config.IssueTitle config.IssueBody config.Labels with
+                                match! client.CreateIssue repo config.IssueTitle config.IssueBodyByRepo.[repo] config.Labels with
                                 | Ok issue -> record CreateIssue (Ok ()); return Ok (issue, Created)
                                 | Error e  -> record CreateIssue (Error e); return Error e
                         | Reopen ->
@@ -653,10 +653,10 @@ let private processRepo
                             "issue_number",   issueNum
                             "issue_url",      issue.Url
                             "job_title",      config.ProjectTitle
-                            "issue_text",     config.IssueBody
+                            "issue_text",     config.IssueBodyByRepo.[repo]
                             "project_number", projectNum
                             "run_datetime",   DateTimeOffset.UtcNow.ToString("o")
-                            "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBody))
+                            "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBodyByRepo.[repo]))
                             "yaml_hash",      ""
                         ]
                     let render (s: string) = renderActionTemplate vars s
@@ -705,10 +705,10 @@ let private processRepo
                                     "issue_number",   issueNum
                                     "issue_url",      issue.Url
                                     "job_title",      config.ProjectTitle
-                                    "issue_text",     config.IssueBody
+                                    "issue_text",     config.IssueBodyByRepo.[repo]
                                     "project_number", projectNum
                                     "run_datetime",   DateTimeOffset.UtcNow.ToString("o")
-                                    "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBody))
+                                    "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBodyByRepo.[repo]))
                                     "yaml_hash",      ""
                                     "checkout_path",  worktreePath
                                     "job_title_slug", branchSlug
@@ -775,10 +775,10 @@ let private processRepo
                             "issue_number",   issueNum
                             "issue_url",      issue.Url
                             "job_title",      config.ProjectTitle
-                            "issue_text",     config.IssueBody
+                            "issue_text",     config.IssueBodyByRepo.[repo]
                             "project_number", projectNum
                             "run_datetime",   DateTimeOffset.UtcNow.ToString("o")
-                            "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBody))
+                            "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBodyByRepo.[repo]))
                             "yaml_hash",      ""
                             "job_title_slug", branchSlug
                         ]
@@ -858,10 +858,10 @@ let private processRepo
                                     "issue_number",   issueNum
                                     "issue_url",      issue.Url
                                     "job_title",      config.ProjectTitle
-                                    "issue_text",     config.IssueBody
+                                    "issue_text",     config.IssueBodyByRepo.[repo]
                                     "project_number", projectNum
                                     "run_datetime",   DateTimeOffset.UtcNow.ToString("o")
-                                    "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBody))
+                                    "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBodyByRepo.[repo]))
                                     "yaml_hash",      ""
                                     "checkout_path",  worktreePath
                                     "job_title_slug", branchSlug
@@ -1235,7 +1235,7 @@ let private refreshBodies
                         if input.Verbose then eprintfn "[%s] Skipping UpdateBody (prior failure not retryable)" repoStr
                         return r, None
                     else
-                        match! providerClients.Tracker.UpdateIssue r.Issue.Repo r.Issue.Id config.IssueTitle config.IssueBody with
+                        match! providerClients.Tracker.UpdateIssue r.Issue.Repo r.Issue.Id config.IssueTitle config.IssueBodyByRepo.[r.Issue.Repo] with
                         | Ok () ->
                             let newOutcome =
                                 match r.Outcome with

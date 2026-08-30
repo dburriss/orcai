@@ -29,7 +29,8 @@ let ``parseFile parses valid YAML into JobConfig`` () =
         Assert.Equal(2, cfg.Repos.Length)
         Assert.Contains(RepoName "myorg/repo-a", cfg.Repos)
         Assert.Contains(RepoName "myorg/repo-b", cfg.Repos)
-        Assert.Equal("# Issue body", cfg.IssueBody)
+        Assert.Equal("# Issue body", cfg.IssueBodyByRepo.[RepoName "myorg/repo-a"])
+        Assert.Equal("# Issue body", cfg.IssueBodyByRepo.[RepoName "myorg/repo-b"])
 
 [<Fact>]
 let ``parseFile prefixes repos with org`` () =
@@ -81,6 +82,85 @@ let ``parseFile sets Labels to empty list when not present in YAML`` () =
     | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
     | Ok cfg  -> Assert.Empty(cfg.Labels)
 
+// ---------------------------------------------------------------------------
+// Per-repo issue body overrides: {repo}.append.md / {repo}.prepend.md next
+// to the base template
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``parseFile appends repo-specific content when {repo}.append.md exists`` () =
+    let fs   = MockFileSystem()
+    let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
+    fs.File.WriteAllText("/work/repo-a.append.md", "Extra instructions for repo-a")
+    match parseFile fs path with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  ->
+        Assert.Equal("# Issue body\n\nExtra instructions for repo-a", cfg.IssueBodyByRepo.[RepoName "myorg/repo-a"])
+        Assert.Equal("# Issue body", cfg.IssueBodyByRepo.[RepoName "myorg/repo-b"])
+
+[<Fact>]
+let ``parseFile prepends repo-specific content when {repo}.prepend.md exists`` () =
+    let fs   = MockFileSystem()
+    let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
+    fs.File.WriteAllText("/work/repo-a.prepend.md", "Heads up for repo-a")
+    match parseFile fs path with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  ->
+        Assert.Equal("Heads up for repo-a\n\n# Issue body", cfg.IssueBodyByRepo.[RepoName "myorg/repo-a"])
+        Assert.Equal("# Issue body", cfg.IssueBodyByRepo.[RepoName "myorg/repo-b"])
+
+[<Fact>]
+let ``parseFile applies both prepend and append content in order`` () =
+    let fs   = MockFileSystem()
+    let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
+    fs.File.WriteAllText("/work/repo-a.prepend.md", "Before")
+    fs.File.WriteAllText("/work/repo-a.append.md", "After")
+    match parseFile fs path with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  -> Assert.Equal("Before\n\n# Issue body\n\nAfter", cfg.IssueBodyByRepo.[RepoName "myorg/repo-a"])
+
+[<Fact>]
+let ``parseFile leaves issue body unchanged when no override files exist`` () =
+    let fs   = MockFileSystem()
+    let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
+    match parseFile fs path with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  ->
+        Assert.Equal("# Issue body", cfg.IssueBodyByRepo.[RepoName "myorg/repo-a"])
+        Assert.Equal("# Issue body", cfg.IssueBodyByRepo.[RepoName "myorg/repo-b"])
+
+[<Fact>]
+let ``computeTemplateHash changes when a repo append file is added`` () =
+    let fs   = MockFileSystem()
+    let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
+    let templatePath = "/work/template.md"
+    let before = computeTemplateHash fs templatePath
+    fs.File.WriteAllText("/work/repo-a.append.md", "Extra instructions")
+    let after = computeTemplateHash fs templatePath
+    Assert.NotEqual<string>(before, after)
+
+[<Fact>]
+let ``computeTemplateHash changes when a repo append file is edited`` () =
+    let fs   = MockFileSystem()
+    let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
+    let templatePath = "/work/template.md"
+    fs.File.WriteAllText("/work/repo-a.append.md", "Extra instructions")
+    let before = computeTemplateHash fs templatePath
+    fs.File.WriteAllText("/work/repo-a.append.md", "Different instructions")
+    let after = computeTemplateHash fs templatePath
+    Assert.NotEqual<string>(before, after)
+
+[<Fact>]
+let ``computeTemplateHash changes when a repo append file is removed`` () =
+    let fs   = MockFileSystem()
+    let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
+    let templatePath = "/work/template.md"
+    fs.File.WriteAllText("/work/repo-a.append.md", "Extra instructions")
+    let before = computeTemplateHash fs templatePath
+    fs.File.Delete("/work/repo-a.append.md")
+    let after = computeTemplateHash fs templatePath
+    Assert.NotEqual<string>(before, after)
+
 [<Fact>]
 let ``computeHash returns consistent hex string for same content`` () =
     let fs = MockFileSystem()
@@ -122,7 +202,7 @@ let ``parse builds correct JobConfig from raw strings`` () =
         Assert.Equal(OrgName "acme", cfg.Org)
         Assert.Equal("My Job",          cfg.ProjectTitle)
         Assert.Equal("My Job",          cfg.IssueTitle)
-        Assert.Equal("Issue body text", cfg.IssueBody)
+        Assert.Equal("Issue body text", cfg.IssueBodyByRepo.[RepoName "acme/svc-a"])
         Assert.Equal(2, cfg.Repos.Length)
         Assert.Contains(RepoName "acme/svc-a", cfg.Repos)
         Assert.Contains(RepoName "acme/svc-b", cfg.Repos)

@@ -274,11 +274,12 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                             else root.provider.root
                         Local, Some rawRoot
                     | other -> failwith $"Unknown provider type: '{other}'. Valid values: github, local."
+            let repos = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
             Ok { Org           = OrgName root.job.org
                  ProjectTitle  = root.job.title
-                 Repos         = root.repos |> Seq.map (fun r -> RepoName $"{root.job.org}/{r}") |> List.ofSeq
+                 Repos         = repos
                  IssueTitle    = root.job.title
-                 IssueBody     = templateContent
+                 IssueBodyByRepo = repos |> List.map (fun r -> r, templateContent) |> Map.ofList
                  Labels        = labels
                  Action        = actionConfig
                  OnClosedIssue = closedIssueAction
@@ -297,6 +298,34 @@ let hashBytes (bytes: byte[]) : string =
     use sha  = SHA256.Create()
     let hash = sha.ComputeHash(bytes)
     Convert.ToHexStringLower(hash)
+
+/// Reads {templateDir}/{shortRepo}.{suffix}.md if it exists, trimmed.
+/// Returns None (not an error) when the override file is absent.
+let private readOverrideFile (fs: IFileSystem) (templateDir: string) (shortRepo: string) (suffix: string) : string option =
+    let p = Path.Combine(templateDir, $"{shortRepo}.{suffix}.md")
+    if fs.File.Exists(p) then Some (fs.File.ReadAllText(p).Trim()) else None
+
+/// Composes a repo's issue body: optional {repo}.prepend.md, the base
+/// template, then optional {repo}.append.md — each present piece joined by a
+/// blank line.
+let private composeIssueBody (fs: IFileSystem) (templateDir: string) (shortRepo: string) (baseBody: string) : string =
+    [ readOverrideFile fs templateDir shortRepo "prepend"
+      Some baseBody
+      readOverrideFile fs templateDir shortRepo "append" ]
+    |> List.choose id
+    |> String.concat "\n\n"
+
+/// Applies per-repo {repo}.prepend.md / {repo}.append.md overrides found next
+/// to the base template. `shortRepoNames` are the raw names as written under
+/// `repos:` in YAML (no org prefix), in the same order as `config.Repos`.
+let private applyIssueBodyOverrides (fs: IFileSystem) (templateDir: string) (shortRepoNames: string list) (config: JobConfig) : JobConfig =
+    let issueBodyByRepo =
+        List.zip shortRepoNames config.Repos
+        |> List.map (fun (shortRepo, repoName) ->
+            let baseBody = config.IssueBodyByRepo.[repoName]
+            repoName, composeIssueBody fs templateDir shortRepo baseBody)
+        |> Map.ofList
+    { config with IssueBodyByRepo = issueBodyByRepo }
 
 /// Parse a YAML job configuration from a file path.
 /// Reads the YAML and its referenced template from disk, then delegates to `parse`.
@@ -326,7 +355,11 @@ let parseFile (fs: IFileSystem) (path: string) : Result<JobConfig, string> =
                     Error $"Issue template file not found: {templatePath}"
                 else
                     let templateContent = fs.File.ReadAllText(templatePath)
-                    parse yaml templatePath templateContent |> Result.map resolveProviderRoot
+                    let templateDir     = Path.GetDirectoryName(templatePath) |> Option.ofObj |> Option.defaultValue "."
+                    let shortRepoNames  = root.repos |> Seq.toList
+                    parse yaml templatePath templateContent
+                    |> Result.map resolveProviderRoot
+                    |> Result.map (applyIssueBodyOverrides fs templateDir shortRepoNames)
         with ex ->
             Error $"Failed to parse YAML file '{path}': {ex.Message}"
 
@@ -350,7 +383,25 @@ let resolveTemplatePath (fs: IFileSystem) (path: string) : string option =
                 if fs.File.Exists(templatePath) then Some templatePath else None
         with _ -> None
 
-/// Compute the SHA-256 hash of the raw template file content.
+/// Finds any {repo}.prepend.md / {repo}.append.md override files next to the
+/// template, sorted for deterministic hashing.
+let private findOverrideFiles (fs: IFileSystem) (templateDir: string) : string list =
+    if not (fs.Directory.Exists(templateDir)) then []
+    else
+        fs.Directory.GetFiles(templateDir)
+        |> Array.filter (fun p ->
+            let name = Path.GetFileName(p)
+            name.EndsWith(".prepend.md") || name.EndsWith(".append.md"))
+        |> Array.sort
+        |> Array.toList
+
+/// Compute the SHA-256 hash of the raw template file content, plus any
+/// {repo}.prepend.md / {repo}.append.md override files found alongside it —
+/// so adding, editing, or removing an override alone still changes the hash.
 /// Used to populate the templateHash field in the lock file.
 let computeTemplateHash (fs: IFileSystem) (path: string) : string =
-    hashBytes (fs.File.ReadAllBytes(path))
+    let templateDir    = Path.GetDirectoryName(path) |> Option.ofObj |> Option.defaultValue "."
+    let overrideBytes  =
+        findOverrideFiles fs templateDir
+        |> List.collect (fun p -> fs.File.ReadAllBytes(p) |> Array.toList)
+    hashBytes (Array.append (fs.File.ReadAllBytes(path)) (Array.ofList overrideBytes))

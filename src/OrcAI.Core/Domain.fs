@@ -140,7 +140,9 @@ type JobConfig =
       ProjectTitle  : string
       Repos         : RepoName list
       IssueTitle    : string
-      IssueBody     : string
+      /// Composed issue body per repo — base template plus any {repo}.prepend.md /
+      /// {repo}.append.md content found next to the template file.
+      IssueBodyByRepo : Map<RepoName, string>
       Labels        : string list
       Action        : ActionConfig
       OnClosedIssue : ClosedIssueAction
