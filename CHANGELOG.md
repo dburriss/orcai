@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-30
+
 ### Added
 
 - Per-repo issue template overrides: `{repo}.prepend.md` / `{repo}.append.md` files placed next to `issue.template` are automatically prepended/appended to that repo's issue body. Both are optional and independent — a missing file is not an error, and repos without a matching file get the base template unchanged. No new YAML fields required. Editing an override file alone still updates existing issue bodies on the next `orcai run`, via the existing template-hash change detection.
