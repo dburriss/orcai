@@ -710,6 +710,15 @@ issue:
 
 `job.onClosedIssue` controls what `orcai run` does when an issue with the same title already exists in the repo but is closed (matching is exact and case-sensitive). Valid values: `skip` (default — leave the repo untouched and report `skipped`), `create` (open a new issue alongside the closed one), `reopen` (reopen the closed issue), `fail` (treat the closed match as a hard error). The `--on-closed-issue` CLI flag overrides this field when supplied.
 
+#### Per-repo issue body overrides
+
+For a repo named `repo-one` under `repos:`, place `repo-one.prepend.md` and/or `repo-one.append.md` next to the `issue.template` file to add repo-specific instructions on top of the shared template — no new YAML fields required. Both are optional and independent:
+
+- `{repo}.prepend.md` — inserted before the base template.
+- `{repo}.append.md` — inserted after the base template.
+
+Each present piece is joined with a blank line. A repo with neither file gets the base template unchanged. Editing, adding, or removing an override file is treated the same as editing the base template — the next `orcai run` picks it up and updates that repo's existing issue body via the same hash-based detection used for template changes (see "Auto issue-body updates" in the README).
+
 ### `action:` block
 
 The `action:` block controls what happens after the issue is created. If omitted, the default is `assign-copilot`.
