@@ -23,7 +23,7 @@ This guide covers how to authenticate OrcAI using a GitHub App. This is the reco
 4. Set the following **Repository permissions**:
    - **Issues** — Read & write
    - **Pull requests** — Read & write
-   - **Contents** — Read & write (read required by `gh`; write required by push-based action types such as `cmd-to-pr`)
+   - **Contents** — Read & write (read required by `gh`; write required by push-based action types such as `cmd-to-github`)
 5. Set the following **Organisation permissions**:
    - **Projects** — Read & write
 6. Under **Where can this GitHub App be installed?**, select **Only on this account**.
@@ -192,9 +192,9 @@ To suppress the warning and intentionally skip Copilot assignment, set `action: 
 
 ---
 
-## 8. Push-based action types (`cmd-to-pr`, `commit-to-origin`, `fork-and-pr`)
+## 8. Push-based action types (`cmd-to-github`, `push-branch`, `fork-and-pr`)
 
-The `cmd-checkout` and `cmd-to-pr` action types clone target repositories and, for write-back modes, push branches and open pull requests. This requires:
+The `cmd-checkout` and `cmd-to-github` action types clone target repositories and, for write-back modes, push branches and open pull requests. This requires:
 
 1. **Contents: Read & write** on the GitHub App (already set in Step 1 above).
 2. **Pull requests: Read & write** on the GitHub App (already required for other features).

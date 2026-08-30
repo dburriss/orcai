@@ -416,64 +416,64 @@ let ``parse returns error for cmd-checkout without execute`` () =
     Assert.True(Result.isError (parse yaml "" "body"))
 
 // ---------------------------------------------------------------------------
-// cmd-to-pr action type
+// cmd-to-github action type
 // ---------------------------------------------------------------------------
 
 [<Fact>]
-let ``parse parses action type cmd-to-pr with defaults`` () =
-    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./upgrade.sh\"\n"
+let ``parse parses action type cmd-to-github with defaults`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-github\n  execute: \"./upgrade.sh\"\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
     | Ok cfg  ->
         match cfg.Action with
-        | CmdToPr c ->
+        | CmdToGithub c ->
             Assert.Equal(Shell "./upgrade.sh", c.Execute)
             Assert.Equal<WriteBackMode option>(None, c.WriteBack)
             Assert.False(c.ErrorIfNoDiff)
             Assert.True(c.Branch.IsNone)
             Assert.True(c.CommitMessage.IsNone)
-        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+        | other -> Assert.True(false, $"Expected CmdToGithub, got {other}")
 
 [<Fact>]
-let ``parse parses action type cmd-to-pr with custom writeBack`` () =
-    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  writeBack: fork-and-pr\n"
+let ``parse parses action type cmd-to-github with custom writeBack`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-github\n  execute: \"./u.sh\"\n  writeBack: fork-and-pr\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
     | Ok cfg  ->
         match cfg.Action with
-        | CmdToPr c -> Assert.Equal<WriteBackMode option>(Some ForkAndPr, c.WriteBack)
-        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+        | CmdToGithub c -> Assert.Equal<WriteBackMode option>(Some ForkAndPr, c.WriteBack)
+        | other -> Assert.True(false, $"Expected CmdToGithub, got {other}")
 
 [<Fact>]
-let ``parse parses action type cmd-to-pr with errorIfNoDiff`` () =
-    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  errorIfNoDiff: true\n"
+let ``parse parses action type cmd-to-github with errorIfNoDiff`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-github\n  execute: \"./u.sh\"\n  errorIfNoDiff: true\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
     | Ok cfg  ->
         match cfg.Action with
-        | CmdToPr c -> Assert.True(c.ErrorIfNoDiff)
-        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+        | CmdToGithub c -> Assert.True(c.ErrorIfNoDiff)
+        | other -> Assert.True(false, $"Expected CmdToGithub, got {other}")
 
 [<Fact>]
-let ``parse parses action type cmd-to-pr with custom branch and commitMessage`` () =
-    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  branch: \"my-branch\"\n  commitMessage: \"my msg\"\n"
+let ``parse parses action type cmd-to-github with custom branch and commitMessage`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-github\n  execute: \"./u.sh\"\n  branch: \"my-branch\"\n  commitMessage: \"my msg\"\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
     | Ok cfg  ->
         match cfg.Action with
-        | CmdToPr c ->
+        | CmdToGithub c ->
             Assert.Equal(Some "my-branch", c.Branch)
             Assert.Equal(Some "my msg", c.CommitMessage)
-        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+        | other -> Assert.True(false, $"Expected CmdToGithub, got {other}")
 
 [<Fact>]
-let ``parse returns error for cmd-to-pr with unknown writeBack`` () =
-    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  writeBack: bad-mode\n"
+let ``parse returns error for cmd-to-github with unknown writeBack`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-github\n  execute: \"./u.sh\"\n  writeBack: bad-mode\n"
     Assert.True(Result.isError (parse yaml "" "body"))
 
 [<Fact>]
-let ``parse returns error for cmd-to-pr without execute`` () =
-    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n"
+let ``parse returns error for cmd-to-github without execute`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-github\n"
     Assert.True(Result.isError (parse yaml "" "body"))
 
 // ---------------------------------------------------------------------------
@@ -501,16 +501,16 @@ let ``parse parses copy list on cmd-checkout action`` () =
         Assert.Equal(CmdCheckout(Shell "echo hi", None, [ { From = "./script.sh"; To = "script.sh"; Keep = false } ]), cfg.Action)
 
 [<Fact>]
-let ``parse parses copy list on cmd-to-pr action`` () =
+let ``parse parses copy list on cmd-to-github action`` () =
     let yaml =
         actionBaseYaml
-        + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  copy:\n    - from: \"./script.sh\"\n      to: \"script.sh\"\n"
+        + "action:\n  type: cmd-to-github\n  execute: \"./u.sh\"\n  copy:\n    - from: \"./script.sh\"\n      to: \"script.sh\"\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
     | Ok cfg  ->
         match cfg.Action with
-        | CmdToPr c -> Assert.Equal<CopyEntry list>([ { From = "./script.sh"; To = "script.sh"; Keep = false } ], c.Copy)
-        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+        | CmdToGithub c -> Assert.Equal<CopyEntry list>([ { From = "./script.sh"; To = "script.sh"; Keep = false } ], c.Copy)
+        | other -> Assert.True(false, $"Expected CmdToGithub, got {other}")
 
 [<Fact>]
 let ``parse defaults copy entry keep to false`` () =
@@ -569,14 +569,14 @@ let ``parse parses action type cmd-checkout with execute as list (exec form)`` (
     | Ok cfg  -> Assert.Equal(CmdCheckout(Exec("./build.sh", ["arg1"]), None, []), cfg.Action)
 
 [<Fact>]
-let ``parse parses action type cmd-to-pr with execute as list (exec form)`` () =
-    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: [\"./upgrade.sh\", \"--dry-run\"]\n"
+let ``parse parses action type cmd-to-github with execute as list (exec form)`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-github\n  execute: [\"./upgrade.sh\", \"--dry-run\"]\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
     | Ok cfg  ->
         match cfg.Action with
-        | CmdToPr c -> Assert.Equal(Exec("./upgrade.sh", ["--dry-run"]), c.Execute)
-        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+        | CmdToGithub c -> Assert.Equal(Exec("./upgrade.sh", ["--dry-run"]), c.Execute)
+        | other -> Assert.True(false, $"Expected CmdToGithub, got {other}")
 
 // ---------------------------------------------------------------------------
 // onClosedIssue default
@@ -608,28 +608,28 @@ let ``parse returns error for skipClosedIssues camelCase`` () =
     | Ok _    -> Assert.True(false, "Expected Error for skipClosedIssues")
 
 // ---------------------------------------------------------------------------
-// cmd-to-pr writeBack option semantics
+// cmd-to-github writeBack option semantics
 // ---------------------------------------------------------------------------
 
 [<Fact>]
-let ``parse cmd-to-pr with commit-to-origin writeBack`` () =
-    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  writeBack: commit-to-origin\n"
+let ``parse cmd-to-github with push-branch writeBack`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-github\n  execute: \"./u.sh\"\n  writeBack: push-branch\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
     | Ok cfg ->
         match cfg.Action with
-        | CmdToPr c -> Assert.Equal<WriteBackMode option>(Some CommitToOrigin, c.WriteBack)
-        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+        | CmdToGithub c -> Assert.Equal<WriteBackMode option>(Some PushBranch, c.WriteBack)
+        | other -> Assert.True(false, $"Expected CmdToGithub, got {other}")
 
 [<Fact>]
-let ``parse cmd-to-pr with pr-to-origin writeBack`` () =
-    let yaml = actionBaseYaml + "action:\n  type: cmd-to-pr\n  execute: \"./u.sh\"\n  writeBack: pr-to-origin\n"
+let ``parse cmd-to-github with open-pr writeBack`` () =
+    let yaml = actionBaseYaml + "action:\n  type: cmd-to-github\n  execute: \"./u.sh\"\n  writeBack: open-pr\n"
     match parse yaml "" "body" with
     | Error e -> Assert.True(false, $"Expected Ok: {e}")
     | Ok cfg ->
         match cfg.Action with
-        | CmdToPr c -> Assert.Equal<WriteBackMode option>(Some PrToOrigin, c.WriteBack)
-        | other -> Assert.True(false, $"Expected CmdToPr, got {other}")
+        | CmdToGithub c -> Assert.Equal<WriteBackMode option>(Some OpenPr, c.WriteBack)
+        | other -> Assert.True(false, $"Expected CmdToGithub, got {other}")
 
 // ---------------------------------------------------------------------------
 // hashBytes — pure

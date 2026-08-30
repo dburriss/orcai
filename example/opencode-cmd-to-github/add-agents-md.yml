@@ -12,7 +12,7 @@ issue:
   labels: ["documentation", "automated"]
 
 action:
-  type: cmd-to-pr
+  type: cmd-to-github
 
   # Exec (list) form — no shell is involved, so the multi-line rendered issue
   # body ({{issue_text}}) is handed to OpenCode as a single argument. This
@@ -31,7 +31,7 @@ action:
 
   # Push the branch straight to the target repo and open a PR in-place.
   # Requires the token to have write access to each target repo (see README).
-  writeBack: pr-to-origin
+  writeBack: open-pr
 
   branch: "orcai/{{job_title_slug}}"
   commitMessage: "docs: add AGENTS.md [#{{issue_number}}]"

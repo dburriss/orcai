@@ -633,6 +633,15 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                 | Ok _    -> return Ok ()
             }
 
+        member _.ReopenPr repo pr =
+            async {
+                let (RepoName repoStr) = repo
+                let (PrNumber prN)     = pr
+                match! runGhApi bucket retries ghToken $"pr reopen {prN} --repo {repoStr}" with
+                | Error e -> return Error e
+                | Ok _    -> return Ok ()
+            }
+
         member _.GetPrState repo pr =
             async {
                 let (RepoName repoStr) = repo

@@ -97,9 +97,9 @@ No message is printed when an environment variable overrides a file value.
 
 ---
 
-## Checkout-based actions (`cmd-checkout`, `cmd-to-pr`)
+## Checkout-based actions (`cmd-checkout`, `cmd-to-github`)
 
-`cmd-checkout` and `cmd-to-pr` (clone, push, `gh pr create`) work under `ORCAI_APP_*` or a stored PAT profile alone — no ambient `GH_TOKEN` or `gh auth login` is required on the runner. The resolved token is injected directly into those subprocesses.
+`cmd-checkout` and `cmd-to-github` (clone, push, `gh pr create`) work under `ORCAI_APP_*` or a stored PAT profile alone — no ambient `GH_TOKEN` or `gh auth login` is required on the runner. The resolved token is injected directly into those subprocesses.
 
 ---
 

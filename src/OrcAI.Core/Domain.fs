@@ -88,8 +88,13 @@ type CmdExec =
     | Shell of command: string
     | Exec  of cmd: string * args: string list
 
-/// Write-back strategy for cmd-to-pr.
-type WriteBackMode = PrToOrigin | CommitToOrigin | ForkAndPr
+/// Write-back strategy for cmd-to-github.
+type WriteBackMode = OpenPr | PushBranch | ForkAndPr
+
+/// How cmd-to-github handles finding a closed (unmerged) PR for its branch.
+/// Distinct from ClosedPrAction (nudge's setting) — this redoes/reopens the PR
+/// rather than re-triggering an assignee. "skip" (default) | "recreate" | "reopen" | "fail"
+type ClosedPrWriteBackAction = SkipClosedPr | RecreatePr | ReopenPr | FailOnClosedPr
 
 /// A single Docker-COPY-style entry: stage file(s) from the invocation directory
 /// into the command's working directory before it runs.
@@ -99,8 +104,8 @@ type CopyEntry =
       /// false (default) → delete the copied destination(s) after the command runs.
       Keep : bool }
 
-/// Configuration for the cmd-to-pr type.
-type CmdToPrConfig =
+/// Configuration for the cmd-to-github type.
+type CmdToGithubConfig =
     { Execute       : CmdExec
       Cwd           : string option
       /// None = not specified in YAML; resolved against OrcAIConfig at runtime.
@@ -114,7 +119,9 @@ type CmdToPrConfig =
       PrTitle       : string option
       /// None → empty string
       PrBody        : string option
-      Copy          : CopyEntry list }
+      Copy          : CopyEntry list
+      /// None = not specified in YAML; resolved against OrcAIConfig at runtime.
+      OnClosedPr    : ClosedPrWriteBackAction option }
 
 /// The action to perform after an issue is created/found.
 type ActionConfig =
@@ -124,7 +131,7 @@ type ActionConfig =
     | CommentAndAssign of ``to``: string * comment: string
     | Cmd              of exec: CmdExec * cwd: string option * copy: CopyEntry list
     | CmdCheckout      of exec: CmdExec * cwd: string option * copy: CopyEntry list
-    | CmdToPr          of config: CmdToPrConfig
+    | CmdToGithub      of config: CmdToGithubConfig
     | Noop
 
 /// Top-level job configuration parsed from the YAML file.
@@ -167,7 +174,7 @@ let extractAssignee (action: ActionConfig) : string option =
     | Assign(``to``, _)                        -> Some ``to``
     | CommentAndAssign(``to``, _)              -> Some ``to``
     | Comment _ | Cmd _ | CmdCheckout _
-    | CmdToPr _ | Noop                         -> None
+    | CmdToGithub _ | Noop                     -> None
 
 /// Which step a recorded failure belongs to. Each (repo, category) is unique
 /// within the lock file's `Failures` list.
@@ -179,10 +186,11 @@ type RepoFailureCategory =
     | AddToProject
     | UpdateBody
     | CmdCheckoutFailed
-    | CmdToPrCheckoutFailed
-    | CmdToPrNoDiff
-    | CmdToPrPushFailed
-    | CmdToPrOpenPrFailed
+    | CmdToGithubCheckoutFailed
+    | CmdToGithubNoDiff
+    | CmdToGithubPushFailed
+    | CmdToGithubOpenPrFailed
+    | CmdToGithubClosedPrFailed
 
 /// Classified reason for a failure, derived from the raw `gh` error message.
 /// Drives retry/skip decisions on subsequent runs.

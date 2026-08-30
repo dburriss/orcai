@@ -24,6 +24,7 @@ type Handlers =
       PostComment      : RepoName    -> IssueId -> string -> Async<Result<unit, string>>
       FindPrsForIssue  : RepoName    -> IssueId -> Async<PullRequestRef list>
       ClosePr          : RepoName    -> PrNumber    -> Async<Result<unit, string>>
+      ReopenPr         : RepoName    -> PrNumber    -> Async<Result<unit, string>>
       GetPrState       : RepoName    -> PrNumber    -> Async<string option>
       GetIssueState    : RepoName    -> IssueId -> Async<string option>
       ListRepos        : OrgName                   -> Async<Result<string list, string>>
@@ -62,6 +63,7 @@ let defaults : Handlers =
       PostComment       = fun _ _ _      -> async { return Ok () }
       FindPrsForIssue   = fun _ _        -> async { return failwith "FindPrsForIssue not expected" }
       ClosePr           = fun _ _        -> async { return failwith "ClosePr not expected" }
+      ReopenPr          = fun _ _        -> async { return failwith "ReopenPr not expected" }
       GetPrState        = fun _ _        -> async { return Some "OPEN" }
       GetIssueState     = fun _ _        -> async { return Some "OPEN" }
       ListRepos         = fun _          -> async { return failwith "ListRepos not expected" }
@@ -118,6 +120,7 @@ let from (h: Handlers) : IIssueTracker =
       interface IPullRequestLinker with
         member _.FindPrsForIssue repo iss    = h.FindPrsForIssue repo iss
         member _.ClosePr repo pr            = h.ClosePr repo pr
+        member _.ReopenPr repo pr           = h.ReopenPr repo pr
         member _.GetPrState repo pr         = h.GetPrState repo pr
 
       interface IRepoInspector with

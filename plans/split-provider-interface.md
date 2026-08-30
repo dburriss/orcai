@@ -54,7 +54,7 @@ apply to a local backend.
 
 Git plumbing (clone/worktree/commit/push/fork) is **not** on `IGhClient` at
 all — `CheckoutManager.fs` shells out to raw `git`/`gh` directly from
-`RunCommand.fs` for `cmd-checkout`/`cmd-to-pr` actions, with zero interface
+`RunCommand.fs` for `cmd-checkout`/`cmd-to-github` actions, with zero interface
 behind it today. Out of scope here (see below).
 
 ---

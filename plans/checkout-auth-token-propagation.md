@@ -2,14 +2,14 @@
 
 ## Goal
 
-Make `cmd-checkout` and `cmd-to-pr` work under **GitHub App** and **stored-PAT**
+Make `cmd-checkout` and `cmd-to-github` work under **GitHub App** and **stored-PAT**
 auth, not just ambient `GH_TOKEN` / `gh auth login`. Today the code-change half of
 these actions (clone, push, `gh pr create`) silently relies on the runner's ambient
 `gh` credentials and ignores the token OrcAI resolved from `IAuthContext`.
 
 Motivating use case: an Actions workflow running an `orcai` job in one repo, using
-`cmd-to-pr` to run OpenCode against **other repos in the org** and open PRs
-(`writeBack: pr-to-origin`). With App-first auth (`ORCAI_APP_*`) and no ambient
+`cmd-to-github` to run OpenCode against **other repos in the org** and open PRs
+(`writeBack: open-pr`). With App-first auth (`ORCAI_APP_*`) and no ambient
 `GH_TOKEN`, issue/project creation succeeds but clone/push/PR fail.
 
 ---
@@ -66,7 +66,7 @@ auth resolution.
     process env, so `GH_TOKEN` set here reaches it.
   - `pushToOrigin token worktreeDir remoteBranch` — the `git push` process.
   - `forkAndPush token repo worktreeDir branchSlug` — the `gh repo fork`,
-    `gh api user`, and `git push` processes. (Unused by `pr-to-origin`; updated for
+    `gh api user`, and `git push` processes. (Unused by `open-pr`; updated for
     consistency and so App-vs-PAT limitations are enforced in one place, see notes.)
 - Keep the empty-token guard so an ambient-`gh`-login setup (where `GetToken`
   returned the same token via `gh auth token`, always non-empty on `Ok`) is never
@@ -88,7 +88,7 @@ auth resolution.
   `CheckoutToken : string`, populate it in `resolveProcessParams` (`:178`, add a
   parameter) and at both call sites (`:810`, `:1028`).
 - **Use** it in the two checkout branches:
-  - `CmdCheckout` (`:518`) and `CmdToPr` (`:592`): pass `p.CheckoutToken` to
+  - `CmdCheckout` (`:518`) and `CmdToGithub` (`:592`): pass `p.CheckoutToken` to
     `ensureClone`, `pushToOrigin`, `forkAndPush`.
   - `openPr` (`:671`): `psi2.Environment["GH_TOKEN"] <- p.CheckoutToken` when
     non-empty, before `Process.Start`.
@@ -112,7 +112,7 @@ token from being thrown away.
   into a small pure helper (`buildPrCreatePsi token repo head title body`) and unit
   test that `GH_TOKEN` is present iff the token is non-empty. Keeps the assertion off
   a live `gh` invocation.
-- Regression: an existing `cmd-to-pr` test path with `Provider = GitHub` and a fake
+- Regression: an existing `cmd-to-github` test path with `Provider = GitHub` and a fake
   token still round-trips (token now flows but behaviour is unchanged when the
   ambient env already had it).
 
@@ -124,7 +124,7 @@ token from being thrown away.
   automatically" to state that OrcAI now **injects the resolved App/PAT token** into
   the clone/push/PR subprocesses, so no ambient `GH_TOKEN` or `gh auth login` is
   required on the runner.
-- `docs/AUTH-ENV-VARS.md` — note that `cmd-checkout`/`cmd-to-pr` now work under
+- `docs/AUTH-ENV-VARS.md` — note that `cmd-checkout`/`cmd-to-github` now work under
   `ORCAI_APP_*` or a stored PAT profile alone.
 - `ARCHITECTURE.md` "Auth Resolution" — fix the stale order (it lists PAT before App;
   the implementation is App → PAT → `GH_TOKEN` → ambient).
@@ -137,7 +137,7 @@ token from being thrown away.
   App **installation** token cannot satisfy (no user context), and forks land under a
   personal account. Fork-based write-back requires a user PAT. Track a separate change
   to fail fast with a clear message when `writeBack: fork-and-pr` is combined with App
-  auth, rather than a cryptic `gh api user` error. (Not needed for the `pr-to-origin`
+  auth, rather than a cryptic `gh api user` error. (Not needed for the `open-pr`
   use case that motivates this plan.)
 - **Installation-token TTL.** App tokens expire (~60 min). The token is resolved once
   per run and reused for every repo's checkout; a run longer than the TTL could see

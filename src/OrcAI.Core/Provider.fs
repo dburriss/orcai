@@ -43,6 +43,7 @@ type IIssueTracker =
 type IPullRequestLinker =
     abstract FindPrsForIssue  : repo:RepoName -> issue:IssueId -> Async<PullRequestRef list>
     abstract ClosePr          : repo:RepoName -> pr:PrNumber        -> Async<Result<unit, string>>
+    abstract ReopenPr         : repo:RepoName -> pr:PrNumber        -> Async<Result<unit, string>>
     abstract GetPrState       : repo:RepoName -> pr:PrNumber        -> Async<string option>
 
 /// Optional — GitHub-API repo metadata. None for providers with no repo concept.

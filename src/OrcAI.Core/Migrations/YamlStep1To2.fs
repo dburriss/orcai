@@ -106,6 +106,7 @@ let private emptyAction (t: string) : YamlAction =
       commitMessage   = null
       prTitle         = null
       prBody          = null
+      onClosedPr      = null
       copy            = null }
 
 /// True for "@copilot", "copilot", case-insensitive — matches the old

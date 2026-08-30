@@ -57,6 +57,7 @@ type YamlAction =
       commitMessage   : string
       prTitle         : string
       prBody          : string
+      onClosedPr      : string
       copy            : System.Collections.Generic.List<YamlCopyEntry> }
 
 [<CLIMutable>]
@@ -186,7 +187,7 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                         | None, _       -> failwith "action type 'comment-and-assign' requires a 'to' field."
                         | _, None       -> failwith "action type 'comment-and-assign' requires a 'comment' field."
                         | Some t, Some c -> CommentAndAssign(t, c)
-                    | "cmd" | "cmd-checkout" | "cmd-to-pr" ->
+                    | "cmd" | "cmd-checkout" | "cmd-to-github" ->
                         let typeName = root.action.``type``
                         let cmdExec  = parseCmdExec root.action.execute typeName
                         let copyList =
@@ -201,11 +202,19 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                             let writeBack =
                                 match root.action.writeBack with
                                 | null | ""            -> None
-                                | "pr-to-origin"       -> Some PrToOrigin
-                                | "commit-to-origin"   -> Some CommitToOrigin
+                                | "open-pr"            -> Some OpenPr
+                                | "push-branch"        -> Some PushBranch
                                 | "fork-and-pr"        -> Some ForkAndPr
-                                | other -> failwith $"Unknown writeBack value: '{other}'. Valid: pr-to-origin, commit-to-origin, fork-and-pr."
-                            CmdToPr
+                                | other -> failwith $"Unknown writeBack value: '{other}'. Valid: open-pr, push-branch, fork-and-pr."
+                            let onClosedPr =
+                                match root.action.onClosedPr with
+                                | null | ""    -> None
+                                | "skip"       -> Some SkipClosedPr
+                                | "recreate"   -> Some RecreatePr
+                                | "reopen"     -> Some ReopenPr
+                                | "fail"       -> Some FailOnClosedPr
+                                | other -> failwith $"Unknown onClosedPr value: '{other}'. Valid: skip, recreate, reopen, fail."
+                            CmdToGithub
                                 { Execute       = cmdExec
                                   Cwd           = nullStr root.action.cwd
                                   WriteBack     = writeBack
@@ -214,9 +223,10 @@ let parse (yamlText: string) (templatePath: string) (templateContent: string) : 
                                   CommitMessage = nullStr root.action.commitMessage
                                   PrTitle       = nullStr root.action.prTitle
                                   PrBody        = nullStr root.action.prBody
-                                  Copy          = copyList }
+                                  Copy          = copyList
+                                  OnClosedPr    = onClosedPr }
                     | "noop" -> Noop
-                    | other  -> failwith $"Unknown action type: '{other}'. Valid: assign-copilot, assign, comment, comment-and-assign, cmd, cmd-checkout, cmd-to-pr, noop."
+                    | other  -> failwith $"Unknown action type: '{other}'. Valid: assign-copilot, assign, comment, comment-and-assign, cmd, cmd-checkout, cmd-to-github, noop."
             let nudgeConfig =
                 if isNull (box root.nudge) then None
                 else Some { Mode    = nullStr root.nudge.mode

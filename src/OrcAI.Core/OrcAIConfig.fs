@@ -11,7 +11,8 @@ open OrcAI.Core.Domain
 
 /// Per-action defaults settable in the JSON config.
 type ActionDefaults =
-    { WriteBack : string option }
+    { WriteBack  : string option
+      OnClosedPr : string option }
 
 /// Layered configuration loaded from ~/.config/orcai/config.json (global)
 /// and .orcai/config.json (local).  All fields are option types so that
@@ -68,7 +69,8 @@ let merge (globalCfg: OrcAIConfig) (localCfg: OrcAIConfig) : OrcAIConfig =
         | None,    _       -> g
         | Some ln, None    -> Some ln
         | Some ln, Some gn ->
-            Some { WriteBack = ln.WriteBack |> Option.orElse gn.WriteBack }
+            Some { WriteBack  = ln.WriteBack  |> Option.orElse gn.WriteBack
+                   OnClosedPr = ln.OnClosedPr |> Option.orElse gn.OnClosedPr }
     { DefaultLabels    = pick localCfg.DefaultLabels     globalCfg.DefaultLabels
       AutoCreateLabels = pick localCfg.AutoCreateLabels  globalCfg.AutoCreateLabels
       MaxConcurrency   = pick localCfg.MaxConcurrency    globalCfg.MaxConcurrency
@@ -114,7 +116,9 @@ type NotifyConfigDto =
 [<CLIMutable>]
 type ActionDefaultsDto =
     { [<JsonPropertyName("writeBack")>]
-      WriteBack : string option }
+      WriteBack  : string option
+      [<JsonPropertyName("onClosedPr")>]
+      OnClosedPr : string option }
 
 [<CLIMutable>]
 type OrcAIConfigDto =
@@ -150,7 +154,7 @@ let private jsonOptions =
 let private ofDto (dto: OrcAIConfigDto) : OrcAIConfig =
     let ofNudgeDto   (d: NudgeConfigDto)   : NudgeConfig   = { Mode = d.Mode; Comment = d.Comment }
     let ofNotifyDto  (d: NotifyConfigDto)  : NotifyConfig  = { Comment = d.Comment }
-    let ofActionDto  (d: ActionDefaultsDto): ActionDefaults = { WriteBack = d.WriteBack }
+    let ofActionDto  (d: ActionDefaultsDto): ActionDefaults = { WriteBack = d.WriteBack; OnClosedPr = d.OnClosedPr }
     { DefaultLabels    = dto.DefaultLabels |> Option.map Array.toList
       AutoCreateLabels = if dto.AutoCreateLabels.HasValue then Some dto.AutoCreateLabels.Value else None
       MaxConcurrency   = if dto.MaxConcurrency.HasValue   then Some dto.MaxConcurrency.Value   else None

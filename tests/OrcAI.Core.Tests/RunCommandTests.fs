@@ -1095,6 +1095,90 @@ let ``buildPrCreatePsi passes repo, head, title and body as gh pr create argumen
         args)
 
 // ---------------------------------------------------------------------------
+// appendClosesIssue — cmd-to-github PRs must reference the issue with a closing
+// keyword or GitHub never links them (no `closingPullRequests` entry, no
+// auto-close on merge), regardless of orcai's own in-memory ClosesIssue bookkeeping.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``appendClosesIssue adds a Closes line to an empty body`` () =
+    Assert.Equal("Closes #42", appendClosesIssue "42" "")
+
+[<Fact>]
+let ``appendClosesIssue appends a Closes line after an existing body`` () =
+    Assert.Equal("My PR description.\n\nCloses #42", appendClosesIssue "42" "My PR description.")
+
+[<Fact>]
+let ``appendClosesIssue does not duplicate when the body already references the issue`` () =
+    Assert.Equal("See #42 for context.", appendClosesIssue "42" "See #42 for context.")
+
+// ---------------------------------------------------------------------------
+// decideCmdToGithubAction — pure idempotency decision table for cmd-to-github
+// (plans/cmd-to-github-idempotency.md). No I/O: correctness here holds
+// regardless of whether the lock file exists, is stale, or was deleted —
+// every row is driven only by the passed-in live state.
+// ---------------------------------------------------------------------------
+
+let private prWith state = A.PullRequestRef.defaults (RepoName "myorg/repo-a") 3 7 |> A.PullRequestRef.withState state
+
+[<Fact>]
+let ``decideCmdToGithubAction skips entirely when an open PR exists and hashes are unchanged`` () =
+    let pr = prWith "OPEN"
+    let result = decideCmdToGithubAction "orcai/job" [pr] SkipClosedPr false false
+    Assert.Equal(SkipIdempotent (Some pr), result)
+
+[<Fact>]
+let ``decideCmdToGithubAction redoes the full run when an open PR exists but hashes changed`` () =
+    let pr = prWith "OPEN"
+    let result = decideCmdToGithubAction "orcai/job" [pr] SkipClosedPr true false
+    Assert.Equal(ProceedFullRun, result)
+
+[<Fact>]
+let ``decideCmdToGithubAction skips when a merged PR exists, regardless of hash state`` () =
+    let pr = prWith "MERGED"
+    Assert.Equal(SkipIdempotent (Some pr), decideCmdToGithubAction "orcai/job" [pr] SkipClosedPr false false)
+    Assert.Equal(SkipIdempotent (Some pr), decideCmdToGithubAction "orcai/job" [pr] SkipClosedPr true false)
+
+[<Fact>]
+let ``decideCmdToGithubAction skips a closed PR by default (onClosedPr skip)`` () =
+    let pr = prWith "CLOSED"
+    let result = decideCmdToGithubAction "orcai/job" [pr] SkipClosedPr true false
+    Assert.Equal(SkipIdempotent (Some pr), result)
+
+[<Fact>]
+let ``decideCmdToGithubAction redoes the full run for a closed PR when onClosedPr is recreate`` () =
+    let pr = prWith "CLOSED"
+    let result = decideCmdToGithubAction "orcai/job" [pr] RecreatePr false false
+    Assert.Equal(ProceedFullRun, result)
+
+[<Fact>]
+let ``decideCmdToGithubAction reopens for a closed PR when onClosedPr is reopen`` () =
+    let pr = prWith "CLOSED"
+    let result = decideCmdToGithubAction "orcai/job" [pr] ReopenPr false false
+    Assert.Equal(ReopenAndRedo pr, result)
+
+[<Fact>]
+let ``decideCmdToGithubAction fails for a closed PR when onClosedPr is fail`` () =
+    let pr = prWith "CLOSED"
+    let result = decideCmdToGithubAction "orcai/job" [pr] FailOnClosedPr false false
+    Assert.Equal(FailClosedPr pr, result)
+
+[<Fact>]
+let ``decideCmdToGithubAction retries pr create only when no PR is found but the branch exists and hashes are unchanged`` () =
+    let result = decideCmdToGithubAction "orcai/job" [] SkipClosedPr false true
+    Assert.Equal(RetryPrCreateOnly "orcai/job", result)
+
+[<Fact>]
+let ``decideCmdToGithubAction redoes the full run when no PR is found and the branch exists but hashes changed`` () =
+    let result = decideCmdToGithubAction "orcai/job" [] SkipClosedPr true true
+    Assert.Equal(ProceedFullRun, result)
+
+[<Fact>]
+let ``decideCmdToGithubAction redoes the full run when no PR is found and no branch exists`` () =
+    Assert.Equal(ProceedFullRun, decideCmdToGithubAction "orcai/job" [] SkipClosedPr false false)
+    Assert.Equal(ProceedFullRun, decideCmdToGithubAction "orcai/job" [] SkipClosedPr true false)
+
+// ---------------------------------------------------------------------------
 // runExecCommand — closes the child's stdin so processes that eagerly read
 // stdin to EOF before doing anything (e.g. `opencode run` with no TTY) don't
 // hang or silently no-op on an inherited, non-EOF-terminated stdin handle.
@@ -1183,6 +1267,318 @@ let ``execute round-trips the resolved token through a cmd-checkout action witho
         | Some (Ok runResult) -> Assert.Empty(runResult.Lock.Failures)
         | Some (Error e)      -> Assert.Fail($"Expected Ok RunResult, got Error: {e}")
         | None                -> Assert.Fail("Expected an entry for the yaml path")
+    finally
+        try Directory.Delete(seedDir, true) with _ -> ()
+        try Directory.Delete(checkoutRoot, true) with _ -> ()
+
+// ---------------------------------------------------------------------------
+// Regression: a cmd-to-github push that fails once must not fail forever.
+// Success is never explicitly `record`ed for CmdToGithubPushFailed/OpenPrFailed,
+// so a stale failure from an earlier run stuck around in the lock file even
+// after a later run's push/PR genuinely succeeded — every subsequent `orcai run`
+// kept reporting the old failure, forever, even though nothing was actually wrong.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``execute clears a stale CmdToGithubPushFailed failure once the push succeeds`` () =
+    let fs   = MockFileSystem()
+    let repo = RepoName "myorg/repo-a"
+    let yaml =
+        "job:\n  title: \"Push Job\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"TEMPLATE_PLACEHOLDER\"\n  labels: []\n" +
+        "action:\n  type: cmd-to-github\n  execute: \"touch changed.txt\"\n" +
+        "  writeBack: push-branch\n  branch: \"orcai/test-push-branch\"\n" +
+        "  commitMessage: \"test commit\"\n  errorIfNoDiff: true\n"
+    let path = Given.yamlFile fs yaml "# body"
+
+    // Prior lock: same YAML/template hash (so the run takes the "prior failures —
+    // retrying" path, not a hash-changed re-run) but with a stale push failure —
+    // simulating an earlier run whose push genuinely failed.
+    let yamlHash     = OrcAI.Core.YamlConfig.computeHash (fs :> System.IO.Abstractions.IFileSystem) path
+    let templateHash =
+        match OrcAI.Core.YamlConfig.resolveTemplatePath (fs :> System.IO.Abstractions.IFileSystem) path with
+        | Some p -> OrcAI.Core.YamlConfig.computeTemplateHash (fs :> System.IO.Abstractions.IFileSystem) p
+        | None   -> ""
+    let staleFailure =
+        { Repo          = repo
+          Category      = CmdToGithubPushFailed
+          Cause         = Unknown
+          Attempts      = 1
+          FirstFailedAt = System.DateTimeOffset(2026, 1, 1, 0, 0, 0, System.TimeSpan.Zero)
+          LastFailedAt  = System.DateTimeOffset(2026, 1, 1, 0, 0, 0, System.TimeSpan.Zero)
+          LastMessage   = "git push failed: Exit 1: ... (stale info)" }
+    let priorLock =
+        { A.LockFile.defaults () with
+            YamlHash     = yamlHash
+            TemplateHash = templateHash
+            Repos        = [ repo ]
+            Issues       = [ FakeGhClient.issueFor repo 42 ]
+            PullRequests = []
+            Failures     = [ staleFailure ] }
+    OrcAI.Core.LockFile.write (fs :> System.IO.Abstractions.IFileSystem) path priorLock
+
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42) }
+    let deps = Given.deps fs client
+
+    let guid         = System.Guid.NewGuid().ToString("N")
+    let checkoutRoot = Path.Combine(Path.GetTempPath(), $"orcai-clr-{guid}")
+    let seedDir      = Path.Combine(Path.GetTempPath(), $"orcai-clr-seed-{guid}")
+    let baseDir      = OrcAI.Core.CheckoutManager.basePath checkoutRoot repo
+    let run (exe: string) (args: string list) (wd: string) =
+        let psi = ProcessStartInfo(exe)
+        psi.WorkingDirectory       <- wd
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError  <- true
+        psi.UseShellExecute        <- false
+        for a in args do psi.ArgumentList.Add(a)
+        use p = Process.Start(psi)
+        p.WaitForExit()
+        p.ExitCode = 0
+    try
+        // Seed a real, network-free "origin" so ensureClone short-circuits and
+        // pushToOrigin has something local to push to (mirrors the cmd-checkout
+        // round-trip test above).
+        Directory.CreateDirectory(seedDir) |> ignore
+        Assert.True(run "git" ["-c"; "init.defaultBranch=main"; "init"; seedDir] (Path.GetTempPath()), "git init seed")
+        File.WriteAllText(Path.Combine(seedDir, "README.md"), "init")
+        Assert.True(run "git" ["add"; "README.md"] seedDir, "git add in seed")
+        Assert.True(run "git" ["-c"; "user.email=t@t.com"; "-c"; "user.name=t"; "commit"; "-m"; "init"] seedDir, "git commit in seed")
+        Directory.CreateDirectory(Path.GetDirectoryName(baseDir)) |> ignore
+        Assert.True(run "git" ["clone"; "--bare"; seedDir; baseDir] (Path.GetTempPath()), "git clone bare as base")
+
+        let input   = { A.RunInput.defaults () with SkipLock = false; CheckoutRoot = Some checkoutRoot }
+        let results = execute deps [path] input |> Async.RunSynchronously
+
+        match results.TryFind path with
+        | Some (Ok runResult) ->
+            Assert.DoesNotContain(runResult.Lock.Failures, fun f -> f.Category = CmdToGithubPushFailed)
+        | Some (Error e) -> Assert.Fail($"Expected Ok RunResult, got Error: {e}")
+        | None           -> Assert.Fail("Expected an entry for the yaml path")
+    finally
+        try Directory.Delete(seedDir, true) with _ -> ()
+        try Directory.Delete(checkoutRoot, true) with _ -> ()
+
+// ---------------------------------------------------------------------------
+// cmd-to-github idempotency — integration coverage for the decision table
+// wiring end to end (see plans/cmd-to-github-idempotency.md). These assert no
+// checkout ever happens (checkoutRoot is never even created) for the
+// skip-entirely rows, proving the clone/execute/push pipeline is genuinely
+// bypassed rather than merely producing the same end result.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``execute skips cmd-to-github entirely when the PR is merged, even with no lock file present`` () =
+    let fs   = MockFileSystem()
+    let repo = RepoName "myorg/repo-a"
+    let yaml =
+        "job:\n  title: \"Merged PR Job\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"TEMPLATE_PLACEHOLDER\"\n  labels: []\n" +
+        "action:\n  type: cmd-to-github\n  execute: \"touch changed.txt\"\n"
+    let path = Given.yamlFile fs yaml "# body"
+    let mergedPr = A.PullRequestRef.defaults repo 3 42 |> A.PullRequestRef.withState "MERGED"
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                FindPrsForIssue = fun _ _ -> async { return [ mergedPr ] } }
+    let deps = Given.deps fs client
+
+    let guid         = System.Guid.NewGuid().ToString("N")
+    let checkoutRoot = Path.Combine(Path.GetTempPath(), $"orcai-merged-{guid}")
+    try
+        let input   = { A.RunInput.defaults () with SkipLock = true; CheckoutRoot = Some checkoutRoot }
+        let results = execute deps [path] input |> Async.RunSynchronously
+        match results.TryFind path with
+        | Some (Ok runResult) ->
+            Assert.False(Directory.Exists(checkoutRoot), "cmd-to-github should never have cloned for a merged PR")
+            Assert.Contains(runResult.Lock.PullRequests, fun pr -> pr.Repo = repo && pr.State = "MERGED")
+        | Some (Error e) -> Assert.Fail($"Expected Ok RunResult, got Error: {e}")
+        | None           -> Assert.Fail("Expected an entry for the yaml path")
+    finally
+        try Directory.Delete(checkoutRoot, true) with _ -> ()
+
+[<Fact>]
+let ``execute skips cmd-to-github entirely when an open PR exists and hashes are unchanged`` () =
+    let fs   = MockFileSystem()
+    let repo = RepoName "myorg/repo-a"
+    let yaml =
+        "job:\n  title: \"Open PR Job\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"TEMPLATE_PLACEHOLDER\"\n  labels: []\n" +
+        "action:\n  type: cmd-to-github\n  execute: \"touch changed.txt\"\n"
+    let path = Given.yamlFile fs yaml "# body"
+    let openPrLive = A.PullRequestRef.defaults repo 3 42 |> A.PullRequestRef.withState "OPEN"
+
+    let yamlHash     = OrcAI.Core.YamlConfig.computeHash (fs :> System.IO.Abstractions.IFileSystem) path
+    let templateHash =
+        match OrcAI.Core.YamlConfig.resolveTemplatePath (fs :> System.IO.Abstractions.IFileSystem) path with
+        | Some p -> OrcAI.Core.YamlConfig.computeTemplateHash (fs :> System.IO.Abstractions.IFileSystem) p
+        | None   -> ""
+    let priorLock =
+        { A.LockFile.defaults () with
+            YamlHash     = yamlHash
+            TemplateHash = templateHash
+            Repos        = [ repo ]
+            Issues       = [ FakeGhClient.issueFor repo 42 ]
+            PullRequests = [ openPrLive ]
+            Failures     = [] }
+    OrcAI.Core.LockFile.write (fs :> System.IO.Abstractions.IFileSystem) path priorLock
+
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                FindPrsForIssue = fun _ _ -> async { return [ openPrLive ] } }
+    let deps = Given.deps fs client
+
+    let guid         = System.Guid.NewGuid().ToString("N")
+    let checkoutRoot = Path.Combine(Path.GetTempPath(), $"orcai-openunchanged-{guid}")
+    try
+        let input   = { A.RunInput.defaults () with SkipLock = false; CheckoutRoot = Some checkoutRoot }
+        let results = execute deps [path] input |> Async.RunSynchronously
+        match results.TryFind path with
+        | Some (Ok runResult) ->
+            Assert.False(Directory.Exists(checkoutRoot), "cmd-to-github should never have cloned for an unchanged open PR")
+            Assert.Contains(runResult.Lock.PullRequests, fun pr -> pr.Repo = repo && pr.State = "OPEN")
+        | Some (Error e) -> Assert.Fail($"Expected Ok RunResult, got Error: {e}")
+        | None           -> Assert.Fail("Expected an entry for the yaml path")
+    finally
+        try Directory.Delete(checkoutRoot, true) with _ -> ()
+
+// ---------------------------------------------------------------------------
+// Regression: deleting the lock file (or --skip-lock) forces yamlHashChanged/
+// templateHashChanged to true for other purposes (shouldAttempt retry gating),
+// but that must not force cmd-to-github to redo (and force-push) an already-open,
+// content-unchanged PR just because there is no lock file to compare hashes
+// against. Reproduces a real bug report: re-running with the lock file deleted,
+// nothing else changed, still force-pushed a fresh AI-agent commit onto the PR.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``execute skips cmd-to-github entirely for an open PR when there is no lock file at all`` () =
+    let fs   = MockFileSystem()
+    let repo = RepoName "myorg/repo-a"
+    let yaml =
+        "job:\n  title: \"Open PR No Lock Job\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"TEMPLATE_PLACEHOLDER\"\n  labels: []\n" +
+        "action:\n  type: cmd-to-github\n  execute: \"touch changed.txt\"\n"
+    let path = Given.yamlFile fs yaml "# body"
+    let openPrLive = A.PullRequestRef.defaults repo 3 42 |> A.PullRequestRef.withState "OPEN"
+
+    // No prior lock file is written at all — this is the "deleted the lock file"
+    // scenario, not just an unchanged one.
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                FindPrsForIssue = fun _ _ -> async { return [ openPrLive ] } }
+    let deps = Given.deps fs client
+
+    let guid         = System.Guid.NewGuid().ToString("N")
+    let checkoutRoot = Path.Combine(Path.GetTempPath(), $"orcai-openunchanged-nolock-{guid}")
+    try
+        let input   = { A.RunInput.defaults () with SkipLock = false; CheckoutRoot = Some checkoutRoot }
+        let results = execute deps [path] input |> Async.RunSynchronously
+        match results.TryFind path with
+        | Some (Ok runResult) ->
+            Assert.False(Directory.Exists(checkoutRoot), "cmd-to-github should never have cloned for an unchanged open PR, even with no lock file present")
+            Assert.Contains(runResult.Lock.PullRequests, fun pr -> pr.Repo = repo && pr.State = "OPEN")
+        | Some (Error e) -> Assert.Fail($"Expected Ok RunResult, got Error: {e}")
+        | None           -> Assert.Fail("Expected an entry for the yaml path")
+    finally
+        try Directory.Delete(checkoutRoot, true) with _ -> ()
+
+[<Fact>]
+let ``execute records a manual-intervention failure for a closed PR when onClosedPr is fail`` () =
+    let fs   = MockFileSystem()
+    let repo = RepoName "myorg/repo-a"
+    let yaml =
+        "job:\n  title: \"Closed PR Fail Job\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"TEMPLATE_PLACEHOLDER\"\n  labels: []\n" +
+        "action:\n  type: cmd-to-github\n  execute: \"touch changed.txt\"\n  onClosedPr: fail\n"
+    let path = Given.yamlFile fs yaml "# body"
+    let closedPr = A.PullRequestRef.defaults repo 3 42 |> A.PullRequestRef.withState "CLOSED"
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                FindPrsForIssue = fun _ _ -> async { return [ closedPr ] } }
+    let deps = Given.deps fs client
+
+    let guid         = System.Guid.NewGuid().ToString("N")
+    let checkoutRoot = Path.Combine(Path.GetTempPath(), $"orcai-closedfail-{guid}")
+    try
+        let input   = { A.RunInput.defaults () with SkipLock = true; CheckoutRoot = Some checkoutRoot }
+        let results = execute deps [path] input |> Async.RunSynchronously
+        match results.TryFind path with
+        | Some (Ok runResult) ->
+            Assert.False(Directory.Exists(checkoutRoot), "cmd-to-github should never have cloned when onClosedPr=fail")
+            Assert.Contains(runResult.Lock.Failures, fun f -> f.Repo = repo && f.Category = CmdToGithubClosedPrFailed)
+        | Some (Error e) -> Assert.Fail($"Expected Ok RunResult, got Error: {e}")
+        | None           -> Assert.Fail("Expected an entry for the yaml path")
+    finally
+        try Directory.Delete(checkoutRoot, true) with _ -> ()
+
+[<Fact>]
+let ``execute reopens the PR and pushes fresh content when onClosedPr is reopen`` () =
+    let fs   = MockFileSystem()
+    let repo = RepoName "myorg/repo-a"
+    let yaml =
+        "job:\n  title: \"Closed PR Reopen Job\"\n  org: \"myorg\"\n" +
+        "repos:\n  - \"repo-a\"\n" +
+        "issue:\n  template: \"TEMPLATE_PLACEHOLDER\"\n  labels: []\n" +
+        "action:\n  type: cmd-to-github\n  execute: \"touch changed.txt\"\n" +
+        "  branch: \"orcai/reopen-test\"\n  onClosedPr: reopen\n"
+    let path = Given.yamlFile fs yaml "# body"
+    let closedPr = A.PullRequestRef.defaults repo 3 42 |> A.PullRequestRef.withState "CLOSED"
+    let reopenCalls = ConcurrentBag<PrNumber>()
+    let client =
+        FakeGhClient.from
+            { FakeGhClient.defaults with
+                FetchReposState = FakeGhClient.fetchReposStateReturning (fun r -> FakeGhClient.repoStateWithOpen r 42)
+                FindPrsForIssue = fun _ _ -> async { return [ closedPr ] }
+                ReopenPr        = fun _ pr -> reopenCalls.Add(pr); async { return Ok () } }
+    let deps = Given.deps fs client
+
+    let guid         = System.Guid.NewGuid().ToString("N")
+    let checkoutRoot = Path.Combine(Path.GetTempPath(), $"orcai-reopen-{guid}")
+    let seedDir      = Path.Combine(Path.GetTempPath(), $"orcai-reopen-seed-{guid}")
+    let baseDir      = OrcAI.Core.CheckoutManager.basePath checkoutRoot repo
+    let run (exe: string) (args: string list) (wd: string) =
+        let psi = ProcessStartInfo(exe)
+        psi.WorkingDirectory       <- wd
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError  <- true
+        psi.UseShellExecute        <- false
+        for a in args do psi.ArgumentList.Add(a)
+        use p = Process.Start(psi)
+        p.WaitForExit()
+        p.ExitCode = 0
+    try
+        Directory.CreateDirectory(seedDir) |> ignore
+        Assert.True(run "git" ["-c"; "init.defaultBranch=main"; "init"; seedDir] (Path.GetTempPath()), "git init seed")
+        File.WriteAllText(Path.Combine(seedDir, "README.md"), "init")
+        Assert.True(run "git" ["add"; "README.md"] seedDir, "git add in seed")
+        Assert.True(run "git" ["-c"; "user.email=t@t.com"; "-c"; "user.name=t"; "commit"; "-m"; "init"] seedDir, "git commit in seed")
+        Directory.CreateDirectory(Path.GetDirectoryName(baseDir)) |> ignore
+        Assert.True(run "git" ["clone"; "--bare"; seedDir; baseDir] (Path.GetTempPath()), "git clone bare as base")
+
+        let input   = { A.RunInput.defaults () with SkipLock = true; CheckoutRoot = Some checkoutRoot }
+        let results = execute deps [path] input |> Async.RunSynchronously
+        match results.TryFind path with
+        | Some (Ok runResult) ->
+            Assert.Equal(1, reopenCalls.Count)
+            Assert.Equal(PrNumber 3, reopenCalls |> Seq.head)
+            Assert.Contains(runResult.Lock.PullRequests, fun pr -> pr.Repo = repo && pr.Number = PrNumber 3 && pr.State = "OPEN")
+        | Some (Error e) -> Assert.Fail($"Expected Ok RunResult, got Error: {e}")
+        | None           -> Assert.Fail("Expected an entry for the yaml path")
     finally
         try Directory.Delete(seedDir, true) with _ -> ()
         try Directory.Delete(checkoutRoot, true) with _ -> ()

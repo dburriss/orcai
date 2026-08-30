@@ -722,21 +722,24 @@ The `action:` block controls what happens after the issue is created. If omitted
 | `comment-and-assign` | `to`, `comment` | — | Post a comment and then assign. |
 | `cmd` | `execute` | `cwd`, `copy` | Run a command per repo. `execute` accepts a string (shell form — passed through `sh -c`/`cmd /C`; shell syntax like pipes and redirects works) or a YAML list (exec form — no shell, arguments passed directly). |
 | `cmd-checkout` | `execute` | `cwd`, `copy` | Same as `cmd` but clones the target repo first. The command runs inside the checkout; `cwd` is relative to the checkout root. Two extra template variables are available: `{{checkout_path}}` and `{{job_title_slug}}`. |
-| `cmd-to-pr` | `execute` | `cwd`, `writeBack`, `errorIfNoDiff`, `branch`, `commitMessage`, `prTitle`, `prBody`, `copy` | Clone the repo, run the command, commit all changed files, and open a PR (or push a branch). If the command exits non-zero, no PR is opened. If it exits 0 with no diff, the behaviour is controlled by `errorIfNoDiff`. |
+| `cmd-to-github` | `execute` | `cwd`, `writeBack`, `errorIfNoDiff`, `branch`, `commitMessage`, `prTitle`, `prBody`, `copy` | Clone the repo, run the command, commit all changed files, and open a PR (or push a branch). If the command exits non-zero, no PR is opened. If it exits 0 with no diff, the behaviour is controlled by `errorIfNoDiff`. |
 | `noop` | — | — | Do nothing after issue creation. |
 
-**`cmd-to-pr` fields:**
+**`cmd-to-github` fields:**
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `writeBack` | string | `pr-to-origin` | How to push changes back. `pr-to-origin` — push branch and open PR on origin. `commit-to-origin` — push branch directly (no PR). `fork-and-pr` — fork the repo, push to fork, open PR on origin. Global default can be set via `action.writeBack` in `config.json`. |
+| `writeBack` | string | `open-pr` | How to push changes back. `open-pr` — push branch and open PR on origin. `push-branch` — push branch directly (no PR). `fork-and-pr` — fork the repo, push to fork, open PR on origin. Global default can be set via `action.writeBack` in `config.json`. |
 | `errorIfNoDiff` | bool | `false` | When `true`, treat an exit-0 command with no file changes as a failure. Default `false` skips silently. |
 | `branch` | string | `orcai/{{job_title_slug}}` | Branch name. Supports `{{var}}` template variables. The branch is orcai-owned and is force-pushed on each run. |
 | `commitMessage` | string | `[{{issue_number}}] {{job_title}}` | Commit message. Supports `{{var}}` template variables. |
 | `prTitle` | string | same as `commitMessage` | PR title. Supports `{{var}}` template variables. |
-| `prBody` | string | `""` | PR body. Supports `{{var}}` template variables. |
+| `prBody` | string | `""` | PR body. Supports `{{var}}` template variables. For `open-pr`/`fork-and-pr`, orcai always appends a `Closes #{{issue_number}}` line (unless the body already references the issue) so GitHub links and auto-closes the issue on merge. |
+| `onClosedPr` | string | `skip` | What to do when the only PR(s) found for the branch are closed without merging (`open-pr`/`fork-and-pr` only — has no effect with `push-branch`, which never creates a PR). `skip` — treat as an intentional decision and do nothing. `recreate` — redo the full run and open a brand-new PR. `reopen` — reopen the existing PR and force-push fresh content to its branch, no new PR. `fail` — record a failure requiring manual intervention. Global default can be set via `action.onClosedPr` in `config.json`. |
 
-**`copy:` list** (available on `cmd`, `cmd-checkout`, and `cmd-to-pr`):
+**Idempotent re-runs (`open-pr`/`fork-and-pr` only):** before cloning, `orcai run` checks live GitHub state for a PR linked to the issue (via `closingPullRequests`, the same mechanism `nudge` uses). An **open** PR with unchanged YAML/template hashes is left alone — no clone, no re-run of `execute`, no push. A **merged** PR is always left alone regardless of hash changes — the work already shipped. A **closed** (unmerged) PR is handled per `onClosedPr` above. When no PR is found at all but the branch already exists on the remote and hashes are unchanged, orcai retries only `gh pr create` against the existing branch — still no clone/execute/push. These checks are always against live GitHub state, never the lock file, so behaviour is identical whether or not a lock file is present (e.g. after deleting it to force a retry).
+
+**`copy:` list** (available on `cmd`, `cmd-checkout`, and `cmd-to-github`):
 
 Docker-`COPY`-style staging of input files (e.g. a helper script or prompt file) from where `orcai` is invoked into the command's working directory before it runs.
 
@@ -744,11 +747,11 @@ Docker-`COPY`-style staging of input files (e.g. a helper script or prompt file)
 |-------|------|---------|-------------|
 | `from` | string | — (required) | Source path or glob, resolved against the directory `orcai` was invoked from. A pattern matching zero files is a hard error that aborts the step. |
 | `to` | string | — (required) | Destination path. If `from` matches exactly one file, `to` is the exact destination file path. If `from` matches multiple files (glob), `to` is treated as a directory and each file is copied into it, preserving its path relative to the glob's static (non-wildcard) prefix directory. |
-| `keep` | bool | `false` | If `false` (default), the copied file(s) are deleted again after the command finishes — for `cmd-to-pr`, this happens before the commit, so scratch files never leak into the PR diff. Set `true` to leave them in place. |
+| `keep` | bool | `false` | If `false` (default), the copied file(s) are deleted again after the command finishes — for `cmd-to-github`, this happens before the commit, so scratch files never leak into the PR diff. Set `true` to leave them in place. |
 
 `from`/`to` are static paths — they are not rendered with `{{var}}` templates.
 
-**Template variables for `cmd`, `cmd-checkout`, and `cmd-to-pr`** (use `{{var}}` double-brace syntax):
+**Template variables for `cmd`, `cmd-checkout`, and `cmd-to-github`** (use `{{var}}` double-brace syntax):
 
 | Variable | Value |
 |----------|-------|
@@ -762,8 +765,8 @@ Docker-`COPY`-style staging of input files (e.g. a helper script or prompt file)
 | `{{yaml_hash}}` | SHA-256 of the YAML file |
 | `{{project_number}}` | GitHub project number |
 | `{{run_datetime}}` | ISO-8601 datetime of the run |
-| `{{checkout_path}}` | Absolute path to the worktree for this repo (only available in `cmd-checkout` and `cmd-to-pr`) |
-| `{{job_title_slug}}` | Slugified version of `job.title` — lowercase, non-alphanumeric runs replaced with `-`, max 100 chars (only available in `cmd-checkout` and `cmd-to-pr`) |
+| `{{checkout_path}}` | Absolute path to the worktree for this repo (only available in `cmd-checkout` and `cmd-to-github`) |
+| `{{job_title_slug}}` | Slugified version of `job.title` — lowercase, non-alphanumeric runs replaced with `-`, max 100 chars (only available in `cmd-checkout` and `cmd-to-github`) |
 
 **Examples:**
 
@@ -807,26 +810,27 @@ action:
 
 # Clone, run a command, commit all changes, and open a PR — string form
 action:
-  type: cmd-to-pr
+  type: cmd-to-github
   execute: "dotnet upgrade --target 10"
-  writeBack: pr-to-origin             # default; or commit-to-origin / fork-and-pr
+  writeBack: open-pr             # default; or push-branch / fork-and-pr
   errorIfNoDiff: false                # true = fail if command exits 0 with no changes
   branch: "orcai/{{job_title_slug}}"  # default branch name
   commitMessage: "[{{issue_number}}] {{job_title}}"
   prTitle: "Upgrade to .NET 10"
   prBody: "Automated upgrade generated by OrcAI (issue #{{issue_number}})."
+  onClosedPr: skip                # default; or recreate / reopen / fail
 
 # Clone, run, and open a PR — list form (no shell, no quoting issues)
 action:
-  type: cmd-to-pr
+  type: cmd-to-github
   execute: [dotnet, upgrade, --target, "10"]
-  writeBack: pr-to-origin
+  writeBack: open-pr
 
 # Stage a helper script and a prompt file into the checkout before running opencode.
 # Both are deleted after the command runs (keep defaults to false), so neither
 # leaks into the committed diff or the opened PR.
 action:
-  type: cmd-to-pr
+  type: cmd-to-github
   execute: "./drive-opencode.sh"
   copy:
     - from: "./scripts/drive-opencode.sh"
@@ -871,8 +875,9 @@ Each file can contain these optional fields:
 | `defaultOrg` | Default GitHub org for `generate`. |
 | `nudge.mode` | Default nudge mode: `reassign`, `comment-only`, or `comment-and-reassign`. |
 | `nudge.comment` | Default nudge comment body. Supports `{assignee}`, `{job.owner}`, `{repo.codeowners}` tokens. |
-| `checkoutRoot` | Root directory for repo clones used by `cmd-checkout` and `cmd-to-pr`. Defaults to an OS temp directory scoped to the run. |
-| `action.writeBack` | Global default write-back mode for `cmd-to-pr`. Values: `pr-to-origin` (default), `commit-to-origin`, `fork-and-pr`. Overridden by `writeBack` in the job YAML. |
+| `checkoutRoot` | Root directory for repo clones used by `cmd-checkout` and `cmd-to-github`. Defaults to an OS temp directory scoped to the run. |
+| `action.writeBack` | Global default write-back mode for `cmd-to-github`. Values: `open-pr` (default), `push-branch`, `fork-and-pr`. Overridden by `writeBack` in the job YAML. |
+| `action.onClosedPr` | Global default for `cmd-to-github`'s `onClosedPr`. Values: `skip` (default), `recreate`, `reopen`, `fail`. Overridden by `onClosedPr` in the job YAML. |
 
 Note: `action:` is per-job only and cannot be set in the global/local JSON config. `action.writeBack` sets a global default that individual job YAML files can override. `nudge` defaults are still configurable globally.
 

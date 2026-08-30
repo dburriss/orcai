@@ -4,7 +4,7 @@
 
 Enable action types that execute against a checked-out copy of a target repository.
 The first deliverable is a low-level `cmd-checkout` action type that clones the repo,
-runs a command inside it, and exits. Higher-level action types (e.g. `cmd-to-pr`)
+runs a command inside it, and exits. Higher-level action types (e.g. `cmd-to-github`)
 build on top of this primitive.
 
 This is primarily designed for use in GitHub Actions workflows, where the runner
@@ -17,7 +17,7 @@ environment is ephemeral and cloning target repos is routine.
 ```
 cmd              — run a command with template vars only (existing)
 cmd-checkout     — run a command inside a checked-out repo (new low-level primitive)
-cmd-to-pr    — checkout → run → commit all changes → push → open PR (builds on cmd-checkout)
+cmd-to-github    — checkout → run → commit all changes → push → open PR (builds on cmd-checkout)
 ```
 
 Each higher-level type is implemented in terms of the primitive below it.
@@ -88,7 +88,7 @@ All existing `cmd` template variables are available, plus:
 
 ---
 
-## `cmd-to-pr` action type
+## `cmd-to-github` action type
 
 Checkout → run cmd → diff worktree → commit all changed files → push branch → open PR.
 
@@ -97,12 +97,12 @@ Checkout → run cmd → diff worktree → commit all changed files → push bra
 ```yaml
 # String form (shell): the whole string is passed to sh -c / cmd /C
 action:
-  type: cmd-to-pr
+  type: cmd-to-github
   execute: "./scripts/upgrade.sh --target 6.0"
   cwd: "./subdir"                   # relative to checkout root; optional
 
   # Write-back config
-  writeBack: pr-to-origin           # or: commit-to-origin, fork-and-pr
+  writeBack: open-pr           # or: push-branch, fork-and-pr
   errorIfNoDiff: false              # default: false (exit 0, no diff → skip silently)
 
   # Branch / commit / PR metadata (all optional — defaults shown)
@@ -113,24 +113,24 @@ action:
 
 # List form (exec): argv passed directly, no shell
 action:
-  type: cmd-to-pr
+  type: cmd-to-github
   execute: ["./scripts/upgrade.sh", "--target", "6.0"]
-  writeBack: pr-to-origin
+  writeBack: open-pr
 ```
 
 ### Write-back modes
 
 | mode | behaviour |
 |---|---|
-| `pr-to-origin` | push branch to origin, open PR against default branch |
-| `commit-to-origin` | push directly to `branch` on origin (no PR) |
+| `open-pr` | push branch to origin, open PR against default branch |
+| `push-branch` | push directly to `branch` on origin (no PR) |
 | `fork-and-pr` | `gh repo fork`, push to fork, open PR against origin's default branch |
 
 `write_back` can be set at global or local config level to avoid repeating it per job:
 
 ```yaml
 # orcai.yml
-write_back: pr-to-origin
+write_back: open-pr
 ```
 
 Job-level `write_back` overrides the global value.
@@ -188,7 +188,7 @@ behaviour (which had the inverse default and caused unexpected re-runs).
 > **Note:** `skip_closed_issues` should be deprecated and removed at the same time
 > this is introduced, with a hard validation error pointing to `redo_on_closed`.
 
-### Lock file entries for `cmd-to-pr`
+### Lock file entries for `cmd-to-github`
 
 ```json
 {
@@ -209,7 +209,7 @@ Possible outcomes: `pr-opened`, `committed`, `no-changes`, `cmd-failed`, `push-f
 When implementing checkout-based action types, update `docs/app-auth.md`:
 
 - Upgrade **Contents** permission from `Read` to `Read & write` for the GitHub App.
-- Add a note that push-based action types (`cmd-to-pr`, `commit-to-origin`,
+- Add a note that push-based action types (`cmd-to-github`, `push-branch`,
   `fork-and-pr`) require this elevated permission.
 - Add a note that orcai configures `git` credentials automatically using the same token;
   no separate credential setup is needed. If push is denied, orcai fails fast with a
@@ -223,8 +223,8 @@ When implementing checkout-based action types, update `docs/app-auth.md`:
 2. **`cmd-checkout`** — lowest friction; validates the checkout primitive in isolation
 3. **`redo_on_closed` + deprecate `skip_closed_issues`** — fix the idempotency default
    before introducing new action types that rely on it
-4. **`cmd-to-pr` with `pr-to-origin`** — most common write-back mode first
-5. **`commit-to-origin`** — simpler than fork (no fork step)
+4. **`cmd-to-github` with `open-pr`** — most common write-back mode first
+5. **`push-branch`** — simpler than fork (no fork step)
 6. **`fork-and-pr`** — requires `gh repo fork` + fork remote management
 
 ---
@@ -235,4 +235,4 @@ When implementing checkout-based action types, update `docs/app-auth.md`:
 - Sparse checkout / partial clone
 - Updating an existing PR (current run always force-pushes and the PR updates naturally)
 - Multiple commits per run
-- `cmd-checkout` with write-back (users who need that should use `cmd-to-pr`)
+- `cmd-checkout` with write-back (users who need that should use `cmd-to-github`)

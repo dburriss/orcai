@@ -90,7 +90,7 @@ let private resolveExec (render: string -> string) (exec: CmdExec) : string * st
     | Exec(cmd, args) -> render cmd, args |> List.map render
 
 /// Build the `ProcessStartInfo` for an `execute:` command, shared by the
-/// `cmd`/`cmd-checkout`/`cmd-to-pr` action handlers.
+/// `cmd`/`cmd-checkout`/`cmd-to-github` action handlers.
 /// Stdin is redirected and immediately closed (by the caller) so the child sees
 /// an instant EOF instead of inheriting an ambiguous, non-EOF-terminated handle
 /// — some CLIs (e.g. `opencode run` with no TTY) block reading stdin to EOF
@@ -194,6 +194,17 @@ let private dryRunCreatePlaceholder (repo: RepoName) : IssueRef =
 /// Default maximum retry attempts per (repo, category) failure before a step is skipped.
 let defaultMaxAttempts = 3
 
+/// Append a `Closes #<issue>` line to a PR body so GitHub actually links the PR to
+/// the issue (populates `closingPullRequests`, auto-closes on merge). Without this,
+/// GitHub has no relationship between the two — orcai's own `ClosesIssue` bookkeeping
+/// is in-memory only and isn't communicated to GitHub any other way. A no-op if the
+/// body already references the issue.
+let appendClosesIssue (issueNum: string) (body: string) : string =
+    let closesLine = $"Closes #{issueNum}"
+    if body.Contains($"#{issueNum}") then body
+    elif String.IsNullOrWhiteSpace(body) then closesLine
+    else body.TrimEnd() + "\n\n" + closesLine
+
 /// Build the `gh pr create` ProcessStartInfo. Sets GH_TOKEN on the child process
 /// when `token` is non-empty, so the resolved App/PAT token reaches `gh` instead of
 /// relying on ambient credentials.
@@ -225,6 +236,7 @@ type private ProcessParams =
       AutoCreateLabels    : bool
       Tracker             : IIssueTracker
       Repos               : IRepoInspector option
+      Prs                 : IPullRequestLinker option
       ClosedIssueAction   : ClosedIssueAction
       Action              : ActionConfig
       JobOwner            : string option
@@ -232,6 +244,13 @@ type private ProcessParams =
       MaxAttempts         : int
       YamlHashChanged     : bool
       TemplateHashChanged : bool
+      /// True only when an actual prior lock file was read (as opposed to one being
+      /// absent/bypassed). YamlHashChanged/TemplateHashChanged are forced true when
+      /// there is no prior lock to compare against — correct for most retry-gating
+      /// decisions (shouldAttempt), but wrong for cmd-to-github's idempotency check,
+      /// which must not redo a live, unmodified PR just because the lock file was
+      /// deleted. See plans/cmd-to-github-idempotency.md.
+      HasPriorLock        : bool
       CheckoutRoot        : string
       CheckoutToken       : string }
 
@@ -243,6 +262,7 @@ let private resolveProcessParams
     (providerClients     : ProviderClients)
     (yamlHashChanged     : bool)
     (templateHashChanged : bool)
+    (hasPriorLock        : bool)
     (checkoutRoot        : string)
     (checkoutToken       : string)
     : ProcessParams =
@@ -262,6 +282,7 @@ let private resolveProcessParams
       AutoCreateLabels    = input.AutoCreateLabels
       Tracker             = providerClients.Tracker
       Repos               = providerClients.Repos
+      Prs                 = providerClients.Prs
       ClosedIssueAction   = closedIssueAction
       Action              = config.Action
       JobOwner            = jobOwner
@@ -269,6 +290,7 @@ let private resolveProcessParams
       MaxAttempts         = config.MaxAttempts |> Option.defaultValue defaultMaxAttempts
       YamlHashChanged     = yamlHashChanged
       TemplateHashChanged = templateHashChanged
+      HasPriorLock        = hasPriorLock
       CheckoutRoot        = checkoutRoot
       CheckoutToken       = checkoutToken }
 
@@ -327,6 +349,91 @@ let private ensureLabelsExist
                     match lastError with
                     | Some e -> return Error e
                     | None   -> return Ok ()
+    }
+
+/// Idempotency decision for cmd-to-github, computed from live GitHub/branch state
+/// before any clone/execute/push — never from the lock file (see
+/// plans/cmd-to-github-idempotency.md). Drives whether the expensive checkout
+/// pipeline runs at all.
+type internal CmdToGithubDecision =
+    /// Nothing left to do — return the (possibly still-current) PR unchanged.
+    | SkipIdempotent  of pr: PullRequestRef option
+    /// No PR/branch changed since last run and hashes are unchanged — just retry
+    /// `gh pr create` against the existing remote branch, no checkout needed.
+    | RetryPrCreateOnly of head: string
+    /// onClosedPr: reopen — reopen the PR, then push fresh content to its branch
+    /// (no new PR opened).
+    | ReopenAndRedo of pr: PullRequestRef
+    /// onClosedPr: fail — record a failure requiring manual intervention.
+    | FailClosedPr of pr: PullRequestRef
+    /// Redo the full pipeline: clone, execute, commit, push (and open a PR unless
+    /// the write-back mode already found one open).
+    | ProceedFullRun
+
+/// Pure decision logic for cmd-to-github's idempotency check, given already-fetched
+/// live state — no I/O, so every row of the decision table
+/// (plans/cmd-to-github-idempotency.md) is directly unit-testable.
+/// `prs` is the live list of PRs closing the issue (from FindPrsForIssue).
+/// `branchExists` is only consulted when `prs` has no OPEN/MERGED/CLOSED entry.
+let internal decideCmdToGithubAction
+    (branch        : string)
+    (prs           : PullRequestRef list)
+    (onClosedPr    : ClosedPrWriteBackAction)
+    (hashesChanged : bool)
+    (branchExists  : bool)
+    : CmdToGithubDecision =
+    let openLive   = prs |> List.tryFind (fun pr -> pr.State = "OPEN")
+    let mergedLive = prs |> List.tryFind (fun pr -> pr.State = "MERGED")
+    let closedLive = prs |> List.tryFind (fun pr -> pr.State = "CLOSED")
+    match openLive, mergedLive, closedLive with
+    | Some pr, _, _ when not hashesChanged -> SkipIdempotent (Some pr)
+    | Some _, _, _                         -> ProceedFullRun
+    | None, Some pr, _                     -> SkipIdempotent (Some pr)
+    | None, None, Some pr ->
+        match onClosedPr with
+        | SkipClosedPr   -> SkipIdempotent (Some pr)
+        | FailOnClosedPr -> FailClosedPr pr
+        | RecreatePr     -> ProceedFullRun
+        | ReopenPr       -> ReopenAndRedo pr
+    | None, None, None ->
+        if branchExists && not hashesChanged then RetryPrCreateOnly branch
+        else ProceedFullRun
+
+/// Run `gh pr create` for a cmd-to-github write-back. Returns the opened PR ref on
+/// success, or None if it already exists or the call failed (both cases are
+/// recorded via `record`).
+let private openCmdToGithubPr
+    (record     : RepoFailureCategory -> Result<unit, string> -> unit)
+    (verbose    : bool)
+    (repoStr    : string)
+    (token      : string)
+    (issueId    : IssueId)
+    (repo       : RepoName)
+    (head       : string)
+    (title      : string)
+    (body       : string)
+    (workingDir : string)
+    : Async<PullRequestRef option> =
+    async {
+        let psi = buildPrCreatePsi token repoStr head title body workingDir
+        use proc = Diagnostics.Process.Start(psi)
+        let stdoutTask = proc.StandardOutput.ReadToEndAsync()
+        let stderrTask = proc.StandardError.ReadToEndAsync()
+        do! proc.WaitForExitAsync() |> Async.AwaitTask
+        let! prUrl = stdoutTask |> Async.AwaitTask
+        let! err   = stderrTask |> Async.AwaitTask
+        if proc.ExitCode <> 0 then
+            if err.Contains("already exists") then
+                record CmdToGithubOpenPrFailed (Ok ())
+                if verbose then eprintfn "[%s] PR already exists for branch %s" repoStr head
+            else
+                record CmdToGithubOpenPrFailed (Error (err.Trim()))
+                eprintfn "[%s] Warning: pr create failed: %s" repoStr err
+            return None
+        else
+            record CmdToGithubOpenPrFailed (Ok ())
+            if verbose then eprintfn "[%s] PR opened: %s" repoStr (prUrl.Trim())
+            return Some { Repo = repo; Number = PrNumber 0; Url = prUrl.Trim(); ClosesIssue = issueId; State = "OPEN" }
     }
 
 /// Result of processing a single repo: the run outcome (if any) plus the per-step
@@ -496,7 +603,7 @@ let private processRepo
         elif verbose then
             eprintfn "[%s] Skipping AddToProject (prior failure not retryable)" repoStr
 
-        // 4. Execute action. Returns (finalIssue, maybePr) — pr is Some only for cmd-to-pr.
+        // 4. Execute action. Returns (finalIssue, maybePr) — pr is Some only for cmd-to-github.
         let! finalIssue, maybePr =
             match action with
             | Noop ->
@@ -628,7 +735,7 @@ let private processRepo
                             CheckoutManager.cleanup checkoutRoot repo branchSlug
                             return issue, None
                 }
-            | CmdToPr(cfg) ->
+            | CmdToGithub(cfg) ->
                 async {
                     let (IssueId issueNum) = issue.Id
                     let (OrgName orgStr) = config.Org
@@ -637,27 +744,107 @@ let private processRepo
                     let commitMsg  = cfg.CommitMessage |> Option.defaultValue $"[{issueNum}] {config.ProjectTitle}"
                     let prTitle    = cfg.PrTitle       |> Option.defaultWith (fun () -> cfg.CommitMessage |> Option.defaultValue $"[{issueNum}] {config.ProjectTitle}")
                     let prBody     = cfg.PrBody        |> Option.defaultValue ""
-                    // Resolve write-back: job-level YAML → OrcAI config → default pr-to-origin.
+                    // Resolve write-back: job-level YAML → OrcAI config → default open-pr.
                     let effectiveWriteBack =
                         match cfg.WriteBack with
                         | Some wb -> wb
                         | None ->
                             match deps.Config.Action |> Option.bind (fun a -> a.WriteBack) with
-                            | Some "commit-to-origin" -> CommitToOrigin
-                            | Some "fork-and-pr"      -> ForkAndPr
-                            | _                       -> PrToOrigin
-                    if verbose then eprintfn "[%s] Cloning repo for cmd-to-pr" repoStr
+                            | Some "push-branch" -> PushBranch
+                            | Some "fork-and-pr" -> ForkAndPr
+                            | _                  -> OpenPr
+                    // Resolve onClosedPr: job-level YAML → OrcAI config → default skip.
+                    let onClosedPr =
+                        match cfg.OnClosedPr with
+                        | Some a -> a
+                        | None ->
+                            match deps.Config.Action |> Option.bind (fun a -> a.OnClosedPr) with
+                            | Some "recreate" -> RecreatePr
+                            | Some "reopen"   -> ReopenPr
+                            | Some "fail"     -> FailOnClosedPr
+                            | _               -> SkipClosedPr
+                    let (ProjectId projectNum) = project.Id
+                    // Vars available before any clone (excludes checkout_path/default_branch,
+                    // which don't exist yet). Used only to resolve the branch name for the
+                    // live idempotency check below; the full vars map (with checkout-only
+                    // tokens) is rebuilt once a worktree exists, for the actual run.
+                    let earlyVars =
+                        Map.ofList [
+                            "repo",           repoStr
+                            "org",            orgStr
+                            "issue_number",   issueNum
+                            "issue_url",      issue.Url
+                            "job_title",      config.ProjectTitle
+                            "issue_text",     config.IssueBody
+                            "project_number", projectNum
+                            "run_datetime",   DateTimeOffset.UtcNow.ToString("o")
+                            "issue_hash",     YamlConfig.hashBytes (Text.Encoding.UTF8.GetBytes(config.IssueBody))
+                            "yaml_hash",      ""
+                            "job_title_slug", branchSlug
+                        ]
+                    let earlyRender (s: string) = renderActionTemplate earlyVars s
+                    let renderedBranchEarly = earlyRender branch
+                    // Without a prior lock file there is no baseline to compare against —
+                    // YamlHashChanged/TemplateHashChanged are forced true in that case for
+                    // other purposes (shouldAttempt retry gating), but that would wrongly
+                    // force a redo of a live, unmodified PR just because the lock file is
+                    // missing. Trust the live PR check instead: no baseline ⇒ not changed.
+                    let hashesChanged = p.HasPriorLock && (p.YamlHashChanged || p.TemplateHashChanged)
+
+                    // -----------------------------------------------------------------
+                    // Idempotency decision — live GitHub/branch state only, computed
+                    // before any clone/execute/push (see plans/cmd-to-github-idempotency.md).
+                    // Never derived from the lock file, so correctness holds even when it
+                    // is missing, deleted, or stale.
+                    //
+                    // Only applies when this action opens/tracks a PR (open-pr, fork-and-pr) —
+                    // push-branch never creates a PR, so there is no PR/branch state to be
+                    // idempotent about; it always proceeds with a full run, unchanged from
+                    // before this feature.
+                    // -----------------------------------------------------------------
+                    let! decision =
+                        match effectiveWriteBack, p.Prs with
+                        | PushBranch, _ | _, None -> async { return ProceedFullRun }
+                        | _, Some prsLinker ->
+                            async {
+                                let! prs = prsLinker.FindPrsForIssue repo issue.Id
+                                if List.isEmpty prs then
+                                    let! branchExistsResult = CheckoutManager.branchExistsOnRemote p.CheckoutToken repo renderedBranchEarly
+                                    let branchExists = branchExistsResult |> Result.defaultValue false
+                                    return decideCmdToGithubAction renderedBranchEarly prs onClosedPr hashesChanged branchExists
+                                else
+                                    return decideCmdToGithubAction renderedBranchEarly prs onClosedPr hashesChanged false
+                            }
+
+                    match decision with
+                    | SkipIdempotent maybePr ->
+                        if verbose then eprintfn "[%s] cmd-to-github: up to date — skipping checkout/execute/push." repoStr
+                        return issue, maybePr
+                    | FailClosedPr pr ->
+                        record CmdToGithubClosedPrFailed (Error $"Closed PR found for branch (onClosedPr: fail): {pr.Url}")
+                        eprintfn "[%s] Warning: cmd-to-github: closed PR requires manual intervention (onClosedPr: fail): %s" repoStr pr.Url
+                        return issue, None
+                    | RetryPrCreateOnly head ->
+                        let renderedPrTitle = earlyRender prTitle
+                        let renderedPrBody  = earlyRender prBody |> appendClosesIssue issueNum
+                        let! prResult = openCmdToGithubPr record verbose repoStr p.CheckoutToken issue.Id repo head renderedPrTitle renderedPrBody (Path.GetTempPath())
+                        return issue, prResult
+                    | ReopenAndRedo _ | ProceedFullRun ->
+
+                    let reopenTarget = match decision with ReopenAndRedo pr -> Some pr | _ -> None
+
+                    if verbose then eprintfn "[%s] Cloning repo for cmd-to-github" repoStr
                     let! cloneResult = CheckoutManager.ensureClone p.CheckoutToken checkoutRoot repo
                     match cloneResult with
                     | Error e ->
-                        record CmdToPrCheckoutFailed (Error e)
+                        record CmdToGithubCheckoutFailed (Error e)
                         eprintfn "[%s] Warning: checkout failed: %s" repoStr e
                         return issue, None
                     | Ok _ ->
                         let! wtResult = CheckoutManager.getWorktree checkoutRoot repo branchSlug
                         match wtResult with
                         | Error e ->
-                            record CmdToPrCheckoutFailed (Error e)
+                            record CmdToGithubCheckoutFailed (Error e)
                             eprintfn "[%s] Warning: worktree failed: %s" repoStr e
                             return issue, None
                         | Ok worktreePath ->
@@ -686,7 +873,7 @@ let private processRepo
                             let workingDir = cfg.Cwd |> Option.map (fun c -> Path.Combine(worktreePath, render c)) |> Option.defaultValue worktreePath
                             match FileGlob.copyAll Environment.CurrentDirectory workingDir cfg.Copy with
                             | Error e ->
-                                record CmdToPrCheckoutFailed (Error e)
+                                record CmdToGithubCheckoutFailed (Error e)
                                 eprintfn "[%s] Warning: copy failed: %s" repoStr e
                                 CheckoutManager.cleanup checkoutRoot repo branchSlug
                                 return issue, None
@@ -695,8 +882,8 @@ let private processRepo
                                 eprintfn "[%s] Executing in checkout: %s %s" repoStr executable (String.concat " " allArgs)
                             let! exitCode, err = runExecCommand executable allArgs workingDir
                             if exitCode <> 0 then
-                                record CmdToPrCheckoutFailed (Error $"cmd exited {exitCode}: {err.Trim()}")
-                                eprintfn "[%s] Warning: cmd-to-pr cmd exited with code %d: %s" repoStr exitCode err
+                                record CmdToGithubCheckoutFailed (Error $"cmd exited {exitCode}: {err.Trim()}")
+                                eprintfn "[%s] Warning: cmd-to-github cmd exited with code %d: %s" repoStr exitCode err
                                 FileGlob.cleanupCopies written
                                 CheckoutManager.cleanup checkoutRoot repo branchSlug
                                 return issue, None
@@ -706,67 +893,75 @@ let private processRepo
                                 let! commitResult  = CheckoutManager.commitAll worktreePath renderedMsg
                                 match commitResult with
                                 | Error "no-diff" when not cfg.ErrorIfNoDiff ->
-                                    if verbose then eprintfn "[%s] cmd-to-pr: no changes, skipping PR" repoStr
+                                    if verbose then eprintfn "[%s] cmd-to-github: no changes, skipping PR" repoStr
                                     CheckoutManager.cleanup checkoutRoot repo branchSlug
                                     return issue, None
                                 | Error "no-diff" ->
-                                    record CmdToPrNoDiff (Error "cmd produced no diff (error_if_no_diff is set)")
-                                    eprintfn "[%s] Warning: cmd-to-pr: no diff after cmd succeeded" repoStr
+                                    record CmdToGithubNoDiff (Error "cmd produced no diff (error_if_no_diff is set)")
+                                    eprintfn "[%s] Warning: cmd-to-github: no diff after cmd succeeded" repoStr
                                     CheckoutManager.cleanup checkoutRoot repo branchSlug
                                     return issue, None
                                 | Error e ->
-                                    record CmdToPrCheckoutFailed (Error e)
-                                    eprintfn "[%s] Warning: cmd-to-pr commit failed: %s" repoStr e
+                                    record CmdToGithubCheckoutFailed (Error e)
+                                    eprintfn "[%s] Warning: cmd-to-github commit failed: %s" repoStr e
                                     CheckoutManager.cleanup checkoutRoot repo branchSlug
                                     return issue, None
                                 | Ok () ->
+                                    record CmdToGithubCheckoutFailed (Ok ())
+                                    record CmdToGithubNoDiff (Ok ())
                                     let renderedBranch  = render branch
                                     let renderedPrTitle = render prTitle
-                                    let renderedPrBody  = render prBody
-                                    let (RepoName repoStr') = repo
+                                    let renderedPrBody  = render prBody |> appendClosesIssue issueNum
                                     let openPr (head: string) =
-                                        async {
-                                            let psi2 = buildPrCreatePsi p.CheckoutToken repoStr' head renderedPrTitle renderedPrBody worktreePath
-                                            use proc2 = Diagnostics.Process.Start(psi2)
-                                            let stdoutTask2 = proc2.StandardOutput.ReadToEndAsync()
-                                            let stderrTask2 = proc2.StandardError.ReadToEndAsync()
-                                            do! proc2.WaitForExitAsync() |> Async.AwaitTask
-                                            let! prUrl = stdoutTask2 |> Async.AwaitTask
-                                            let! err2  = stderrTask2  |> Async.AwaitTask
-                                            if proc2.ExitCode <> 0 then
-                                                if err2.Contains("already exists") then
-                                                    if verbose then eprintfn "[%s] PR already exists for branch %s" repoStr renderedBranch
-                                                else
-                                                    record CmdToPrOpenPrFailed (Error (err2.Trim()))
-                                                    eprintfn "[%s] Warning: pr create failed: %s" repoStr err2
-                                                return None
-                                            else
-                                                if verbose then eprintfn "[%s] PR opened: %s" repoStr (prUrl.Trim())
-                                                return Some { Repo = repo; Number = PrNumber 0; Url = prUrl.Trim(); ClosesIssue = issue.Id; State = "OPEN" }
-                                        }
+                                        openCmdToGithubPr record verbose repoStr p.CheckoutToken issue.Id repo head renderedPrTitle renderedPrBody worktreePath
                                     let! prResult =
-                                        match effectiveWriteBack with
-                                        | CommitToOrigin ->
+                                        match reopenTarget with
+                                        | Some pr ->
                                             async {
                                                 let! pushResult = CheckoutManager.pushToOrigin p.CheckoutToken "" worktreePath renderedBranch
                                                 match pushResult with
                                                 | Error e ->
-                                                    record CmdToPrPushFailed (Error e)
+                                                    record CmdToGithubPushFailed (Error e)
                                                     eprintfn "[%s] Warning: push failed: %s" repoStr e
                                                     return None
                                                 | Ok () ->
+                                                    record CmdToGithubPushFailed (Ok ())
+                                                    match p.Prs with
+                                                    | None -> return None
+                                                    | Some prsLinker ->
+                                                        match! prsLinker.ReopenPr repo pr.Number with
+                                                        | Error e ->
+                                                            eprintfn "[%s] Warning: failed to reopen PR: %s" repoStr e
+                                                            return None
+                                                        | Ok () ->
+                                                            if verbose then eprintfn "[%s] Reopened PR and pushed fresh content: %s" repoStr pr.Url
+                                                            return Some { pr with State = "OPEN" }
+                                            }
+                                        | None ->
+                                        match effectiveWriteBack with
+                                        | PushBranch ->
+                                            async {
+                                                let! pushResult = CheckoutManager.pushToOrigin p.CheckoutToken "" worktreePath renderedBranch
+                                                match pushResult with
+                                                | Error e ->
+                                                    record CmdToGithubPushFailed (Error e)
+                                                    eprintfn "[%s] Warning: push failed: %s" repoStr e
+                                                    return None
+                                                | Ok () ->
+                                                    record CmdToGithubPushFailed (Ok ())
                                                     if verbose then eprintfn "[%s] Committed and pushed to %s" repoStr renderedBranch
                                                     return None
                                             }
-                                        | PrToOrigin ->
+                                        | OpenPr ->
                                             async {
                                                 let! pushResult = CheckoutManager.pushToOrigin p.CheckoutToken "" worktreePath renderedBranch
                                                 match pushResult with
                                                 | Error e ->
-                                                    record CmdToPrPushFailed (Error e)
+                                                    record CmdToGithubPushFailed (Error e)
                                                     eprintfn "[%s] Warning: push failed: %s" repoStr e
                                                     return None
                                                 | Ok () ->
+                                                    record CmdToGithubPushFailed (Ok ())
                                                     return! openPr renderedBranch
                                             }
                                         | ForkAndPr ->
@@ -774,10 +969,11 @@ let private processRepo
                                                 let! forkResult = CheckoutManager.forkAndPush p.CheckoutToken repo worktreePath renderedBranch
                                                 match forkResult with
                                                 | Error e ->
-                                                    record CmdToPrPushFailed (Error e)
+                                                    record CmdToGithubPushFailed (Error e)
                                                     eprintfn "[%s] Warning: fork/push failed: %s" repoStr e
                                                     return None
                                                 | Ok forkRepo ->
+                                                    record CmdToGithubPushFailed (Ok ())
                                                     return! openPr $"{forkRepo}:{renderedBranch}"
                                             }
                                     CheckoutManager.cleanup checkoutRoot repo branchSlug
@@ -853,7 +1049,7 @@ let private runFull
         input.CheckoutRoot
         |> Option.defaultWith (fun () ->
             Path.Combine(Path.GetTempPath(), $"orcai-{Guid.NewGuid():N}"))
-    let processParams = resolveProcessParams deps input config project providerClients yamlHashChanged templateHashChanged checkoutRoot checkoutToken
+    let processParams = resolveProcessParams deps input config project providerClients yamlHashChanged templateHashChanged priorLock.IsSome checkoutRoot checkoutToken
 
     let priorFailuresByRepo =
         priorLock
@@ -931,7 +1127,7 @@ let private runFull
     // already removed inside processRepo; this removes the bare clone dirs).
     let isCheckoutAction =
         match config.Action with
-        | CmdCheckout _ | CmdToPr _ -> true
+        | CmdCheckout _ | CmdToGithub _ -> true
         | _                         -> false
     if isCheckoutAction then
         for repo in config.Repos do
@@ -1075,7 +1271,9 @@ let private refreshBodies
                     input.CheckoutRoot
                     |> Option.defaultWith (fun () -> Path.Combine(Path.GetTempPath(), $"orcai-{Guid.NewGuid():N}"))
                 let processParams =
-                    resolveProcessParams deps input config fullResult.Lock.Project providerClients yamlHashChanged templateHashChanged checkoutRootForRefresh checkoutToken
+                    // Stale-issue recovery: the original issue reference is gone, so
+                    // there is no meaningful prior state to compare against here.
+                    resolveProcessParams deps input config fullResult.Lock.Project providerClients yamlHashChanged templateHashChanged false checkoutRootForRefresh checkoutToken
                 recreateStaleIssues deps processParams refreshed
         let refreshedByRepo =
             recoveredRefreshed |> List.map (fun r -> r.Issue.Repo, r) |> Map.ofList

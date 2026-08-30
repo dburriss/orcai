@@ -20,7 +20,7 @@ Local values take precedence over global values. Any key can be omitted; CLI fla
 | `defaultOrg` | string | — | Default GitHub org used by `orcai generate` when `--org` is not supplied. |
 | `writesPerMinute` | int | `60` | Token-bucket capacity for GitHub write calls per minute. Reduce if you hit secondary rate limits. |
 | `rateLimitRetries` | int | `3` | Maximum number of automatic retries when a GitHub rate-limit error is encountered. |
-| `checkoutRoot` | string | temp dir | Root directory for repo checkouts used by `cmd-checkout` and `cmd-to-pr`. Defaults to an OS temp directory scoped to the run. |
+| `checkoutRoot` | string | temp dir | Root directory for repo checkouts used by `cmd-checkout` and `cmd-to-github`. Defaults to an OS temp directory scoped to the run. |
 
 > **Note**: `action:` is per-job only and cannot be set in the global or local JSON config. The `action` block below sets global defaults for action fields that individual job YAML files can override. See the [YAML configuration reference](cli-reference.md#action-block) for all available action types and per-job options.
 
@@ -49,7 +49,8 @@ Sets global defaults for action fields. Individual job YAML files override these
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `action.writeBack` | string | `"pr-to-origin"` | Default write-back mode for `cmd-to-pr` jobs. Overridden by `writeBack` in the job YAML. Values: `pr-to-origin`, `commit-to-origin`, `fork-and-pr`. |
+| `action.writeBack` | string | `"open-pr"` | Default write-back mode for `cmd-to-github` jobs. Overridden by `writeBack` in the job YAML. Values: `open-pr`, `push-branch`, `fork-and-pr`. |
+| `action.onClosedPr` | string | `"skip"` | Default behaviour for `cmd-to-github` when the only PR found for the branch is closed without merging. Overridden by `onClosedPr` in the job YAML. Values: `skip`, `recreate`, `reopen`, `fail`. |
 
 ---
 

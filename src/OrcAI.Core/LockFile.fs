@@ -90,10 +90,11 @@ let internal categoryToString (c: RepoFailureCategory) : string =
     | AddToProject          -> "AddToProject"
     | UpdateBody            -> "UpdateBody"
     | CmdCheckoutFailed     -> "CmdCheckoutFailed"
-    | CmdToPrCheckoutFailed -> "CmdToPrCheckoutFailed"
-    | CmdToPrNoDiff         -> "CmdToPrNoDiff"
-    | CmdToPrPushFailed     -> "CmdToPrPushFailed"
-    | CmdToPrOpenPrFailed   -> "CmdToPrOpenPrFailed"
+    | CmdToGithubCheckoutFailed -> "CmdToGithubCheckoutFailed"
+    | CmdToGithubNoDiff         -> "CmdToGithubNoDiff"
+    | CmdToGithubPushFailed     -> "CmdToGithubPushFailed"
+    | CmdToGithubOpenPrFailed   -> "CmdToGithubOpenPrFailed"
+    | CmdToGithubClosedPrFailed -> "CmdToGithubClosedPrFailed"
 
 let internal categoryOfString (s: string) : RepoFailureCategory option =
     match s with
@@ -104,10 +105,11 @@ let internal categoryOfString (s: string) : RepoFailureCategory option =
     | "AddToProject"          -> Some AddToProject
     | "UpdateBody"            -> Some UpdateBody
     | "CmdCheckoutFailed"     -> Some CmdCheckoutFailed
-    | "CmdToPrCheckoutFailed" -> Some CmdToPrCheckoutFailed
-    | "CmdToPrNoDiff"         -> Some CmdToPrNoDiff
-    | "CmdToPrPushFailed"     -> Some CmdToPrPushFailed
-    | "CmdToPrOpenPrFailed"   -> Some CmdToPrOpenPrFailed
+    | "CmdToGithubCheckoutFailed" -> Some CmdToGithubCheckoutFailed
+    | "CmdToGithubNoDiff"         -> Some CmdToGithubNoDiff
+    | "CmdToGithubPushFailed"     -> Some CmdToGithubPushFailed
+    | "CmdToGithubOpenPrFailed"   -> Some CmdToGithubOpenPrFailed
+    | "CmdToGithubClosedPrFailed" -> Some CmdToGithubClosedPrFailed
     | _                       -> None
 
 let internal causeToString (c: RepoFailureCause) : string =

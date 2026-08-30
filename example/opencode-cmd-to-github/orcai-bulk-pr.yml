@@ -49,9 +49,9 @@ jobs:
       - name: Install OpenCode
         run: npm install -g opencode-ai
 
-      - name: Run bulk cmd-to-pr
+      - name: Run bulk cmd-to-github
         run: >
-          orcai run example/opencode-cmd-to-pr/add-agents-md.yml
+          orcai run example/opencode-cmd-to-github/add-agents-md.yml
           --continue-on-error --json
         env:
           # Cross-repo token used for the gh API, git clone/push, and gh pr create.

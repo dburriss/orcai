@@ -511,10 +511,11 @@ let main argv =
                                             | OrcAI.Core.Domain.AddToProject          -> "AddToProject"
                                             | OrcAI.Core.Domain.UpdateBody            -> "UpdateBody"
                                             | OrcAI.Core.Domain.CmdCheckoutFailed     -> "CmdCheckoutFailed"
-                                            | OrcAI.Core.Domain.CmdToPrCheckoutFailed -> "CmdToPrCheckoutFailed"
-                                            | OrcAI.Core.Domain.CmdToPrNoDiff         -> "CmdToPrNoDiff"
-                                            | OrcAI.Core.Domain.CmdToPrPushFailed     -> "CmdToPrPushFailed"
-                                            | OrcAI.Core.Domain.CmdToPrOpenPrFailed   -> "CmdToPrOpenPrFailed"
+                                            | OrcAI.Core.Domain.CmdToGithubCheckoutFailed -> "CmdToGithubCheckoutFailed"
+                                            | OrcAI.Core.Domain.CmdToGithubNoDiff         -> "CmdToGithubNoDiff"
+                                            | OrcAI.Core.Domain.CmdToGithubPushFailed     -> "CmdToGithubPushFailed"
+                                            | OrcAI.Core.Domain.CmdToGithubOpenPrFailed   -> "CmdToGithubOpenPrFailed"
+                                            | OrcAI.Core.Domain.CmdToGithubClosedPrFailed -> "CmdToGithubClosedPrFailed"
                                         let causeStr =
                                             match f.Cause with
                                             | OrcAI.Core.Domain.RateLimit        -> "RateLimit"

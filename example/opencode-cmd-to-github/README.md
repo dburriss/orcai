@@ -1,4 +1,4 @@
-# OpenCode `cmd-to-pr` example
+# OpenCode `cmd-to-github` example
 
 Run [OpenCode](https://opencode.ai) against **many repos in an org** and open a
 pull request in each — all from one orcai job. The job runs in an *orchestration*
@@ -11,7 +11,7 @@ change OpenCode can make: dependency bumps, codemods, config rollouts, etc.
 
 | File | Purpose |
 |---|---|
-| `add-agents-md.yml` | The orcai job — a `cmd-to-pr` action that invokes OpenCode |
+| `add-agents-md.yml` | The orcai job — a `cmd-to-github` action that invokes OpenCode |
 | `add-agents-md.md` | The issue template; OpenCode receives its rendered text as the task prompt |
 | `orcai-bulk-pr.yml` | Example GitHub Actions workflow (goes in the orchestration repo's `.github/workflows/`) |
 
@@ -53,7 +53,7 @@ is delivered to OpenCode as a single argument. Prefer this over the string form 
 anything but the simplest one-line commands.
 
 Two flags are essential for headless `opencode run`, or it exits 0 having changed
-nothing (which `cmd-to-pr` then records as "no changes"):
+nothing (which `cmd-to-github` then records as "no changes"):
 
 - **`--auto`** — there's no TTY to approve OpenCode's edit/write tools.
 - **`-m <provider/model>`** — with no default model in your OpenCode config, headless
@@ -105,7 +105,7 @@ Locally (with a `gh` already authenticated to a cross-repo token, or `GH_TOKEN` 
 
 ```bash
 export ANTHROPIC_API_KEY=sk-...
-orcai run example/opencode-cmd-to-pr/add-agents-md.yml --continue-on-error --json
+orcai run example/opencode-cmd-to-github/add-agents-md.yml --continue-on-error --json
 ```
 
 Add `--max-concurrency 2` to limit parallel checkouts, and use `orcai validate` first
@@ -121,6 +121,6 @@ to confirm the config parses and every repo is reachable.
 
 ## Cleanup
 
-`orcai cleanup example/opencode-cmd-to-pr/add-agents-md.yml` tears down the issues and
+`orcai cleanup example/opencode-cmd-to-github/add-agents-md.yml` tears down the issues and
 Project created by the run. It does **not** close or revert the PRs — review, merge,
 or close those on GitHub as usual.

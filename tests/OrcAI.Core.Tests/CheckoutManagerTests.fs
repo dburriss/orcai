@@ -62,7 +62,7 @@ let ``worktreePath builds correct path`` () =
 [<Fact>]
 let ``cwd combined with worktreePath is a subdirectory of worktreePath`` () =
     // Verifies the invariant that cwd is relative to the checkout root.
-    // Path.Combine is the mechanism used in RunCommand CmdCheckout/CmdToPr branches.
+    // Path.Combine is the mechanism used in RunCommand CmdCheckout/CmdToGithub branches.
     let repo = RepoName "my-org/my-repo"
     let wt   = worktreePath "/tmp/orcai" repo "branch"
     let resolved = System.IO.Path.Combine(wt, "./subdir")
@@ -82,7 +82,7 @@ let ``cwd defaults to worktreePath when None`` () =
 
 [<Fact>]
 let ``pushToOrigin can push HEAD to a remote branch whose name differs from the local branch`` () =
-    // Reproduces the cmd-to-pr push bug:
+    // Reproduces the cmd-to-github push bug:
     // getWorktree creates local branch "test-slug" but pushToOrigin is called
     // with "orcai/test-slug" (the rendered branch name, e.g. "orcai/{{job_title_slug}}"),
     // causing `git push origin orcai/test-slug` to fail with
@@ -138,6 +138,129 @@ let ``pushToOrigin can push HEAD to a remote branch whose name differs from the 
         try if Directory.Exists(wtDir) then Directory.Delete(wtDir, true) with _ -> ()
 
 // ---------------------------------------------------------------------------
+// pushToOrigin — re-push after the local checkout is gone (e.g. lock file /
+// checkoutRoot deleted between runs, so a fresh clone has no knowledge of the
+// orcai-owned branch that a *prior* run already pushed to the remote).
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``pushToOrigin succeeds re-pushing the same branch from a fresh clone with no local history of it`` () =
+    let guid      = System.Guid.NewGuid().ToString("N")
+    let seedDir   = Path.Combine(Path.GetTempPath(), $"orcai-seed2-{guid}")
+    let remoteDir = Path.Combine(Path.GetTempPath(), $"orcai-r2-{guid}")
+    let base1Dir  = Path.Combine(Path.GetTempPath(), $"orcai-b2a-{guid}")
+    let wt1Dir    = Path.Combine(Path.GetTempPath(), $"orcai-w2a-{guid}")
+    let base2Dir  = Path.Combine(Path.GetTempPath(), $"orcai-b2b-{guid}")
+    let wt2Dir    = Path.Combine(Path.GetTempPath(), $"orcai-w2b-{guid}")
+    let run (exe: string) (args: string list) (wd: string) =
+        let psi = ProcessStartInfo(exe)
+        psi.WorkingDirectory       <- wd
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError  <- true
+        psi.UseShellExecute        <- false
+        for a in args do psi.ArgumentList.Add(a)
+        use p = Process.Start(psi)
+        p.WaitForExit()
+        p.ExitCode = 0
+    try
+        Directory.CreateDirectory(seedDir) |> ignore
+        Assert.True(run "git" ["-c"; "init.defaultBranch=main"; "init"; seedDir] (Path.GetTempPath()), "git init seed")
+        File.WriteAllText(Path.Combine(seedDir, "README.md"), "init")
+        Assert.True(run "git" ["add"; "README.md"] seedDir, "git add in seed")
+        Assert.True(run "git" ["-c"; "user.email=t@t.com"; "-c"; "user.name=t"; "commit"; "-m"; "init"] seedDir, "git commit in seed")
+        Assert.True(run "git" ["clone"; "--bare"; seedDir; remoteDir] (Path.GetTempPath()), "git clone bare as remote")
+
+        // "Run 1": clone, commit on the orcai-owned branch, push. This is the
+        // push that landed on the remote in a prior orcai run.
+        Assert.True(run "git" ["clone"; "--bare"; remoteDir; base1Dir] (Path.GetTempPath()), "git clone bare as base1")
+        Assert.True(run "git" ["worktree"; "add"; wt1Dir; "-b"; "test-slug"] base1Dir, "git worktree add 1")
+        File.WriteAllText(Path.Combine(wt1Dir, "touch.txt"), "run1")
+        Assert.True(run "git" ["add"; "-A"] wt1Dir, "git add in wt1")
+        Assert.True(run "git" ["-c"; "user.email=t@t.com"; "-c"; "user.name=t"; "commit"; "-m"; "run1"] wt1Dir, "git commit in wt1")
+        let firstPush =
+            pushToOrigin "" base1Dir wt1Dir "orcai/test-slug"
+            |> Async.RunSynchronously
+        Assert.True((firstPush = Ok ()), $"Expected first push to succeed but got: {firstPush}")
+
+        // "Run 2": the checkoutRoot/lock file was deleted, so orcai starts from a
+        // brand-new clone that has never heard of "orcai/test-slug" — there is no
+        // local remote-tracking ref for it to compare against.
+        Assert.True(run "git" ["clone"; "--bare"; remoteDir; base2Dir] (Path.GetTempPath()), "git clone bare as base2")
+        Assert.True(run "git" ["worktree"; "add"; wt2Dir; "-b"; "test-slug"] base2Dir, "git worktree add 2")
+        File.WriteAllText(Path.Combine(wt2Dir, "touch.txt"), "run2")
+        Assert.True(run "git" ["add"; "-A"] wt2Dir, "git add in wt2")
+        Assert.True(run "git" ["-c"; "user.email=t@t.com"; "-c"; "user.name=t"; "commit"; "-m"; "run2"] wt2Dir, "git commit in wt2")
+        let secondPush =
+            pushToOrigin "" base2Dir wt2Dir "orcai/test-slug"
+            |> Async.RunSynchronously
+        Assert.True((secondPush = Ok ()), $"Expected re-push from a fresh clone to succeed but got: {secondPush}")
+    finally
+        try Directory.Delete(seedDir,  true) with _ -> ()
+        try Directory.Delete(remoteDir, true) with _ -> ()
+        try Directory.Delete(base1Dir, true) with _ -> ()
+        try if Directory.Exists(wt1Dir) then Directory.Delete(wt1Dir, true) with _ -> ()
+        try Directory.Delete(base2Dir, true) with _ -> ()
+        try if Directory.Exists(wt2Dir) then Directory.Delete(wt2Dir, true) with _ -> ()
+
+// ---------------------------------------------------------------------------
+// lsRemoteHeads — branch-exists-on-remote check, used by cmd-to-github's
+// idempotency decision table (no local clone required).
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``lsRemoteHeads returns true when the branch exists on the remote`` () =
+    let guid    = System.Guid.NewGuid().ToString("N")
+    let seedDir = Path.Combine(Path.GetTempPath(), $"orcai-lsr-{guid}")
+    let run (exe: string) (args: string list) (wd: string) =
+        let psi = ProcessStartInfo(exe)
+        psi.WorkingDirectory       <- wd
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError  <- true
+        psi.UseShellExecute        <- false
+        for a in args do psi.ArgumentList.Add(a)
+        use p = Process.Start(psi)
+        p.WaitForExit()
+        p.ExitCode = 0
+    try
+        Directory.CreateDirectory(seedDir) |> ignore
+        Assert.True(run "git" ["-c"; "init.defaultBranch=main"; "init"; seedDir] (Path.GetTempPath()), "git init seed")
+        File.WriteAllText(Path.Combine(seedDir, "README.md"), "init")
+        Assert.True(run "git" ["add"; "README.md"] seedDir, "git add in seed")
+        Assert.True(run "git" ["-c"; "user.email=t@t.com"; "-c"; "user.name=t"; "commit"; "-m"; "init"] seedDir, "git commit in seed")
+        Assert.True(run "git" ["branch"; "orcai/test-branch"] seedDir, "git branch")
+
+        let result = lsRemoteHeads "" seedDir "orcai/test-branch" |> Async.RunSynchronously
+        Assert.Equal(Ok true, result)
+    finally
+        try Directory.Delete(seedDir, true) with _ -> ()
+
+[<Fact>]
+let ``lsRemoteHeads returns false when the branch does not exist on the remote`` () =
+    let guid    = System.Guid.NewGuid().ToString("N")
+    let seedDir = Path.Combine(Path.GetTempPath(), $"orcai-lsr2-{guid}")
+    let run (exe: string) (args: string list) (wd: string) =
+        let psi = ProcessStartInfo(exe)
+        psi.WorkingDirectory       <- wd
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError  <- true
+        psi.UseShellExecute        <- false
+        for a in args do psi.ArgumentList.Add(a)
+        use p = Process.Start(psi)
+        p.WaitForExit()
+        p.ExitCode = 0
+    try
+        Directory.CreateDirectory(seedDir) |> ignore
+        Assert.True(run "git" ["-c"; "init.defaultBranch=main"; "init"; seedDir] (Path.GetTempPath()), "git init seed")
+        File.WriteAllText(Path.Combine(seedDir, "README.md"), "init")
+        Assert.True(run "git" ["add"; "README.md"] seedDir, "git add in seed")
+        Assert.True(run "git" ["-c"; "user.email=t@t.com"; "-c"; "user.name=t"; "commit"; "-m"; "init"] seedDir, "git commit in seed")
+
+        let result = lsRemoteHeads "" seedDir "orcai/does-not-exist" |> Async.RunSynchronously
+        Assert.Equal(Ok false, result)
+    finally
+        try Directory.Delete(seedDir, true) with _ -> ()
+
+// ---------------------------------------------------------------------------
 // runProcess — GH_TOKEN env injection, used by ensureClone/pushToOrigin/forkAndPush
 // to hand the already-resolved App/PAT token to the gh credential helper.
 // ---------------------------------------------------------------------------
@@ -177,10 +300,10 @@ let ``mergeFailures handles all checkout RepoFailureCategory values without cras
     let now  = System.DateTimeOffset.UtcNow
     let repos =
         [ RepoName "org/r1", CmdCheckoutFailed
-          RepoName "org/r2", CmdToPrCheckoutFailed
-          RepoName "org/r3", CmdToPrNoDiff
-          RepoName "org/r4", CmdToPrPushFailed
-          RepoName "org/r5", CmdToPrOpenPrFailed ]
+          RepoName "org/r2", CmdToGithubCheckoutFailed
+          RepoName "org/r3", CmdToGithubNoDiff
+          RepoName "org/r4", CmdToGithubPushFailed
+          RepoName "org/r5", CmdToGithubOpenPrFailed ]
     let attempted = repos |> List.map (fun (repo, cat) -> repo, cat, Error "test error")
     let result = OrcAI.Core.LockFile.mergeFailures [] attempted now
     Assert.Equal(5, result.Length)

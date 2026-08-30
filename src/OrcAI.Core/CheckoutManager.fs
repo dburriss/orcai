@@ -152,7 +152,7 @@ let cleanupAll (checkoutRoot: string) (repo: RepoName) : unit =
     try if Directory.Exists(repoDir) then Directory.Delete(repoDir, true) with _ -> ()
 
 // ---------------------------------------------------------------------------
-// Git operations used by cmd-to-pr write-back
+// Git operations used by cmd-to-github write-back
 // ---------------------------------------------------------------------------
 
 /// Stage all changes and commit in the given worktree directory.
@@ -194,17 +194,39 @@ let commitAll (worktreeDir: string) (message: string) : Async<Result<unit, strin
                     return Error $"git commit failed: Exit {proc.ExitCode}: {stderr.Trim()}"
     }
 
-/// Push the worktree's current HEAD to a named remote branch with force-with-lease.
+/// Push the worktree's current HEAD to a named remote branch, force-pushing
+/// unconditionally. The branch is orcai-owned (see module docs) and every run
+/// starts from a fresh clone with no local remote-tracking ref for it, so
+/// `--force-with-lease` would reject the push as "stale info" as soon as any
+/// prior run had already pushed to that branch — there is nothing to compare
+/// the lease against. Plain `--force` is correct here precisely because we
+/// always intend to overwrite the branch regardless of its current remote state.
 /// Uses HEAD:refs/heads/<remoteBranch> so the local branch name is irrelevant —
 /// only the current HEAD commit and the desired remote branch name matter.
 let pushToOrigin (token: string) (_basePath: string) (worktreeDir: string) (remoteBranch: string) : Async<Result<unit, string>> =
     async {
-        let pushArgs = ["-c"; "credential.helper=!gh auth git-credential"; "push"; "--force-with-lease"; "origin"; $"HEAD:refs/heads/{remoteBranch}"]
+        let pushArgs = ["-c"; "credential.helper=!gh auth git-credential"; "push"; "--force"; "origin"; $"HEAD:refs/heads/{remoteBranch}"]
         let! result = runProcess "git" pushArgs (tokenEnv token) worktreeDir
         match result with
         | Ok _    -> return Ok ()
         | Error e -> return Error $"git push failed: {e}"
     }
+
+/// Check whether `branch` exists as a head ref on the given remote `url`. No local
+/// clone required. Takes an explicit URL (rather than a RepoName) so it is directly
+/// testable against any git-accessible remote, e.g. a local bare repo path.
+let lsRemoteHeads (token: string) (url: string) (branch: string) : Async<Result<bool, string>> =
+    async {
+        let args = ["-c"; "credential.helper=!gh auth git-credential"; "ls-remote"; "--heads"; url; branch]
+        let! result = runProcess "git" args (tokenEnv token) (Path.GetTempPath())
+        match result with
+        | Ok output -> return Ok (not (String.IsNullOrWhiteSpace(output.Trim())))
+        | Error e   -> return Error e
+    }
+
+/// Check whether `branch` exists on `repo`'s GitHub remote. No local clone required.
+let branchExistsOnRemote (token: string) (repo: RepoName) (branch: string) : Async<Result<bool, string>> =
+    lsRemoteHeads token (repoUrl repo) branch
 
 /// Fork the repo and push the branch to the fork.
 /// Returns the fork's owner/repo string on success.
@@ -228,7 +250,7 @@ let forkAndPush (token: string) (repo: RepoName) (worktreeDir: string) (branchSl
                 let forkUrl  = $"https://github.com/{forkRepo}.git"
                 let! _ = runProcess "git" ["remote"; "add"; "fork"; forkUrl] [] worktreeDir
                 // Ignore error if remote already exists.
-                let pushArgs = ["-c"; "credential.helper=!gh auth git-credential"; "push"; "--force-with-lease"; "fork"; $"HEAD:refs/heads/{branchSlug}"]
+                let pushArgs = ["-c"; "credential.helper=!gh auth git-credential"; "push"; "--force"; "fork"; $"HEAD:refs/heads/{branchSlug}"]
                 let! pushResult = runProcess "git" pushArgs (tokenEnv token) worktreeDir
                 match pushResult with
                 | Error e -> return Error $"Push to fork failed: {e}"

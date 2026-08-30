@@ -92,7 +92,7 @@ No numeric "issue number" is exposed anywhere. Templates and CLI output that
 today show `#42` for GitHub show the raw id for local jobs (e.g. a ULID) —
 less pretty, but correct under concurrent/distributed use, which matters more
 for a file store than a cosmetic counter. `{{issue_number}}` in `cmd`/
-`cmd-to-pr` action templates keeps its name (job YAML compatibility) but
+`cmd-to-github` action templates keeps its name (job YAML compatibility) but
 carries whatever `IssueId` string the active provider produced.
 
 **Project file** (`projects/<org>/<slug>.yaml`):
@@ -251,7 +251,7 @@ local when handling this action type.
   summary will always show zero PRs for local jobs, because `Prs = None`.
   This matches the "same fan-out model, local backend" scope decision: the
   local provider only replaces issue/project tracking, not the git/PR
-  write-back actions (`cmd-to-pr`, `cmd-checkout` still assume a real,
+  write-back actions (`cmd-to-github`, `cmd-checkout` still assume a real,
   clonable repo regardless of provider).
 - No repo-inspection locally (`Repos = None`) — `depends_on` gating that
   needs bulk repo state, and any archived-repo pre-check, is simply

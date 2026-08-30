@@ -1,6 +1,6 @@
-# Running `opencode run` headlessly (e.g. from `orcai` `cmd`/`cmd-to-pr`)
+# Running `opencode run` headlessly (e.g. from `orcai` `cmd`/`cmd-to-github`)
 
-Findings from manually testing `action: { type: cmd-to-pr }` driving `opencode run`
+Findings from manually testing `action: { type: cmd-to-github }` driving `opencode run`
 against a real repo (see `orcai-tests/manual-tests/opencode/`). Two are ordinary
 CLI-flag requirements; the third is a deeper process-launch quirk worth knowing
 about before relying on `opencode run` from any non-shell launcher (orcai's `cmd`
@@ -55,7 +55,7 @@ every headless-invocation failure mode.
 `src/OrcAI.Core/RunCommand.fs` now explicitly sets `RedirectStandardInput <- true`
 and immediately calls `proc.StandardInput.Close()` right after `Process.Start`,
 via a shared `runExecCommand` helper used by all three of `cmd` / `cmd-checkout` /
-`cmd-to-pr`. This guarantees the child observes an instant EOF on stdin instead
+`cmd-to-github`. This guarantees the child observes an instant EOF on stdin instead
 of inheriting orcai's own ambiguous stdin handle — no shell wrapping, no shebang
 script, and no Windows-vs-Unix branching required; `RedirectStandardInput` +
 `StandardInput.Close()` is a plain, cross-platform .NET `Process` API pattern.
@@ -83,13 +83,13 @@ process image) is **no longer needed** and was not implemented.
   without this specific fix, for the same ambient-stdin reason above — it did
   **not** reproduce a hang in that environment either way. This fix stays in
   place because it's correct and harmless regardless, but it turned out **not**
-  to be the cause of the `CmdToPrNoDiff` failure actually observed in
+  to be the cause of the `CmdToGithubNoDiff` failure actually observed in
   production — see §4 below for that.
 
 ## 4. Child resolves its working directory from inherited `PWD`, not the real cwd
 
-This is the actual cause of a real `cmd-to-pr` run against `opencode run`
-reporting `CmdToPrNoDiff` ("no diff after cmd succeeded") in production, even
+This is the actual cause of a real `cmd-to-github` run against `opencode run`
+reporting `CmdToGithubNoDiff` ("no diff after cmd succeeded") in production, even
 with `--auto`, `-m`, and the stdin fix from §3 all in place.
 
 **Root cause:** .NET's `ProcessStartInfo.WorkingDirectory` changes the child's
@@ -113,7 +113,7 @@ up as "no diff after cmd succeeded", not an error.
 `buildExecPsi` in `src/OrcAI.Core/RunCommand.fs` now explicitly sets
 `psi.Environment["PWD"] <- workingDir`, keeping the env var in sync with
 `WorkingDirectory` for every child process launched via `runExecCommand`
-(`cmd`/`cmd-checkout`/`cmd-to-pr`). Confirmed by re-running the same direct
+(`cmd`/`cmd-checkout`/`cmd-to-github`). Confirmed by re-running the same direct
 repro with this override in place: the file landed inside the intended
 worktree and `git status` picked it up correctly.
 
@@ -122,6 +122,6 @@ inherited PWD over the real cwd aren't misdirected`,
 `tests/OrcAI.Core.Tests/RunCommandTests.fs`) asserts this deterministically —
 no opencode dependency, since it only inspects the constructed `ProcessStartInfo`.
 
-`errorIfNoDiff: true` remains a good safety net for `cmd-to-pr` jobs driving
+`errorIfNoDiff: true` remains a good safety net for `cmd-to-github` jobs driving
 opencode regardless, given [sst/opencode#13851](https://github.com/sst/opencode/issues/13851)
 suggests other headless-invocation failure modes may still exist upstream.
