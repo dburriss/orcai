@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-30
+
 ### Added
 
 - `provider:` YAML field — selects the issue/project tracking backend for a job.
