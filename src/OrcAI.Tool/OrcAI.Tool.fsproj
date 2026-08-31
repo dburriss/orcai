@@ -31,7 +31,7 @@
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
   <ItemGroup>
-    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\NUGET.md" Pack="true" PackagePath="README.md" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Args.fs" />

@@ -8,18 +8,20 @@ A CLI tool for orchestrating bulk GitHub work across many repositories. From a s
 
 ## Features
 
-- **Declarative YAML jobs** — one config defines the project, target repos, issue template, assignment behaviour, nudge policy, and notification template.
-- **Bulk, idempotent issue creation** across any number of repos — a lock file makes re-runs free; glob and brace expansion (`"jobs/**/*.{yml,yaml}"`) for fanning out.
+- **Declarative YAML jobs** — one config defines the project, repos, issue template, and an `action` to run after creation.
+- **Bulk, idempotent** across any number of repos — a lock file makes re-runs free; glob/brace expansion fans out over many configs.
 - **GitHub Project auto-management** — finds or creates the board and links every issue to it.
-- **Assign to anyone** — `assign.to` accepts any GitHub user, bot, or GitHub App handle. Default is `@copilot`, but humans, OpenCode, and custom App bots all work.
-- **Comment-based triggers** — `assign.via: comment` posts a slash command (e.g. `/opencode`) instead of assigning, for agents that listen for mentions. `comment-and-assign` does both.
-- **Tag anyone in templated comments** — `assign.comment`, `nudge.comment`, and `notify` all support `{assignee}`, `{job.owner}`, and `{repo.codeowners}` tokens, resolved from YAML and CODEOWNERS files at runtime.
-- **`orcai nudge`** — re-trigger stale issues (no linked PR yet) by reassignment, comment, or both.
-- **`orcai notify`** — broadcast a templated comment to issues and/or PRs from the lock file; filter by state, dry-run, and inject extra `--data key=value` template variables.
-- **Auto issue-body updates** — when the Markdown template changes, existing issues' bodies are updated without re-running the structural work (hash-based detection).
-- **Dependent jobs** — `dependsOn` gates a downstream job on the completion of an upstream one (`pr_merged` or `issue_closed`), either per-repo (filter eligible repos individually) or all-repos (block the run until the entire upstream batch is done). `orcai run` resolves the full dependency chain automatically; `orcai graph` renders it as an ASCII tree; `orcai validate` catches cycles and missing upstream files.
-- **Robust at scale** — built-in rate limiting (60 writes/min, configurable) with exponential-backoff retry; closed-issue policy (`create`/`reopen`/`skip`/`fail`); concurrency control; `--continue-on-error`; JSON output for CI.
-- **Multiple auth methods** — ambient `gh` CLI, PAT, or GitHub App (manifest flow supported via `orcai auth create-app`). A PAT is only required when the assignee is `@copilot`.
+- **Flexible actions** — assign `@copilot`/anyone, post a triggering comment, or actually do the work: `cmd-to-github` clones, runs a command (e.g. an AI coding agent), commits, and opens a PR.
+- **Local provider** — `provider: local` tracks state as files on disk instead of GitHub, for offline dry-runs.
+- **`orcai nudge` / `orcai notify`** — re-trigger stale issues with no PR yet, or broadcast a templated status comment.
+- **Auto issue-body updates** and per-repo prepend/append overrides on top of the shared template.
+- **Dependent jobs** (`dependsOn`) — chain jobs on an upstream PR merge or issue close; `orcai graph` visualises the chain.
+- **`orcai migrate`** — upgrade job YAML/lock files to the current schema in place, no re-sync required.
+- **Built for scale** — rate limiting with retry, concurrency control, `--continue-on-error`, JSON output, and PAT/App/`gh`-CLI auth.
+
+## Why OrcAI
+
+Rolling out the same change across dozens of repos by hand doesn't scale — cloning each one, opening an issue, remembering who to assign, checking back for a PR, and cleaning up afterwards. OrcAI turns that into one YAML file and one command: it tracks what it created, is safe to re-run, and can hand the actual work to a human, `@copilot`, another bot, or a coding agent it drives itself via `cmd-to-github`.
 
 ## Installation
 
@@ -50,11 +52,54 @@ That's it. OrcAI will pick up the token automatically.
 
 For PAT, GitHub App, or environment variable auth see [docs/cli-reference.md](docs/cli-reference.md).
 
-### 2. Run a job
+### 2. Scaffold a job
+
+`orcai generate` writes a starter YAML config and a stub Markdown issue template so you're not writing either from scratch:
+
+```bash
+orcai generate --name "Add AGENTS.md" --org my-github-org --repo repo-one --repo repo-two
+```
+
+```
+Generated:
+  ./add-agents-md.yml
+  ./add-agents-md.md
+```
+
+`add-agents-md.yml` looks like this — fill in the `TODO`s (repos, labels, and the `action` block are the ones worth a look) and write the actual task in `add-agents-md.md`:
+
+```yaml
+version: 2  # schema version; used by 'orcai migrate' — don't edit by hand
+
+job:
+  title: "Add AGENTS.md"
+  org: "my-github-org"
+
+repos:
+  - "repo-one"
+  - "repo-two"
+
+issue:
+  template: "./add-agents-md.md"
+  labels: []
+  # TODO: add label names, e.g. ["automated", "migration"]
+
+# action:
+#   type: assign-copilot  # default; omit this block to assign @copilot
+#   comment: ""  # optional trigger comment
+
+# nudge:
+#   mode: reassign       # reassign | comment-only | comment-and-reassign
+#   comment: ""          # nudge comment body; supports {assignee} placeholder
+```
+
+Passing `--interactive` instead of `--repo` prompts for the missing values and shows a multi-select picker populated from `gh repo list <org>`. See [example/](example/) for complete, runnable configs — including `cmd-to-github` driving an AI coding agent end-to-end.
+
+### 3. Run it
 
 ```bash
 # Single config file
-orcai run jobs/my-upgrade.yml
+orcai run add-agents-md.yml
 
 # All configs in a directory (quote the glob to prevent shell expansion)
 orcai run "jobs/*.yml" --continue-on-error --json
@@ -63,7 +108,7 @@ orcai run "jobs/*.yml" --continue-on-error --json
 orcai run "jobs/*.yml" --max-concurrency 2
 ```
 
-`run` finds or creates a GitHub Project, creates issues from your template, adds them to the project, and triggers the configured assignee — whether that's `@copilot`, another bot, an AI agent like OpenCode, or a human teammate. Triggering can be via assignment, a templated comment (e.g. a slash command), or both. On success a lock file (`<basename>.lock.json`) is written alongside the YAML for fast idempotent re-runs.
+`run` finds or creates a GitHub Project, creates issues from your template, adds them to the project, and triggers the configured `action` — whether that's assigning `@copilot`, another bot, or a human teammate, or actually running a command (an AI coding agent, a script) and opening a PR with the result. On success a lock file (`<basename>.lock.json`) is written alongside the YAML for fast idempotent re-runs.
 
 ## Commands
 
@@ -78,6 +123,7 @@ orcai run "jobs/*.yml" --max-concurrency 2
 | `orcai info` | Display the current state of a job |
 | `orcai cleanup` | Tear down everything created by `run` |
 | `orcai graph` | Render the `dependsOn` dependency graph as an ASCII tree |
+| `orcai migrate` | Upgrade a job YAML and its lock file to the current schema version |
 
 For full flag details, output formats, lock file schema, and advanced usage see [docs/cli-reference.md](docs/cli-reference.md). For config file settings see [docs/config.md](docs/config.md).
 
