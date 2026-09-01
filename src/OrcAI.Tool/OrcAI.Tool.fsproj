@@ -10,7 +10,7 @@
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
     <!-- Binary identity -->
-    <Version>0.10.0</Version>
+    <Version>0.10.1</Version>
     <Authors>Devon Burriss</Authors>
     <Description>A CLI tool for managing GitHub Projects and Copilot-assigned issues in bulk. Define your project in a YAML file and let orcai create issues, assign them to Copilot, and clean up when done.</Description>
     <Title>orcai</Title>
@@ -25,7 +25,7 @@
     <!-- Discoverability -->
     <PackageTags>github copilot cli project-management automation</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Per-repo issue template overrides: `{repo}.prepend.md` / `{repo}.append.md` files placed next to `issue.template` are automatically prepended/appended to that repo's issue body. Both are optional and independent — a missing file is not an error, and repos without a matching file get the base template unchanged. No new YAML fields required. Editing an override file alone still updates existing issue bodies on the next `orcai run`, via the existing template-hash change detection.</PackageReleaseNotes>
+    <PackageReleaseNotes>`{repo}.replace.md` per-repo issue template override: replaces the base template content for that repo, while `{repo}.prepend.md` / `{repo}.append.md` still wrap around it if also present. Follows the same optional/independent, hash-based change detection as the existing prepend/append overrides.</PackageReleaseNotes>
     <!-- SourceLink / reproducible builds -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
