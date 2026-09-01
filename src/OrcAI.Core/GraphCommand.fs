@@ -42,8 +42,8 @@ let rec private renderChildren
         let isLast      = i = deps.Length - 1
         let connector   = if isLast then "└── " else "├── "
         let childPrefix = parentPrefix + (if isLast then "    " else "│   ")
-        let depAbs      = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(parentAbs), dep.Job))
-        let header      = $"{parentPrefix}{connector}{Path.GetFileName(depAbs)}{depLabelStr dep}"
+        let depAbs      = fs.Path.GetFullPath(fs.Path.Combine(fs.Path.GetDirectoryName(parentAbs), dep.Job))
+        let header      = $"{parentPrefix}{connector}{fs.Path.GetFileName(depAbs)}{depLabelStr dep}"
         if Set.contains depAbs visited then
             [ header + " (↑ cycle)" ]
         else
@@ -62,10 +62,10 @@ let rec private renderChildren
 // ---------------------------------------------------------------------------
 
 let execute (deps: OrcAIDeps) (input: GraphInput) : Result<GraphResult, string> =
-    let absPath = Path.GetFullPath(input.YamlPath)
+    let absPath = deps.FileSystem.Path.GetFullPath(input.YamlPath)
     match YamlConfig.parseFile deps.FileSystem absPath with
     | Error e -> Error e
     | Ok config ->
-        let rootLine   = Path.GetFileName(absPath)
+        let rootLine   = deps.FileSystem.Path.GetFileName(absPath)
         let childLines = renderChildren deps.FileSystem absPath config.DependsOn "" (Set.singleton absPath)
         Ok { Lines = rootLine :: childLines }

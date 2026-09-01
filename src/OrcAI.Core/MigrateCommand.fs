@@ -97,7 +97,7 @@ let private migrateFile (fs: IFileSystem) (dryRun: bool) (steps: MigrationStep l
 /// their first run. A hard error in either step aborts before anything is
 /// written for that file (never a half-migrated file on disk).
 let execute (fs: IFileSystem) (input: MigrateInput) : Result<MigrateResult, string> =
-    let yamlPath = Path.GetFullPath(input.YamlPath)
+    let yamlPath = fs.Path.GetFullPath(input.YamlPath)
     if not (fs.File.Exists(yamlPath)) then
         Error $"YAML config file not found: {yamlPath}"
     else

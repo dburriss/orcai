@@ -801,6 +801,24 @@ let ``parseFile resolves an explicit relative local root against the YAML's dire
     | Ok cfg  -> Assert.Equal(Some "/work/custom-store", cfg.ProviderRoot)
 
 [<Fact>]
+let ``parseFile resolves ProviderRoot using the filesystem abstraction, not the host OS`` () =
+    // Regression test: parseFile must resolve paths via `fs.Path`, not the static
+    // `System.IO.Path`, so behavior matches the filesystem it was given rather
+    // than whatever OS the test/CI runner happens to be. Forcing Windows
+    // simulation on any host reproduces the bug: on non-Windows hosts, the
+    // static Path APIs mangle a backslash-rooted path.
+    let fs = new MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Windows))
+    fs.Directory.CreateDirectory(@"C:\work") |> ignore
+    fs.File.WriteAllText(@"C:\work\template.md", "body")
+    let yaml =
+        A.Yaml.valid.Replace("TEMPLATE_PLACEHOLDER", "./template.md")
+        + "provider:\n  type: local\n"
+    fs.File.WriteAllText(@"C:\work\job.yml", yaml)
+    match parseFile fs @"C:\work\job.yml" with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg -> Assert.Equal(Some @"C:\work\.orcai-local", cfg.ProviderRoot)
+
+[<Fact>]
 let ``parseFile returns error for unknown provider type`` () =
     let fs   = MockFileSystem()
     let yaml = A.Yaml.valid + "provider:\n  type: jira\n"

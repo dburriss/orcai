@@ -1335,7 +1335,7 @@ let executeSingle (deps: OrcAIDeps) (input: RunInput) : Result<RunResult, string
             match deps.ResolveProvider mergedConfig with
             | Error e -> Some (Error $"Provider error: {e}")
             | Ok providerClients ->
-                let yamlDir = Path.GetDirectoryName(Path.GetFullPath(input.YamlPath)) |> Option.ofObj |> Option.defaultValue "."
+                let yamlDir = deps.FileSystem.Path.GetDirectoryName(deps.FileSystem.Path.GetFullPath(input.YamlPath)) |> Option.ofObj |> Option.defaultValue "."
                 DependencyResolution.filterRepos providerClients.Tracker providerClients.Prs deps.FileSystem mergedConfig yamlDir
                 |> Async.RunSynchronously
                 |> Some
@@ -1410,7 +1410,7 @@ let execute (deps: OrcAIDeps) (paths: string list) (input: RunInput) : Async<Map
         // If the resolved chain differs from the input (deps were added or ordering changed),
         // run the full chain sequentially so each job's lock is written before dependents start.
         let resolvedAbsPaths = resolvedChain |> List.map fst
-        let inputAbsPaths    = paths |> List.map Path.GetFullPath
+        let inputAbsPaths    = paths |> List.map deps.FileSystem.Path.GetFullPath
         let hasOrdering      = resolvedAbsPaths <> inputAbsPaths
 
         if hasOrdering then
@@ -1420,10 +1420,10 @@ let execute (deps: OrcAIDeps) (paths: string list) (input: RunInput) : Async<Map
                 if not stop then
                     let yamlPath =
                         paths
-                        |> List.tryFind (fun p -> Path.GetFullPath(p) = absPath)
+                        |> List.tryFind (fun p -> deps.FileSystem.Path.GetFullPath(p) = absPath)
                         |> Option.defaultValue absPath
                     if isDep then
-                        printfn "Running dependency: %s" (Path.GetFileName(absPath))
+                        printfn "Running dependency: %s" (deps.FileSystem.Path.GetFileName(absPath))
                     let singleInput = { input with YamlPath = yamlPath }
                     let r = executeSingle deps singleInput
                     results.[yamlPath] <- r

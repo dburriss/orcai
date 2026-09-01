@@ -25,33 +25,33 @@ let resolveOrder (fs: IFileSystem) (yamlPath: string) : Result<string list, stri
         (absPath       : string)
         : Result<string list * Set<string>, string> =
         if not (fs.File.Exists(absPath)) then
-            Error $"Dependency file not found: {Path.GetFileName(absPath)}"
+            Error $"Dependency file not found: {fs.Path.GetFileName(absPath)}"
         elif List.contains absPath visitingChain then
             let chainStr =
                 (visitingChain @ [ absPath ])
-                |> List.map Path.GetFileName
+                |> List.map fs.Path.GetFileName
                 |> String.concat " → "
             Error $"Circular dependency detected: {chainStr}"
         elif Set.contains absPath visited then
             Ok([], visited)
         else
             match YamlConfig.parseFile fs absPath with
-            | Error msg -> Error $"Failed to read '{Path.GetFileName(absPath)}': {msg}"
+            | Error msg -> Error $"Failed to read '{fs.Path.GetFileName(absPath)}': {msg}"
             | Ok config ->
-                let yamlDir = Path.GetDirectoryName(absPath)
+                let yamlDir = fs.Path.GetDirectoryName(absPath)
                 let chain'  = visitingChain @ [ absPath ]
                 let folder (acc: Result<string list * Set<string>, string>) (dep: DependsOnConfig) =
                     match acc with
                     | Error e -> Error e
                     | Ok (order, vis) ->
-                        let depAbs = Path.GetFullPath(Path.Combine(yamlDir, dep.Job))
+                        let depAbs = fs.Path.GetFullPath(fs.Path.Combine(yamlDir, dep.Job))
                         match dfs chain' vis depAbs with
                         | Error e -> Error e
                         | Ok (depOrder, vis') -> Ok(order @ depOrder, vis')
                 match config.DependsOn |> List.fold folder (Ok([], visited)) with
                 | Error e -> Error e
                 | Ok (depOrder, visited') -> Ok(depOrder @ [ absPath ], Set.add absPath visited')
-    dfs [] Set.empty (Path.GetFullPath(yamlPath)) |> Result.map fst
+    dfs [] Set.empty (fs.Path.GetFullPath(yamlPath)) |> Result.map fst
 
 /// Expand a list of user-provided paths into a topologically ordered, deduplicated
 /// chain. Returns (absolutePath * isDependency) pairs; isDependency is true only
@@ -62,7 +62,7 @@ let resolveOrder (fs: IFileSystem) (yamlPath: string) : Result<string list, stri
 /// rather than causing a chain-level failure; executeSingle will surface the error.
 /// Cycle and missing-dependency errors in otherwise-valid jobs ARE propagated.
 let resolveChain (fs: IFileSystem) (userPaths: string list) : Result<(string * bool) list, string> =
-    let userAbsSet = userPaths |> List.map Path.GetFullPath |> Set.ofList
+    let userAbsSet = userPaths |> List.map fs.Path.GetFullPath |> Set.ofList
     let rec collect
         (remaining : string list)
         (seen      : Set<string>)
@@ -71,7 +71,7 @@ let resolveChain (fs: IFileSystem) (userPaths: string list) : Result<(string * b
         match remaining with
         | [] -> Ok acc
         | p :: rest ->
-            let absP = Path.GetFullPath(p)
+            let absP = fs.Path.GetFullPath(p)
             // If the path is missing or has invalid YAML, include it as-is so that
             // executeSingle can report the proper error for that specific file.
             let canExpand =
@@ -224,7 +224,7 @@ let filterRepos
                 match! accAsync with
                 | Error e -> return Error e
                 | Ok repos ->
-                    let upstreamPath = Path.GetFullPath(Path.Combine(yamlDir, dep.Job))
+                    let upstreamPath = fs.Path.GetFullPath(fs.Path.Combine(yamlDir, dep.Job))
                     match YamlConfig.parseFile fs upstreamPath with
                     | Error msg ->
                         return Error $"Failed to read upstream job '{dep.Job}': {msg}"

@@ -302,7 +302,7 @@ let hashBytes (bytes: byte[]) : string =
 /// Reads {templateDir}/{shortRepo}.{suffix}.md if it exists, trimmed.
 /// Returns None (not an error) when the override file is absent.
 let private readOverrideFile (fs: IFileSystem) (templateDir: string) (shortRepo: string) (suffix: string) : string option =
-    let p = Path.Combine(templateDir, $"{shortRepo}.{suffix}.md")
+    let p = fs.Path.Combine(templateDir, $"{shortRepo}.{suffix}.md")
     if fs.File.Exists(p) then Some (fs.File.ReadAllText(p).Trim()) else None
 
 /// Composes a repo's issue body: optional {repo}.prepend.md, the base
@@ -338,24 +338,24 @@ let parseFile (fs: IFileSystem) (path: string) : Result<JobConfig, string> =
             let yaml    = fs.File.ReadAllText(path)
             // Peek at the raw YAML to resolve the template path before full validation.
             let root    = deserializer.Deserialize<YamlRoot>(yaml)
-            let yamlDir = Path.GetDirectoryName(Path.GetFullPath(path)) |> Option.ofObj |> Option.defaultValue "."
+            let yamlDir = fs.Path.GetDirectoryName(fs.Path.GetFullPath(path)) |> Option.ofObj |> Option.defaultValue "."
             // `parse` has no notion of "the YAML's directory", so it leaves
             // ProviderRoot as the raw string from YAML; resolve it to an absolute
             // path here, same convention as the template path below.
             let resolveProviderRoot (config: JobConfig) : JobConfig =
                 match config.Provider, config.ProviderRoot with
-                | Local, Some rawRoot -> { config with ProviderRoot = Some (Path.GetFullPath(Path.Combine(yamlDir, rawRoot))) }
+                | Local, Some rawRoot -> { config with ProviderRoot = Some (fs.Path.GetFullPath(fs.Path.Combine(yamlDir, rawRoot))) }
                 | _ -> config
             if isNull (box root) || isNull (box root.issue) || String.IsNullOrWhiteSpace(root.issue.template) then
                 // Let `parse` produce the proper validation error message.
                 parse yaml "" "" |> Result.map resolveProviderRoot
             else
-                let templatePath = Path.GetFullPath(Path.Combine(yamlDir, root.issue.template))
+                let templatePath = fs.Path.GetFullPath(fs.Path.Combine(yamlDir, root.issue.template))
                 if not (fs.File.Exists(templatePath)) then
                     Error $"Issue template file not found: {templatePath}"
                 else
                     let templateContent = fs.File.ReadAllText(templatePath)
-                    let templateDir     = Path.GetDirectoryName(templatePath) |> Option.ofObj |> Option.defaultValue "."
+                    let templateDir     = fs.Path.GetDirectoryName(templatePath) |> Option.ofObj |> Option.defaultValue "."
                     let shortRepoNames  = root.repos |> Seq.toList
                     parse yaml templatePath templateContent
                     |> Result.map resolveProviderRoot
@@ -378,8 +378,8 @@ let resolveTemplatePath (fs: IFileSystem) (path: string) : string option =
             let root = deserializer.Deserialize<YamlRoot>(yaml)
             if isNull (box root) || isNull (box root.issue) || String.IsNullOrWhiteSpace(root.issue.template) then None
             else
-                let yamlDir      = Path.GetDirectoryName(Path.GetFullPath(path)) |> Option.ofObj |> Option.defaultValue "."
-                let templatePath = Path.GetFullPath(Path.Combine(yamlDir, root.issue.template))
+                let yamlDir      = fs.Path.GetDirectoryName(fs.Path.GetFullPath(path)) |> Option.ofObj |> Option.defaultValue "."
+                let templatePath = fs.Path.GetFullPath(fs.Path.Combine(yamlDir, root.issue.template))
                 if fs.File.Exists(templatePath) then Some templatePath else None
         with _ -> None
 
@@ -390,7 +390,7 @@ let private findOverrideFiles (fs: IFileSystem) (templateDir: string) : string l
     else
         fs.Directory.GetFiles(templateDir)
         |> Array.filter (fun p ->
-            let name = Path.GetFileName(p)
+            let name = fs.Path.GetFileName(p)
             name.EndsWith(".prepend.md") || name.EndsWith(".append.md"))
         |> Array.sort
         |> Array.toList
@@ -400,7 +400,7 @@ let private findOverrideFiles (fs: IFileSystem) (templateDir: string) : string l
 /// so adding, editing, or removing an override alone still changes the hash.
 /// Used to populate the templateHash field in the lock file.
 let computeTemplateHash (fs: IFileSystem) (path: string) : string =
-    let templateDir    = Path.GetDirectoryName(path) |> Option.ofObj |> Option.defaultValue "."
+    let templateDir    = fs.Path.GetDirectoryName(path) |> Option.ofObj |> Option.defaultValue "."
     let overrideBytes  =
         findOverrideFiles fs templateDir
         |> List.collect (fun p -> fs.File.ReadAllBytes(p) |> Array.toList)
