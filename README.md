@@ -14,7 +14,7 @@ A CLI tool for orchestrating bulk GitHub work across many repositories. From a s
 - **Flexible actions** — assign `@copilot`/anyone, post a triggering comment, or actually do the work: `cmd-to-github` clones, runs a command (e.g. an AI coding agent), commits, and opens a PR.
 - **Local provider** — `provider: local` tracks state as files on disk instead of GitHub, for offline dry-runs.
 - **`orcai nudge` / `orcai notify`** — re-trigger stale issues with no PR yet, or broadcast a templated status comment.
-- **Auto issue-body updates** and per-repo prepend/append overrides on top of the shared template.
+- **Auto issue-body updates** and per-repo prepend/replace/append overrides on top of the shared template.
 - **Dependent jobs** (`dependsOn`) — chain jobs on an upstream PR merge or issue close; `orcai graph` visualises the chain.
 - **`orcai migrate`** — upgrade job YAML/lock files to the current schema in place, no re-sync required.
 - **Built for scale** — rate limiting with retry, concurrency control, `--continue-on-error`, JSON output, and PAT/App/`gh`-CLI auth.

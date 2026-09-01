@@ -305,19 +305,21 @@ let private readOverrideFile (fs: IFileSystem) (templateDir: string) (shortRepo:
     let p = fs.Path.Combine(templateDir, $"{shortRepo}.{suffix}.md")
     if fs.File.Exists(p) then Some (fs.File.ReadAllText(p).Trim()) else None
 
-/// Composes a repo's issue body: optional {repo}.prepend.md, the base
-/// template, then optional {repo}.append.md — each present piece joined by a
-/// blank line.
+/// Composes a repo's issue body: optional {repo}.prepend.md, then the base
+/// template (or {repo}.replace.md in its place, if present), then optional
+/// {repo}.append.md — each present piece joined by a blank line.
 let private composeIssueBody (fs: IFileSystem) (templateDir: string) (shortRepo: string) (baseBody: string) : string =
+    let body = readOverrideFile fs templateDir shortRepo "replace" |> Option.defaultValue baseBody
     [ readOverrideFile fs templateDir shortRepo "prepend"
-      Some baseBody
+      Some body
       readOverrideFile fs templateDir shortRepo "append" ]
     |> List.choose id
     |> String.concat "\n\n"
 
-/// Applies per-repo {repo}.prepend.md / {repo}.append.md overrides found next
-/// to the base template. `shortRepoNames` are the raw names as written under
-/// `repos:` in YAML (no org prefix), in the same order as `config.Repos`.
+/// Applies per-repo {repo}.prepend.md / {repo}.replace.md / {repo}.append.md
+/// overrides found next to the base template. `shortRepoNames` are the raw
+/// names as written under `repos:` in YAML (no org prefix), in the same
+/// order as `config.Repos`.
 let private applyIssueBodyOverrides (fs: IFileSystem) (templateDir: string) (shortRepoNames: string list) (config: JobConfig) : JobConfig =
     let issueBodyByRepo =
         List.zip shortRepoNames config.Repos
@@ -383,21 +385,22 @@ let resolveTemplatePath (fs: IFileSystem) (path: string) : string option =
                 if fs.File.Exists(templatePath) then Some templatePath else None
         with _ -> None
 
-/// Finds any {repo}.prepend.md / {repo}.append.md override files next to the
-/// template, sorted for deterministic hashing.
+/// Finds any {repo}.prepend.md / {repo}.replace.md / {repo}.append.md
+/// override files next to the template, sorted for deterministic hashing.
 let private findOverrideFiles (fs: IFileSystem) (templateDir: string) : string list =
     if not (fs.Directory.Exists(templateDir)) then []
     else
         fs.Directory.GetFiles(templateDir)
         |> Array.filter (fun p ->
             let name = fs.Path.GetFileName(p)
-            name.EndsWith(".prepend.md") || name.EndsWith(".append.md"))
+            name.EndsWith(".prepend.md") || name.EndsWith(".append.md") || name.EndsWith(".replace.md"))
         |> Array.sort
         |> Array.toList
 
 /// Compute the SHA-256 hash of the raw template file content, plus any
-/// {repo}.prepend.md / {repo}.append.md override files found alongside it —
-/// so adding, editing, or removing an override alone still changes the hash.
+/// {repo}.prepend.md / {repo}.replace.md / {repo}.append.md override files
+/// found alongside it — so adding, editing, or removing an override alone
+/// still changes the hash.
 /// Used to populate the templateHash field in the lock file.
 let computeTemplateHash (fs: IFileSystem) (path: string) : string =
     let templateDir    = fs.Path.GetDirectoryName(path) |> Option.ofObj |> Option.defaultValue "."

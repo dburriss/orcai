@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `{repo}.replace.md` per-repo issue template override: replaces the base template content for that repo, while `{repo}.prepend.md` / `{repo}.append.md` still wrap around it if also present. Follows the same optional/independent, hash-based change detection as the existing prepend/append overrides.
+
 ## [0.10.0] - 2026-08-30
 
 ### Added

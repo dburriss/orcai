@@ -712,12 +712,13 @@ issue:
 
 #### Per-repo issue body overrides
 
-For a repo named `repo-one` under `repos:`, place `repo-one.prepend.md` and/or `repo-one.append.md` next to the `issue.template` file to add repo-specific instructions on top of the shared template — no new YAML fields required. Both are optional and independent:
+For a repo named `repo-one` under `repos:`, place `repo-one.prepend.md`, `repo-one.replace.md`, and/or `repo-one.append.md` next to the `issue.template` file to customize that repo's issue body — no new YAML fields required. All three are optional and independent:
 
 - `{repo}.prepend.md` — inserted before the base template.
+- `{repo}.replace.md` — replaces the base template content itself; `prepend`/`append` still wrap around it if also present.
 - `{repo}.append.md` — inserted after the base template.
 
-Each present piece is joined with a blank line. A repo with neither file gets the base template unchanged. Editing, adding, or removing an override file is treated the same as editing the base template — the next `orcai run` picks it up and updates that repo's existing issue body via the same hash-based detection used for template changes (see "Auto issue-body updates" in the README).
+Each present piece is joined with a blank line. A repo with none of these files gets the base template unchanged. Editing, adding, or removing an override file is treated the same as editing the base template — the next `orcai run` picks it up and updates that repo's existing issue body via the same hash-based detection used for template changes (see "Auto issue-body updates" in the README).
 
 ### `action:` block
 

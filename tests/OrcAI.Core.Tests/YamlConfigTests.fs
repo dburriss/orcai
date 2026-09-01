@@ -120,6 +120,28 @@ let ``parseFile applies both prepend and append content in order`` () =
     | Ok cfg  -> Assert.Equal("Before\n\n# Issue body\n\nAfter", cfg.IssueBodyByRepo.[RepoName "myorg/repo-a"])
 
 [<Fact>]
+let ``parseFile replaces base template content when {repo}.replace.md exists`` () =
+    let fs   = MockFileSystem()
+    let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
+    fs.File.WriteAllText("/work/repo-a.replace.md", "Completely different body")
+    match parseFile fs path with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  ->
+        Assert.Equal("Completely different body", cfg.IssueBodyByRepo.[RepoName "myorg/repo-a"])
+        Assert.Equal("# Issue body", cfg.IssueBodyByRepo.[RepoName "myorg/repo-b"])
+
+[<Fact>]
+let ``parseFile combines replace with prepend and append when all three exist`` () =
+    let fs   = MockFileSystem()
+    let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
+    fs.File.WriteAllText("/work/repo-a.prepend.md", "Before")
+    fs.File.WriteAllText("/work/repo-a.replace.md", "Replaced body")
+    fs.File.WriteAllText("/work/repo-a.append.md", "After")
+    match parseFile fs path with
+    | Error e -> Assert.True(false, $"Expected Ok but got Error: {e}")
+    | Ok cfg  -> Assert.Equal("Before\n\nReplaced body\n\nAfter", cfg.IssueBodyByRepo.[RepoName "myorg/repo-a"])
+
+[<Fact>]
 let ``parseFile leaves issue body unchanged when no override files exist`` () =
     let fs   = MockFileSystem()
     let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
@@ -158,6 +180,16 @@ let ``computeTemplateHash changes when a repo append file is removed`` () =
     fs.File.WriteAllText("/work/repo-a.append.md", "Extra instructions")
     let before = computeTemplateHash fs templatePath
     fs.File.Delete("/work/repo-a.append.md")
+    let after = computeTemplateHash fs templatePath
+    Assert.NotEqual<string>(before, after)
+
+[<Fact>]
+let ``computeTemplateHash changes when a repo replace file is added`` () =
+    let fs   = MockFileSystem()
+    let path = Given.yamlFile fs A.Yaml.valid "# Issue body"
+    let templatePath = "/work/template.md"
+    let before = computeTemplateHash fs templatePath
+    fs.File.WriteAllText("/work/repo-a.replace.md", "Replaced body")
     let after = computeTemplateHash fs templatePath
     Assert.NotEqual<string>(before, after)
 
