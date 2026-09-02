@@ -817,8 +817,12 @@ let ``parseFile resolves the default local root relative to the YAML's directory
     // `Given.yamlFile` hardcodes Unix-style paths ("/work/..."), so the
     // filesystem must simulate Linux regardless of the host/CI runner OS —
     // otherwise Windows hosts resolve "/work" against the current drive
-    // (e.g. "D:\work") and the assertion below no longer matches.
-    let fs   = new MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Linux))
+    // (e.g. "D:\work") and the assertion below no longer matches. Simulating
+    // the OS alone isn't enough: MockFileSystemOptions.CurrentDirectory
+    // defaults to the real host CWD (a Windows path on Windows CI), so
+    // GetFullPath still anchors the rooted Unix path to that drive unless
+    // the current directory is pinned to "/" too.
+    let fs   = new MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Linux).UseCurrentDirectory("/"))
     let yaml = A.Yaml.valid + "provider:\n  type: local\n"
     let path = Given.yamlFile fs yaml "body"
     match parseFile fs path with
@@ -829,9 +833,10 @@ let ``parseFile resolves the default local root relative to the YAML's directory
 
 [<Fact>]
 let ``parseFile resolves an explicit relative local root against the YAML's directory`` () =
-    // See comment on the previous test: force Linux simulation so path
-    // resolution is deterministic across host/CI operating systems.
-    let fs   = new MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Linux))
+    // See comment on the previous test: force Linux simulation and pin the
+    // current directory so path resolution is deterministic across
+    // host/CI operating systems.
+    let fs   = new MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Linux).UseCurrentDirectory("/"))
     let yaml = A.Yaml.valid + "provider:\n  type: local\n  root: \"./custom-store\"\n"
     let path = Given.yamlFile fs yaml "body"
     match parseFile fs path with
