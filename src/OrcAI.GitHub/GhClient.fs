@@ -92,6 +92,7 @@ let private runGhGraphQL (token: string) (args: string) : Async<Result<string, s
 // unclassified or uncaught failure.
 let internal isMalformedResponse (msg: string) =
     msg.Contains("non-JSON response from GitHub", StringComparison.OrdinalIgnoreCase)
+    || msg.Contains("non-GraphQL response from GitHub", StringComparison.OrdinalIgnoreCase)
 
 let internal isRateLimit (msg: string) =
     msg.Contains("API rate limit exceeded", StringComparison.OrdinalIgnoreCase)
@@ -237,6 +238,16 @@ let internal tryParseJson (json: string) : Result<JsonElement, string> =
         let snippet = json.Substring(0, min 120 json.Length)
         Error $"non-JSON response from GitHub (likely rate limited/blocked): {snippet}"
 
+/// GitHub's GraphQL endpoint always responds with a `data` and/or `errors`
+/// key. A gateway-level failure (e.g. an edge/nginx 502/504 timing out an
+/// expensive query before it reaches GraphQL execution) instead returns a
+/// generic REST-style error envelope like `{"message": "..."}` — valid JSON,
+/// but not a GraphQL response at all. Detect that so it isn't mistaken for a
+/// successful response with no data.
+let internal isGraphQLShaped (doc: JsonElement) : bool =
+    let has (name: string) = match doc.TryGetProperty(name) with true, _ -> true | _ -> false
+    has "data" || has "errors"
+
 /// GitHub reports secondary-rate-limit/abuse-detection errors in a batched
 /// GraphQL query as a top-level error with no `path` (i.e. not scoped to any
 /// one aliased field), unlike ordinary per-repo errors. Detect those so they
@@ -271,9 +282,16 @@ let private runGhApiGraphQLParsed (bucket: ApiBucket) (retries: int) (token: str
             match tryParseJson json with
             | Error e -> return Error e
             | Ok doc ->
-                match globalRateLimitError doc with
-                | Some msg -> return Error msg
-                | None -> return Ok doc
+                if not (isGraphQLShaped doc) then
+                    let msg =
+                        match doc.TryGetProperty("message") with
+                        | true, m -> m.GetString()
+                        | _ -> "generic gateway response"
+                    return Error $"non-GraphQL response from GitHub (likely a gateway timeout): {msg}"
+                else
+                    match globalRateLimitError doc with
+                    | Some msg -> return Error msg
+                    | None -> return Ok doc
     })
 
 // ------------------------------------------------------------------
@@ -872,11 +890,76 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                     return Map.empty
                 else
 
-                let results = System.Collections.Generic.Dictionary<RepoName, Result<RepoState, string>>()
+                // `isArchived` is a cheap field, batched large like ReposExist.
+                // `search` is GitHub's most expensive GraphQL root field — two
+                // searches per repo (open/closed) — so it's batched much smaller
+                // to stay under whatever query-cost threshold trips the gateway
+                // into timing out on large batches (observed live at 50 repos ×
+                // 2 searches = 100 search invocations per call).
+                let infoResults = System.Collections.Generic.Dictionary<RepoName, Result<bool, string>>()
+                let searchResults = System.Collections.Generic.Dictionary<RepoName, Result<IssueRef option * IssueRef option, string>>()
 
-                for chunk in List.chunkBySize 50 repos do
-                    // Three aliased root fields per repo:
-                    //   r{i}_info   → repository { isArchived }
+                let runChunkQuery (chunk: RepoName list) (query: string) =
+                    async {
+                        let tmpFile = System.IO.Path.GetTempFileName()
+                        try
+                            System.IO.File.WriteAllText(tmpFile, JsonSerializer.Serialize({| query = query |}))
+                            return! runGhApiGraphQLParsed bucket retries ghToken $"api graphql --input \"{tmpFile}\""
+                        finally
+                            if System.IO.File.Exists(tmpFile) then System.IO.File.Delete(tmpFile)
+                    }
+
+                let errorsByAlias (doc: JsonElement) =
+                    match doc.TryGetProperty("errors") with
+                    | true, arr ->
+                        arr.EnumerateArray()
+                        |> Seq.choose (fun err ->
+                            let alias =
+                                match err.TryGetProperty("path") with
+                                | true, p -> p.EnumerateArray() |> Seq.tryHead |> Option.map (fun e -> e.GetString())
+                                | _ -> None
+                            let msg =
+                                match err.TryGetProperty("message") with
+                                | true, m -> m.GetString()
+                                | _ -> "unknown error"
+                            alias |> Option.map (fun a -> a, msg))
+                        |> Map.ofSeq
+                    | _ -> Map.empty
+
+                for chunk in List.chunkBySize 100 repos do
+                    let fields =
+                        chunk
+                        |> List.mapi (fun i (RepoName r) ->
+                            let parts = r.Split('/', 2)
+                            $"r{i}: repository(owner:\"{parts.[0]}\",name:\"{parts.[1]}\"){{isArchived}}")
+                        |> String.concat " "
+                    match! runChunkQuery chunk $"{{ {fields} }}" with
+                    | Error e ->
+                        for repo in chunk do infoResults.[repo] <- Error e
+                    | Ok doc ->
+                        let data = match doc.TryGetProperty("data") with | true, d -> Some d | _ -> None
+                        let errs = errorsByAlias doc
+                        chunk |> List.iteri (fun i repo ->
+                            let alias = $"r{i}"
+                            let node =
+                                match data with
+                                | Some d ->
+                                    match d.TryGetProperty(alias) with
+                                    | true, v when v.ValueKind <> JsonValueKind.Null -> Some v
+                                    | _ -> None
+                                | None -> None
+                            infoResults.[repo] <-
+                                match node with
+                                | None -> Error (Map.tryFind alias errs |> Option.defaultValue "not found or inaccessible")
+                                | Some info ->
+                                    let isArchived =
+                                        match info.TryGetProperty("isArchived") with
+                                        | true, v when v.ValueKind = JsonValueKind.True -> true
+                                        | _ -> false
+                                    Ok isArchived)
+
+                for chunk in List.chunkBySize 15 repos do
+                    // Two aliased search calls per repo:
                     //   r{i}_open   → search open issues matching title
                     //   r{i}_closed → search closed issues matching title
                     let escapedTitle = title.Replace("\"", "\\\"")
@@ -888,89 +971,66 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                             let owner = parts.[0]
                             let name  = parts.[1]
                             [
-                                $"r{i}_info: repository(owner:\"{owner}\",name:\"{name}\"){{isArchived}}"
                                 $"r{i}_open: search(query:\"repo:{owner}/{name} is:issue is:open {escapedTitle} in:title\",type:ISSUE,first:1){{nodes{{...on Issue{{{issueFields}}}}}}}"
                                 $"r{i}_closed: search(query:\"repo:{owner}/{name} is:issue is:closed {escapedTitle} in:title\",type:ISSUE,first:1){{nodes{{...on Issue{{{issueFields}}}}}}}"
                             ])
                         |> List.concat
                         |> String.concat " "
-                    let query = $"{{ {fields} }}"
+                    match! runChunkQuery chunk $"{{ {fields} }}" with
+                    | Error e ->
+                        for repo in chunk do searchResults.[repo] <- Error e
+                    | Ok doc ->
+                        let data = match doc.TryGetProperty("data") with | true, d -> Some d | _ -> None
+                        let errs = errorsByAlias doc
 
-                    let tmpFile = System.IO.Path.GetTempFileName()
-                    try
-                        System.IO.File.WriteAllText(tmpFile, JsonSerializer.Serialize({| query = query |}))
-                        match! runGhApiGraphQLParsed bucket retries ghToken $"api graphql --input \"{tmpFile}\"" with
-                        | Error e ->
-                            for repo in chunk do results.[repo] <- Error e
-                        | Ok doc ->
-                            let data = match doc.TryGetProperty("data") with | true, d -> Some d | _ -> None
-                            let errorsByAlias =
-                                match doc.TryGetProperty("errors") with
-                                | true, arr ->
-                                    arr.EnumerateArray()
-                                    |> Seq.choose (fun err ->
-                                        let alias =
-                                            match err.TryGetProperty("path") with
-                                            | true, p -> p.EnumerateArray() |> Seq.tryHead |> Option.map (fun e -> e.GetString())
-                                            | _ -> None
-                                        let msg =
-                                            match err.TryGetProperty("message") with
-                                            | true, m -> m.GetString()
-                                            | _ -> "unknown error"
-                                        alias |> Option.map (fun a -> a, msg))
-                                    |> Map.ofSeq
-                                | _ -> Map.empty
+                        let parseFirstIssue (repo: RepoName) (alias: string) : IssueRef option =
+                            match data with
+                            | None -> None
+                            | Some d ->
+                                match d.TryGetProperty(alias) with
+                                | false, _ -> None
+                                | true, search ->
+                                    search.GetProperty("nodes").EnumerateArray()
+                                    |> Seq.tryHead
+                                    |> Option.bind (fun node ->
+                                        match intProp node "number", strProp node "url" with
+                                        | Some n, Some url ->
+                                            let assignees =
+                                                match node.TryGetProperty("assignees") with
+                                                | true, a ->
+                                                    a.GetProperty("nodes").EnumerateArray()
+                                                    |> Seq.choose (fun n -> strProp n "login")
+                                                    |> List.ofSeq
+                                                | _ -> []
+                                            Some { Repo = repo; Id = toIssueId n; Url = url; Assignees = assignees }
+                                        | _ -> None)
 
-                            let parseFirstIssue (repo: RepoName) (alias: string) : IssueRef option =
-                                match data with
-                                | None -> None
-                                | Some d ->
-                                    match d.TryGetProperty(alias) with
-                                    | false, _ -> None
-                                    | true, search ->
-                                        search.GetProperty("nodes").EnumerateArray()
-                                        |> Seq.tryHead
-                                        |> Option.bind (fun node ->
-                                            match intProp node "number", strProp node "url" with
-                                            | Some n, Some url ->
-                                                let assignees =
-                                                    match node.TryGetProperty("assignees") with
-                                                    | true, a ->
-                                                        a.GetProperty("nodes").EnumerateArray()
-                                                        |> Seq.choose (fun n -> strProp n "login")
-                                                        |> List.ofSeq
-                                                    | _ -> []
-                                                Some { Repo = repo; Id = toIssueId n; Url = url; Assignees = assignees }
-                                            | _ -> None)
+                        chunk |> List.iteri (fun i repo ->
+                            let openAlias   = $"r{i}_open"
+                            let closedAlias = $"r{i}_closed"
+                            // A missing/errored search alias (e.g. the repo itself is
+                            // inaccessible) is reported via errorsByAlias; an alias
+                            // present with no matching error but absent from `data`
+                            // just means no issue matched — not a failure.
+                            let openErr   = Map.tryFind openAlias errs
+                            let closedErr = Map.tryFind closedAlias errs
+                            searchResults.[repo] <-
+                                match openErr |> Option.orElse closedErr with
+                                | Some e -> Error e
+                                | None -> Ok (parseFirstIssue repo openAlias, parseFirstIssue repo closedAlias))
 
-                            chunk |> List.iteri (fun i repo ->
-                                let infoAlias   = $"r{i}_info"
-                                let openAlias   = $"r{i}_open"
-                                let closedAlias = $"r{i}_closed"
-                                let infoNode =
-                                    match data with
-                                    | Some d ->
-                                        match d.TryGetProperty(infoAlias) with
-                                        | true, v when v.ValueKind <> JsonValueKind.Null -> Some v
-                                        | _ -> None
-                                    | None -> None
-                                match infoNode with
-                                | None ->
-                                    let e = Map.tryFind infoAlias errorsByAlias |> Option.defaultValue "not found or inaccessible"
-                                    results.[repo] <- Error e
-                                | Some info ->
-                                    let isArchived =
-                                        match info.TryGetProperty("isArchived") with
-                                        | true, v when v.ValueKind = JsonValueKind.True -> true
-                                        | _ -> false
-                                    results.[repo] <- Ok {
-                                        IsArchived  = isArchived
-                                        OpenIssue   = parseFirstIssue repo openAlias
-                                        ClosedIssue = parseFirstIssue repo closedAlias })
-                    finally
-                        if System.IO.File.Exists(tmpFile) then System.IO.File.Delete(tmpFile)
-
-                return results |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+                return
+                    repos
+                    |> List.map (fun repo ->
+                        let state =
+                            match infoResults.TryGetValue(repo), searchResults.TryGetValue(repo) with
+                            | (true, Error e), _ -> Error e
+                            | _, (true, Error e) -> Error e
+                            | (true, Ok isArchived), (true, Ok (openIssue, closedIssue)) ->
+                                Ok { IsArchived = isArchived; OpenIssue = openIssue; ClosedIssue = closedIssue }
+                            | _ -> Error "not found or inaccessible"
+                        repo, state)
+                    |> Map.ofList
             }
 
         member _.FetchCodeowners repo =

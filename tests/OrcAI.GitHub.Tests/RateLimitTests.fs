@@ -202,6 +202,32 @@ let ``globalRateLimitError ignores ordinary path-scoped per-repo errors`` () =
     let doc = JsonDocument.Parse(json).RootElement
     Assert.Equal(None, globalRateLimitError doc)
 
+// --- isGraphQLShaped ---------------------------------------------------------
+
+[<Fact>]
+let ``isGraphQLShaped accepts a body with a data key`` () =
+    let doc = JsonDocument.Parse("""{"data":{"r0":null}}""").RootElement
+    Assert.True(isGraphQLShaped doc)
+
+[<Fact>]
+let ``isGraphQLShaped accepts a body with only an errors key`` () =
+    let doc = JsonDocument.Parse("""{"errors":[{"message":"boom"}]}""").RootElement
+    Assert.True(isGraphQLShaped doc)
+
+[<Fact>]
+let ``isGraphQLShaped rejects a gateway-timeout error envelope with neither data nor errors`` () =
+    let json = """{"message": "We couldn't respond to your request in time. Sorry about that. Please try resubmitting your request and contact us if the problem persists."}"""
+    let doc = JsonDocument.Parse(json).RootElement
+    Assert.False(isGraphQLShaped doc)
+
+// --- isMalformedResponse also covers non-GraphQL-shaped gateway errors ------
+
+[<Fact>]
+let ``isMalformedResponse recognizes the non-GraphQL gateway-timeout message`` () =
+    let msg = "non-GraphQL response from GitHub (likely a gateway timeout): We couldn't respond to your request in time."
+    Assert.True(isMalformedResponse msg)
+    Assert.True(isRateLimit msg, "non-GraphQL gateway responses must be routed into the rate-limit retry path")
+
 // --- retry on malformed / non-JSON responses -------------------------------
 
 [<Fact>]

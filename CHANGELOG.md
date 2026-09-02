@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Repos were misreported as "not found or inaccessible" in large, chunk-boundary-aligned blocks during bulk repo-state fetch (`FetchReposState`), even though they exist and are accessible. Root cause: GitHub's edge/gateway can return a valid-JSON but non-GraphQL-shaped error envelope (e.g. `{"message": "We couldn't respond to your request in time..."}`, typically a 502/504 gateway timeout) for an expensive query — previously this was treated as a successful response with no data, so every repo in the chunk fell into the "not found" branch. It's now detected and treated as a retryable transient error like any other backoff-eligible failure.
+- Reduced how often that gateway timeout is hit in the first place: `FetchReposState` now issues `isArchived` lookups (cheap) in batches of 100 as before, but the two `search` lookups per repo (open/closed issue, one of GitHub's most expensive GraphQL root fields) in much smaller batches of 15 — down from a combined batch of 50 that could put up to 100 `search` invocations in a single GraphQL call.
+
 ## [0.10.2] - 2026-09-02
 
 ### Fixed
