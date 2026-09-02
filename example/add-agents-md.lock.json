@@ -1,9 +1,11 @@
 {
+  "formatVersion": 2,
   "lockedAt": "2026-03-02T20:34:21.0466000\u002B00:00",
   "yamlHash": "8454423f5a0e6cf59569b56ac2ac3e1f207b8c589f4fcc475d5aa34c192f4917",
+  "templateHash": null,
   "project": {
     "org": "dburriss",
-    "number": 13,
+    "id": "13",
     "title": "Add AGENTS.md",
     "url": "https://github.com/users/dburriss/projects/13"
   },
@@ -17,7 +19,7 @@
   "issues": [
     {
       "repo": "dburriss/wye",
-      "number": 11,
+      "id": "11",
       "url": "https://github.com/dburriss/wye/issues/11",
       "assignees": [
         "dburriss",
@@ -26,7 +28,7 @@
     },
     {
       "repo": "dburriss/fennel",
-      "number": 15,
+      "id": "15",
       "url": "https://github.com/dburriss/fennel/issues/15",
       "assignees": [
         "dburriss",
@@ -35,7 +37,7 @@
     },
     {
       "repo": "dburriss/unique",
-      "number": 9,
+      "id": "9",
       "url": "https://github.com/dburriss/unique/issues/9",
       "assignees": [
         "dburriss",
@@ -44,7 +46,7 @@
     },
     {
       "repo": "dburriss/overboard",
-      "number": 14,
+      "id": "14",
       "url": "https://github.com/dburriss/overboard/issues/14",
       "assignees": [
         "dburriss",
@@ -53,7 +55,7 @@
     },
     {
       "repo": "dburriss/event-feed",
-      "number": 22,
+      "id": "22",
       "url": "https://github.com/dburriss/event-feed/issues/22",
       "assignees": [
         "dburriss",
@@ -61,5 +63,7 @@
       ]
     }
   ],
-  "pullRequests": []
+  "pullRequests": [],
+  "skippedRepos": null,
+  "failures": null
 }

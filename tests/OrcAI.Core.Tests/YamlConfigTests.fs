@@ -814,7 +814,11 @@ let ``parseFile defaults to GitHub with no ProviderRoot when provider is omitted
 
 [<Fact>]
 let ``parseFile resolves the default local root relative to the YAML's directory`` () =
-    let fs   = MockFileSystem()
+    // `Given.yamlFile` hardcodes Unix-style paths ("/work/..."), so the
+    // filesystem must simulate Linux regardless of the host/CI runner OS —
+    // otherwise Windows hosts resolve "/work" against the current drive
+    // (e.g. "D:\work") and the assertion below no longer matches.
+    let fs   = new MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Linux))
     let yaml = A.Yaml.valid + "provider:\n  type: local\n"
     let path = Given.yamlFile fs yaml "body"
     match parseFile fs path with
@@ -825,7 +829,9 @@ let ``parseFile resolves the default local root relative to the YAML's directory
 
 [<Fact>]
 let ``parseFile resolves an explicit relative local root against the YAML's directory`` () =
-    let fs   = MockFileSystem()
+    // See comment on the previous test: force Linux simulation so path
+    // resolution is deterministic across host/CI operating systems.
+    let fs   = new MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Linux))
     let yaml = A.Yaml.valid + "provider:\n  type: local\n  root: \"./custom-store\"\n"
     let path = Given.yamlFile fs yaml "body"
     match parseFile fs path with

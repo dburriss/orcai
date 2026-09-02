@@ -1038,7 +1038,12 @@ let ``execute all_repos dep gate sets BlockedBy when condition not met`` () =
 
 [<Fact>]
 let ``execute dependency chain runs dep before downstream`` () =
-    let fs = MockFileSystem()
+    // `writeUpstream`/`writeDownstream` build Unix-style paths ("/work/...")
+    // and this test asserts against the literal `depPath` they return, so the
+    // filesystem must simulate Linux regardless of the host/CI runner OS —
+    // otherwise Windows hosts resolve the dependency to a drive-rooted path
+    // (e.g. "D:\work\dep.yml") that no longer matches `depPath`.
+    let fs = new MockFileSystem(fun o -> o.SimulatingOperatingSystem(SimulationMode.Linux))
     let depPath  = writeUpstream fs "dep.yml"
     let mainPath = writeDownstream fs "main.yml" "./dep.yml" "per_repo"
     let client =

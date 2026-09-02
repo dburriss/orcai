@@ -1,18 +1,17 @@
 job:
-  title: "Add AGENTS.md"
-  org: "dburriss"
-
+  title: Add AGENTS.md
+  org: dburriss
 repos:
-  - "wye"
-  - "fennel"
-  - "unique"
-  - "overboard"
-  - "event-feed"
-
-
+- wye
+- fennel
+- unique
+- overboard
+- event-feed
 issue:
-  template: "./add-agents-md.md"
-  labels: ["documentation", "automated"]
-
+  template: ./add-agents-md.md
+  labels:
+  - documentation
+  - automated
 action:
   type: assign-copilot
+version: 2
