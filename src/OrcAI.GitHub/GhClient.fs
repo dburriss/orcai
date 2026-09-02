@@ -86,11 +86,19 @@ let private runGhGraphQL (token: string) (args: string) : Async<Result<string, s
 // Rate limiting and retry helpers
 // ------------------------------------------------------------------
 
+// A non-JSON (typically HTML abuse-detection/block page) response body is
+// treated as rate-limit-flavored: in practice it's GitHub's block page, and
+// it should back off/retry on the same schedule rather than surfacing as an
+// unclassified or uncaught failure.
+let internal isMalformedResponse (msg: string) =
+    msg.Contains("non-JSON response from GitHub", StringComparison.OrdinalIgnoreCase)
+
 let internal isRateLimit (msg: string) =
     msg.Contains("API rate limit exceeded", StringComparison.OrdinalIgnoreCase)
     || msg.Contains("secondary rate limit", StringComparison.OrdinalIgnoreCase)
     || msg.Contains("abuse detection mechanism", StringComparison.OrdinalIgnoreCase)
     || msg.Contains("was submitted too quickly", StringComparison.OrdinalIgnoreCase)
+    || isMalformedResponse msg
 
 let internal isTransient (msg: string) =
     let m = msg.ToLowerInvariant()
@@ -106,18 +114,24 @@ let internal jitter (ms: int) =
 
 // Two independent backoff schedules (rate-limit vs transient) sharing one
 // attempt budget. Initial delays are parameters so tests don't have to sleep
-// the production defaults.
-let internal withRetryDelays
+// the production defaults. `onRateLimit` is invoked with the delay just
+// before sleeping on a rate-limit hit, so a shared ApiBucket can be paused —
+// holding back other concurrent callers, not just this one — while this
+// call backs off.
+let internal withRetryDelaysNotify
         (maxAttempts: int)
         (initialRl: int)
         (initialTx: int)
+        (onRateLimit: int -> unit)
         (run: unit -> Async<Result<'a, string>>)
         : Async<Result<'a, string>> =
     let rec loop attempt (rlDelay: int) (txDelay: int) = async {
         let! result = run()
         match result with
         | Error msg when isRateLimit msg && attempt < maxAttempts ->
-            do! Async.Sleep (max 500 (jitter rlDelay))
+            let delay = max 500 (jitter rlDelay)
+            onRateLimit delay
+            do! Async.Sleep delay
             return! loop (attempt + 1) (min (rlDelay * 2) 300_000) txDelay
         | Error msg when isTransient msg && attempt < maxAttempts ->
             do! Async.Sleep (max 500 (jitter txDelay))
@@ -126,7 +140,11 @@ let internal withRetryDelays
     }
     loop 1 initialRl initialTx
 
-let private withRetry maxAttempts run = withRetryDelays maxAttempts 60_000 2_000 run
+let internal withRetryDelays maxAttempts initialRl initialTx run =
+    withRetryDelaysNotify maxAttempts initialRl initialTx (fun _ -> ()) run
+
+let private withRetry maxAttempts onRateLimit run =
+    withRetryDelaysNotify maxAttempts 60_000 2_000 onRateLimit run
 
 type internal ApiBucket(perMinuteCap: int, getNow: unit -> DateTime) =
     // Start at 80% of capacity instead of 100% — a full bucket lets the first
@@ -134,30 +152,58 @@ type internal ApiBucket(perMinuteCap: int, getNow: unit -> DateTime) =
     // burst without effectively disabling the throttle for the first minute.
     let mutable tokens = perMinuteCap * 4 / 5
     let mutable lastRefill = getNow()
+    let mutable pausedUntil = getNow()
     let gate = obj()
 
     new(perMinuteCap: int) = ApiBucket(perMinuteCap, fun () -> DateTime.UtcNow)
 
+    /// Called when any caller detects a rate limit — holds back every other
+    /// concurrent caller sharing this bucket (not just the one that hit the
+    /// limit) until the window has elapsed, instead of letting them keep
+    /// hammering the API while one is backing off. Only ever extends the
+    /// pause forward; never shortens an existing one.
+    ///
+    /// Also zeroes the token count and fast-forwards `lastRefill` to the
+    /// pause's end time. Without this, `lastRefill` would sit frozen at
+    /// whatever it was before the pause, and Acquire()'s elapsed-time refill
+    /// math would count the entire paused duration as if requests had kept
+    /// flowing at the normal pace — silently refilling the bucket to near
+    /// capacity and releasing a stampede of calls the instant the pause
+    /// lifts, right when we most need to still be throttled.
+    member _.Pause(ms: int) =
+        lock gate (fun () ->
+            let candidate = getNow().AddMilliseconds(float ms)
+            if candidate > pausedUntil then
+                pausedUntil <- candidate
+                tokens <- 0
+                lastRefill <- candidate)
+
     member _.Acquire() =
         lock gate (fun () ->
             let now = getNow()
-            let elapsed = (now - lastRefill).TotalSeconds
-            let refilled = int (elapsed * float perMinuteCap / 60.0)
-            if refilled > 0 then
-                tokens <- min perMinuteCap (tokens + refilled)
-                lastRefill <- now
-            if tokens > 0 then
-                tokens <- tokens - 1
-                0  // no wait needed
+            let pauseRemaining = (pausedUntil - now).TotalMilliseconds
+            if pauseRemaining > 0.0 then
+                int pauseRemaining + 1
             else
-                int (60_000.0 / float perMinuteCap) + 1)  // ms until next token
+                let elapsed = (now - lastRefill).TotalSeconds
+                let refilled = int (elapsed * float perMinuteCap / 60.0)
+                if refilled > 0 then
+                    tokens <- min perMinuteCap (tokens + refilled)
+                    lastRefill <- now
+                if tokens > 0 then
+                    tokens <- tokens - 1
+                    0  // no wait needed
+                else
+                    int (60_000.0 / float perMinuteCap) + 1)  // ms until next token
 
 // Like runGh but acquires a token from the shared bucket first and retries on
 // rate-limit and transient errors. Loops on Acquire() so concurrent callers
 // each wait for their own token instead of stampeding after a single shared
-// sleep.
+// sleep. A detected rate limit pauses the whole bucket (see ApiBucket.Pause),
+// so other concurrent repo checks back off too instead of continuing to hit
+// the API.
 let private runGhApi (bucket: ApiBucket) (retries: int) (token: string) (args: string) : Async<Result<string, string>> =
-    withRetry retries (fun () -> async {
+    withRetry retries bucket.Pause (fun () -> async {
         let rec waitForToken () = async {
             let waitMs = bucket.Acquire()
             if waitMs > 0 then
@@ -169,7 +215,7 @@ let private runGhApi (bucket: ApiBucket) (retries: int) (token: string) (args: s
     })
 
 let private runGhApiGraphQL (bucket: ApiBucket) (retries: int) (token: string) (args: string) : Async<Result<string, string>> =
-    withRetry retries (fun () -> async {
+    withRetry retries bucket.Pause (fun () -> async {
         let rec waitForToken () = async {
             let waitMs = bucket.Acquire()
             if waitMs > 0 then
@@ -178,6 +224,56 @@ let private runGhApiGraphQL (bucket: ApiBucket) (retries: int) (token: string) (
         }
         do! waitForToken ()
         return! runGhGraphQL token args
+    })
+
+/// Try to parse a `gh` CLI stdout payload as JSON. A non-JSON body (typically
+/// an HTML abuse-detection/rate-limit block page slipping through with exit
+/// code 0) is caught here instead of letting JsonException propagate
+/// uncaught through the async workflow and crash the run.
+let internal tryParseJson (json: string) : Result<JsonElement, string> =
+    try
+        Ok (JsonDocument.Parse(json).RootElement)
+    with :? JsonException ->
+        let snippet = json.Substring(0, min 120 json.Length)
+        Error $"non-JSON response from GitHub (likely rate limited/blocked): {snippet}"
+
+/// GitHub reports secondary-rate-limit/abuse-detection errors in a batched
+/// GraphQL query as a top-level error with no `path` (i.e. not scoped to any
+/// one aliased field), unlike ordinary per-repo errors. Detect those so they
+/// can be retried instead of silently dropped when building per-alias error
+/// maps.
+let internal globalRateLimitError (doc: JsonElement) : string option =
+    match doc.TryGetProperty("errors") with
+    | true, arr ->
+        arr.EnumerateArray()
+        |> Seq.tryPick (fun err ->
+            let hasPath = match err.TryGetProperty("path") with true, _ -> true | _ -> false
+            let msg = match err.TryGetProperty("message") with true, m -> m.GetString() | _ -> ""
+            if not hasPath && isRateLimit msg then Some msg else None)
+    | _ -> None
+
+/// Like runGhApiGraphQL, but parses the JSON and checks for a global
+/// rate-limit error inside the retried closure, so those cases (which `gh`
+/// reports as a successful exit with a partial JSON body) actually trigger
+/// the retry/backoff loop instead of being treated as a successful response.
+let private runGhApiGraphQLParsed (bucket: ApiBucket) (retries: int) (token: string) (args: string) : Async<Result<JsonElement, string>> =
+    withRetry retries bucket.Pause (fun () -> async {
+        let rec waitForToken () = async {
+            let waitMs = bucket.Acquire()
+            if waitMs > 0 then
+                do! Async.Sleep waitMs
+                return! waitForToken ()
+        }
+        do! waitForToken ()
+        match! runGhGraphQL token args with
+        | Error e -> return Error e
+        | Ok json ->
+            match tryParseJson json with
+            | Error e -> return Error e
+            | Ok doc ->
+                match globalRateLimitError doc with
+                | Some msg -> return Error msg
+                | None -> return Ok doc
     })
 
 // ------------------------------------------------------------------
@@ -246,23 +342,25 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
             match! runGhApi bucket retries ghToken $"project list --owner {orgStr} --format json" with
             | Error _ -> return None
             | Ok json ->
-                let doc = JsonDocument.Parse(json)
-                let projects =
-                    match doc.RootElement.TryGetProperty("projects") with
-                    | true, arr -> arr.EnumerateArray() |> Seq.toList
-                    | _         -> []
-                return
-                    projects
-                    |> List.tryFind (fun el ->
-                        strProp el "title" = Some title)
-                    |> Option.bind (fun el ->
-                        match intProp el "number", strProp el "url" with
-                        | Some n, Some url ->
-                            Some { Org   = org
-                                   Id    = toProjectId n
-                                   Title = title
-                                   Url   = url }
-                        | _ -> None)
+                match tryParseJson json with
+                | Error _ -> return None
+                | Ok doc ->
+                    let projects =
+                        match doc.TryGetProperty("projects") with
+                        | true, arr -> arr.EnumerateArray() |> Seq.toList
+                        | _         -> []
+                    return
+                        projects
+                        |> List.tryFind (fun el ->
+                            strProp el "title" = Some title)
+                        |> Option.bind (fun el ->
+                            match intProp el "number", strProp el "url" with
+                            | Some n, Some url ->
+                                Some { Org   = org
+                                       Id    = toProjectId n
+                                       Title = title
+                                       Url   = url }
+                            | _ -> None)
         }
 
     // ------------------------------------------------------------------
@@ -276,26 +374,28 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
             match! runGhApi bucket retries ghToken $"issue list --repo {repoStr} --state open --search \"{title} in:title\" --limit 100 --json title,number,url,assignees" with
             | Error e -> return Error e
             | Ok json ->
-                let arr = JsonDocument.Parse(json).RootElement
-                return Ok (
-                    arr.EnumerateArray()
-                    |> Seq.tryFind (fun el ->
-                        strProp el "title" = Some title)
-                    |> Option.bind (fun el ->
-                        match intProp el "number", strProp el "url" with
-                        | Some n, Some url ->
-                            let assignees =
-                                match el.TryGetProperty("assignees") with
-                                | true, arr ->
-                                    arr.EnumerateArray()
-                                    |> Seq.choose (fun a -> strProp a "login")
-                                    |> List.ofSeq
-                                | _ -> []
-                            Some { Repo      = repo
-                                   Id        = toIssueId n
-                                   Url       = url
-                                   Assignees = assignees }
-                        | _ -> None))
+                match tryParseJson json with
+                | Error e -> return Error e
+                | Ok arr ->
+                    return Ok (
+                        arr.EnumerateArray()
+                        |> Seq.tryFind (fun el ->
+                            strProp el "title" = Some title)
+                        |> Option.bind (fun el ->
+                            match intProp el "number", strProp el "url" with
+                            | Some n, Some url ->
+                                let assignees =
+                                    match el.TryGetProperty("assignees") with
+                                    | true, arr ->
+                                        arr.EnumerateArray()
+                                        |> Seq.choose (fun a -> strProp a "login")
+                                        |> List.ofSeq
+                                    | _ -> []
+                                Some { Repo      = repo
+                                       Id        = toIssueId n
+                                       Url       = url
+                                       Assignees = assignees }
+                            | _ -> None))
         }
 
     /// `gh issue list --repo <org/repo> --state closed --json title,number,url,assignees`
@@ -305,26 +405,28 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
             match! runGhApi bucket retries ghToken $"issue list --repo {repoStr} --state closed --search \"{title} in:title\" --limit 100 --json title,number,url,assignees" with
             | Error e -> return Error e
             | Ok json ->
-                let arr = JsonDocument.Parse(json).RootElement
-                return Ok (
-                    arr.EnumerateArray()
-                    |> Seq.tryFind (fun el ->
-                        strProp el "title" = Some title)
-                    |> Option.bind (fun el ->
-                        match intProp el "number", strProp el "url" with
-                        | Some n, Some url ->
-                            let assignees =
-                                match el.TryGetProperty("assignees") with
-                                | true, arr ->
-                                    arr.EnumerateArray()
-                                    |> Seq.choose (fun a -> strProp a "login")
-                                    |> List.ofSeq
-                                | _ -> []
-                            Some { Repo      = repo
-                                   Id        = toIssueId n
-                                   Url       = url
-                                   Assignees = assignees }
-                        | _ -> None))
+                match tryParseJson json with
+                | Error e -> return Error e
+                | Ok arr ->
+                    return Ok (
+                        arr.EnumerateArray()
+                        |> Seq.tryFind (fun el ->
+                            strProp el "title" = Some title)
+                        |> Option.bind (fun el ->
+                            match intProp el "number", strProp el "url" with
+                            | Some n, Some url ->
+                                let assignees =
+                                    match el.TryGetProperty("assignees") with
+                                    | true, arr ->
+                                        arr.EnumerateArray()
+                                        |> Seq.choose (fun a -> strProp a "login")
+                                        |> List.ofSeq
+                                    | _ -> []
+                                Some { Repo      = repo
+                                       Id        = toIssueId n
+                                       Url       = url
+                                       Assignees = assignees }
+                            | _ -> None))
         }
 
     /// Reopen a closed issue and return the refreshed IssueRef.
@@ -338,22 +440,24 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                 match! runGhApi bucket retries ghToken $"issue view {issueN} --repo {repoStr} --json number,url,assignees" with
                 | Error e -> return Error e
                 | Ok json ->
-                    let el = JsonDocument.Parse(json).RootElement
-                    match intProp el "number", strProp el "url" with
-                    | Some n, Some url ->
-                        let assignees =
-                            match el.TryGetProperty("assignees") with
-                            | true, arr ->
-                                arr.EnumerateArray()
-                                |> Seq.choose (fun a -> strProp a "login")
-                                |> List.ofSeq
-                            | _ -> []
-                        return Ok { Repo      = repo
-                                    Id        = toIssueId n
-                                    Url       = url
-                                    Assignees = assignees }
-                    | _ ->
-                        return Error $"Could not parse issue view response for issue #{issueN} in {repoStr}"
+                    match tryParseJson json with
+                    | Error e -> return Error e
+                    | Ok el ->
+                        match intProp el "number", strProp el "url" with
+                        | Some n, Some url ->
+                            let assignees =
+                                match el.TryGetProperty("assignees") with
+                                | true, arr ->
+                                    arr.EnumerateArray()
+                                    |> Seq.choose (fun a -> strProp a "login")
+                                    |> List.ofSeq
+                                | _ -> []
+                            return Ok { Repo      = repo
+                                        Id        = toIssueId n
+                                        Url       = url
+                                        Assignees = assignees }
+                        | _ ->
+                            return Error $"Could not parse issue view response for issue #{issueN} in {repoStr}"
         }
 
     // ------------------------------------------------------------------
@@ -379,59 +483,61 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
             match! runGhApi bucket retries ghToken $"api graphql -f \"query={query}\" -f owner={owner} -f repo={repoName} -F issue={issueN}" with
             | Error _ -> return []
             | Ok json ->
-                let doc = JsonDocument.Parse(json).RootElement
-                let issueEl =
-                    match doc.TryGetProperty("data") with
-                    | true, data ->
-                        match data.TryGetProperty("repository") with
-                        | true, repoEl ->
-                            match repoEl.TryGetProperty("issue") with
-                            | true, ie when ie.ValueKind <> JsonValueKind.Null -> Some ie
+                match tryParseJson json with
+                | Error _ -> return []
+                | Ok doc ->
+                    let issueEl =
+                        match doc.TryGetProperty("data") with
+                        | true, data ->
+                            match data.TryGetProperty("repository") with
+                            | true, repoEl ->
+                                match repoEl.TryGetProperty("issue") with
+                                | true, ie when ie.ValueKind <> JsonValueKind.Null -> Some ie
+                                | _ -> None
                             | _ -> None
                         | _ -> None
-                    | _ -> None
-                let closingNodes =
-                    match issueEl with
-                    | Some ie ->
-                        match ie.TryGetProperty("closingPullRequests") with
-                        | true, prs ->
-                            match prs.TryGetProperty("nodes") with
-                            | true, ns -> ns.EnumerateArray() |> Seq.toList
-                            | _        -> []
-                        | _ -> []
-                    | None -> []
-                let crossRefNodes =
-                    match issueEl with
-                    | Some ie ->
-                        match ie.TryGetProperty("timelineItems") with
-                        | true, ti ->
-                            match ti.TryGetProperty("nodes") with
-                            | true, ns ->
-                                ns.EnumerateArray()
-                                |> Seq.choose (fun el ->
-                                    match el.TryGetProperty("source") with
-                                    | true, src when src.ValueKind = JsonValueKind.Object
-                                                     && (match src.TryGetProperty("number") with true, _ -> true | _ -> false) ->
-                                        Some src
-                                    | _ -> None)
-                                |> Seq.toList
+                    let closingNodes =
+                        match issueEl with
+                        | Some ie ->
+                            match ie.TryGetProperty("closingPullRequests") with
+                            | true, prs ->
+                                match prs.TryGetProperty("nodes") with
+                                | true, ns -> ns.EnumerateArray() |> Seq.toList
+                                | _        -> []
                             | _ -> []
-                        | _ -> []
-                    | None -> []
-                let toRef (el: JsonElement) =
-                    match intProp el "number", strProp el "url" with
-                    | Some n, Some url ->
-                        let state = strProp el "state" |> Option.defaultValue "OPEN"
-                        Some { Repo        = repo
-                               Number      = PrNumber n
-                               Url         = url
-                               ClosesIssue = issue
-                               State       = state }
-                    | _ -> None
-                return
-                    (closingNodes @ crossRefNodes)
-                    |> List.choose toRef
-                    |> List.distinctBy (fun pr -> pr.Number)
+                        | None -> []
+                    let crossRefNodes =
+                        match issueEl with
+                        | Some ie ->
+                            match ie.TryGetProperty("timelineItems") with
+                            | true, ti ->
+                                match ti.TryGetProperty("nodes") with
+                                | true, ns ->
+                                    ns.EnumerateArray()
+                                    |> Seq.choose (fun el ->
+                                        match el.TryGetProperty("source") with
+                                        | true, src when src.ValueKind = JsonValueKind.Object
+                                                         && (match src.TryGetProperty("number") with true, _ -> true | _ -> false) ->
+                                            Some src
+                                        | _ -> None)
+                                    |> Seq.toList
+                                | _ -> []
+                            | _ -> []
+                        | None -> []
+                    let toRef (el: JsonElement) =
+                        match intProp el "number", strProp el "url" with
+                        | Some n, Some url ->
+                            let state = strProp el "state" |> Option.defaultValue "OPEN"
+                            Some { Repo        = repo
+                                   Number      = PrNumber n
+                                   Url         = url
+                                   ClosesIssue = issue
+                                   State       = state }
+                        | _ -> None
+                    return
+                        (closingNodes @ crossRefNodes)
+                        |> List.choose toRef
+                        |> List.distinctBy (fun pr -> pr.Number)
         }
 
     // ------------------------------------------------------------------
@@ -450,12 +556,14 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                 match! runGhApi bucket retries ghToken $"label list --repo {repoStr} --json name --limit 1000" with
                 | Error e -> return Error e
                 | Ok json ->
-                    let arr = JsonDocument.Parse(json).RootElement
-                    let names =
-                        arr.EnumerateArray()
-                        |> Seq.choose (fun el -> strProp el "name")
-                        |> List.ofSeq
-                    return Ok names
+                    match tryParseJson json with
+                    | Error e -> return Error e
+                    | Ok arr ->
+                        let names =
+                            arr.EnumerateArray()
+                            |> Seq.choose (fun el -> strProp el "name")
+                            |> List.ofSeq
+                        return Ok names
             }
 
         member _.CreateLabel repo name =
@@ -478,12 +586,14 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                 match! runGhApi bucket retries ghToken $"project create --title \"{title}\" --owner {orgStr} --format json" with
                 | Error e -> return Error e
                 | Ok json ->
-                    let el = JsonDocument.Parse(json).RootElement
-                    match intProp el "number", strProp el "url" with
-                    | Some n, Some url ->
-                        return Ok { Org = org; Id = toProjectId n; Title = title; Url = url }
-                    | _ ->
-                        return Error $"Unexpected response from 'gh project create': {json}"
+                    match tryParseJson json with
+                    | Error e -> return Error e
+                    | Ok el ->
+                        match intProp el "number", strProp el "url" with
+                        | Some n, Some url ->
+                            return Ok { Org = org; Id = toProjectId n; Title = title; Url = url }
+                        | _ ->
+                            return Error $"Unexpected response from 'gh project create': {json}"
             }
 
         member _.DeleteProject project =
@@ -608,8 +718,9 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                 match! runGhApi bucket retries ghToken $"issue view {issueN} --repo {repoStr} --json state" with
                 | Error _ -> return None
                 | Ok json ->
-                    let el = JsonDocument.Parse(json).RootElement
-                    return strProp el "state"
+                    match tryParseJson json with
+                    | Error _ -> return None
+                    | Ok el   -> return strProp el "state"
             }
 
     // ------------------------------------------------------------------
@@ -649,8 +760,9 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                 match! runGhApi bucket retries ghToken $"pr view {prN} --repo {repoStr} --json state" with
                 | Error _ -> return None
                 | Ok json ->
-                    let el = JsonDocument.Parse(json).RootElement
-                    return strProp el "state"
+                    match tryParseJson json with
+                    | Error _ -> return None
+                    | Ok el   -> return strProp el "state"
             }
 
     // ------------------------------------------------------------------
@@ -664,12 +776,14 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                 match! runGhApi bucket retries ghToken $"repo list {orgStr} --json name --limit 1000" with
                 | Error e -> return Error e
                 | Ok json ->
-                    let arr = JsonDocument.Parse(json).RootElement
-                    let names =
-                        arr.EnumerateArray()
-                        |> Seq.choose (fun el -> strProp el "name")
-                        |> List.ofSeq
-                    return Ok names
+                    match tryParseJson json with
+                    | Error e -> return Error e
+                    | Ok arr ->
+                        let names =
+                            arr.EnumerateArray()
+                            |> Seq.choose (fun el -> strProp el "name")
+                            |> List.ofSeq
+                        return Ok names
             }
 
         member _.ReposExist repos =
@@ -693,11 +807,10 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                     let tmpFile = System.IO.Path.GetTempFileName()
                     try
                         System.IO.File.WriteAllText(tmpFile, JsonSerializer.Serialize({| query = query |}))
-                        match! runGhApiGraphQL bucket retries ghToken $"api graphql --input \"{tmpFile}\"" with
+                        match! runGhApiGraphQLParsed bucket retries ghToken $"api graphql --input \"{tmpFile}\"" with
                         | Error e ->
                             for repo in chunk do results.[repo] <- Error e
-                        | Ok json ->
-                            let doc  = JsonDocument.Parse(json).RootElement
+                        | Ok doc ->
                             let data =
                                 match doc.TryGetProperty("data") with
                                 | true, d -> Some d
@@ -744,11 +857,13 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                 match! runGhApi bucket retries ghToken $"repo view {repoStr} --json isArchived" with
                 | Error e -> return Error e
                 | Ok json ->
-                    let el = JsonDocument.Parse(json).RootElement
-                    match el.TryGetProperty("isArchived") with
-                    | true, v when v.ValueKind = JsonValueKind.True  -> return Ok true
-                    | true, _                                        -> return Ok false
-                    | _ -> return Error $"Missing 'isArchived' field in response for {repoStr}"
+                    match tryParseJson json with
+                    | Error e -> return Error e
+                    | Ok el ->
+                        match el.TryGetProperty("isArchived") with
+                        | true, v when v.ValueKind = JsonValueKind.True  -> return Ok true
+                        | true, _                                        -> return Ok false
+                        | _ -> return Error $"Missing 'isArchived' field in response for {repoStr}"
             }
 
         member _.FetchReposState repos title =
@@ -784,11 +899,10 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                     let tmpFile = System.IO.Path.GetTempFileName()
                     try
                         System.IO.File.WriteAllText(tmpFile, JsonSerializer.Serialize({| query = query |}))
-                        match! runGhApiGraphQL bucket retries ghToken $"api graphql --input \"{tmpFile}\"" with
+                        match! runGhApiGraphQLParsed bucket retries ghToken $"api graphql --input \"{tmpFile}\"" with
                         | Error e ->
                             for repo in chunk do results.[repo] <- Error e
-                        | Ok json ->
-                            let doc  = JsonDocument.Parse(json).RootElement
+                        | Ok doc ->
                             let data = match doc.TryGetProperty("data") with | true, d -> Some d | _ -> None
                             let errorsByAlias =
                                 match doc.TryGetProperty("errors") with
@@ -870,13 +984,15 @@ type GhCliClient(ghToken: string, copilotToken: string option, writesPerMinute: 
                             match! runGhApi bucket retries ghToken $"api repos/{r}/contents/{p}" with
                             | Error _ -> return! tryPaths rest
                             | Ok json ->
-                                let el = JsonDocument.Parse(json).RootElement
-                                match strProp el "content", strProp el "encoding" with
-                                | Some b64, Some "base64" ->
-                                    let cleaned = b64.Replace("\n", "").Replace("\r", "")
-                                    let bytes = Convert.FromBase64String(cleaned)
-                                    return Some (Text.Encoding.UTF8.GetString(bytes))
-                                | _ -> return! tryPaths rest
+                                match tryParseJson json with
+                                | Error _ -> return! tryPaths rest
+                                | Ok el ->
+                                    match strProp el "content", strProp el "encoding" with
+                                    | Some b64, Some "base64" ->
+                                        let cleaned = b64.Replace("\n", "").Replace("\r", "")
+                                        let bytes = Convert.FromBase64String(cleaned)
+                                        return Some (Text.Encoding.UTF8.GetString(bytes))
+                                    | _ -> return! tryPaths rest
                         }
                 return! tryPaths paths
             }

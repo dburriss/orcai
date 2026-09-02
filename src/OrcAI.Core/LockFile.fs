@@ -137,7 +137,10 @@ let classifyCause (msg: string) : RepoFailureCause =
     else
         let m = msg.ToLowerInvariant()
         let any (parts: string list) = parts |> List.exists m.Contains
-        if   any [ "rate limit"; "secondary rate limit"; "abuse detection"; "submitted too quickly" ] then RateLimit
+        // "non-JSON response from GitHub" — GhClient's guard against a parse failure
+        // (typically an HTML abuse-detection/rate-limit block page slipping through
+        // with a 200); treat the same as a detected rate limit.
+        if   any [ "rate limit"; "secondary rate limit"; "abuse detection"; "submitted too quickly"; "non-json response from github" ] then RateLimit
         // UserError must beat NotFound: gh emits "could not resolve user 'foo'" for bad assignees.
         elif any [ "could not resolve user"; "no such user"; "invalid login"; "invalid user" ]        then UserError
         elif any [ "could not resolve to"; "404"; "not found" ]                                       then NotFound

@@ -248,7 +248,15 @@ let ``round-trip preserves failures list`` () =
 [<InlineData("You have exceeded a secondary rate limit")>]
 [<InlineData("abuse detection mechanism triggered")>]
 [<InlineData("Issues are being submitted too quickly")>]
+[<InlineData("non-JSON response from GitHub (likely rate limited/blocked): <html>...")>]
 let ``classifyCause maps rate-limit messages to RateLimit`` (msg: string) =
+    Assert.Equal(RateLimit, classifyCause msg)
+
+[<Fact>]
+let ``classifyCause maps malformed/non-JSON responses to RateLimit even if the snippet mentions 'not found'`` () =
+    // The malformed-response check must beat NotFound, since an HTML block page's
+    // snippet could coincidentally contain "not found"-ish text.
+    let msg = "non-JSON response from GitHub (likely rate limited/blocked): <html><h1>404 Not Found</h1>"
     Assert.Equal(RateLimit, classifyCause msg)
 
 [<Theory>]

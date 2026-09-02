@@ -5,6 +5,10 @@
 ### Fixed
 
 - `orcai run --on-closed-issue` help text incorrectly said `create (default)`; the actual default is `skip` (since the 0.9.0 breaking change).
+- Fixed misreporting and crashes when GitHub rate limits large jobs (100+ repos):
+  - Repos are no longer misreported as "not found" when GitHub returns a secondary-rate-limit error during bulk repo/issue lookups (`ReposExist`/`FetchReposState`) — these errors are global GraphQL errors without a per-repo `path`, and were previously silently dropped instead of triggering a retry.
+  - A malformed/non-JSON API response (e.g. an HTML rate-limit/abuse-detection page returned with a 200) no longer crashes the run with an uncaught JSON parse exception; it's now caught, classified as rate-limit-flavored, and retried.
+  - Detecting a rate limit now pauses all concurrent in-flight/queued repo checks (not just the one that hit it) until the backoff window elapses, instead of letting other repos keep hammering the API. The internal request bucket also resets to empty for the pause, so requests resume at the normal pace once it lifts instead of releasing a stampede from a bucket that silently refilled during the pause.
 
 ## [0.10.1] - 2026-09-01
 
