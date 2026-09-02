@@ -10,7 +10,7 @@
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
     <!-- Binary identity -->
-    <Version>0.10.2</Version>
+    <Version>0.10.3</Version>
     <Authors>Devon Burriss</Authors>
     <Description>A CLI tool for managing GitHub Projects and Copilot-assigned issues in bulk. Define your project in a YAML file and let orcai create issues, assign them to Copilot, and clean up when done.</Description>
     <Title>orcai</Title>
@@ -25,11 +25,8 @@
     <!-- Discoverability -->
     <PackageTags>github copilot cli project-management automation</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>`orcai run --on-closed-issue` help text incorrectly said `create (default)`; the actual default is `skip` (since the 0.9.0 breaking change).
-Fixed misreporting and crashes when GitHub rate limits large jobs (100+ repos):
-Repos are no longer misreported as "not found" when GitHub returns a secondary-rate-limit error during bulk repo/issue lookups (`ReposExist`/`FetchReposState`) — these errors are global GraphQL errors without a per-repo `path`, and were previously silently dropped instead of triggering a retry.
-A malformed/non-JSON API response (e.g. an HTML rate-limit/abuse-detection page returned with a 200) no longer crashes the run with an uncaught JSON parse exception; it's now caught, classified as rate-limit-flavored, and retried.
-Detecting a rate limit now pauses all concurrent in-flight/queued repo checks (not just the one that hit it) until the backoff window elapses, instead of letting other repos keep hammering the API. The internal request bucket also resets to empty for the pause, so requests resume at the normal pace once it lifts instead of releasing a stampede from a bucket that silently refilled during the pause.</PackageReleaseNotes>
+    <PackageReleaseNotes>Repos were misreported as "not found or inaccessible" in large, chunk-boundary-aligned blocks during bulk repo-state fetch (`FetchReposState`), even though they exist and are accessible. Root cause: GitHub's edge/gateway can return a valid-JSON but non-GraphQL-shaped error envelope (e.g. `{"message": "We couldn't respond to your request in time..."}`, typically a 502/504 gateway timeout) for an expensive query — previously this was treated as a successful response with no data, so every repo in the chunk fell into the "not found" branch. It's now detected and treated as a retryable transient error like any other backoff-eligible failure.
+Reduced how often that gateway timeout is hit in the first place: `FetchReposState` now issues `isArchived` lookups (cheap) in batches of 100 as before, but the two `search` lookups per repo (open/closed issue, one of GitHub's most expensive GraphQL root fields) in much smaller batches of 15 — down from a combined batch of 50 that could put up to 100 `search` invocations in a single GraphQL call.</PackageReleaseNotes>
     <!-- SourceLink / reproducible builds -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
