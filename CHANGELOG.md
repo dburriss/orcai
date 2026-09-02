@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `orcai run --on-closed-issue` help text incorrectly said `create (default)`; the actual default is `skip` (since the 0.9.0 breaking change).
+
 ## [0.10.1] - 2026-09-01
 
 ### Added

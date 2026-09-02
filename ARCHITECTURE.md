@@ -79,6 +79,11 @@ not just ambient `gh` API calls.
 | `run <yaml>` | Create Project, issues, assign Copilot |
 | `cleanup <yaml>` | Close PRs/issues, delete project, remove lock |
 | `info <yaml>` | Show job state (lock file or live) |
+| `nudge <yaml>` | Re-trigger the assignee on issues with no linked PR yet |
+| `notify <yaml>` | Post a comment to issues/PRs in the lock file |
+| `validate <yaml>` | Validate a YAML job config and repo access |
+| `graph <yaml>` | Render the `dependsOn` dependency graph |
+| `migrate <yaml>` | Upgrade a YAML job config and lock file to the current schema version |
 | `generate` | Scaffold a YAML job config |
 | `auth pat/app/create-app/switch` | Manage auth profiles |
 
