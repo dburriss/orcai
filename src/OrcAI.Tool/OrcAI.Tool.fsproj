@@ -10,7 +10,7 @@
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
     <!-- Binary identity -->
-    <Version>0.10.1</Version>
+    <Version>0.10.2</Version>
     <Authors>Devon Burriss</Authors>
     <Description>A CLI tool for managing GitHub Projects and Copilot-assigned issues in bulk. Define your project in a YAML file and let orcai create issues, assign them to Copilot, and clean up when done.</Description>
     <Title>orcai</Title>
@@ -25,7 +25,11 @@
     <!-- Discoverability -->
     <PackageTags>github copilot cli project-management automation</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>`{repo}.replace.md` per-repo issue template override: replaces the base template content for that repo, while `{repo}.prepend.md` / `{repo}.append.md` still wrap around it if also present. Follows the same optional/independent, hash-based change detection as the existing prepend/append overrides.</PackageReleaseNotes>
+    <PackageReleaseNotes>`orcai run --on-closed-issue` help text incorrectly said `create (default)`; the actual default is `skip` (since the 0.9.0 breaking change).
+Fixed misreporting and crashes when GitHub rate limits large jobs (100+ repos):
+Repos are no longer misreported as "not found" when GitHub returns a secondary-rate-limit error during bulk repo/issue lookups (`ReposExist`/`FetchReposState`) — these errors are global GraphQL errors without a per-repo `path`, and were previously silently dropped instead of triggering a retry.
+A malformed/non-JSON API response (e.g. an HTML rate-limit/abuse-detection page returned with a 200) no longer crashes the run with an uncaught JSON parse exception; it's now caught, classified as rate-limit-flavored, and retried.
+Detecting a rate limit now pauses all concurrent in-flight/queued repo checks (not just the one that hit it) until the backoff window elapses, instead of letting other repos keep hammering the API. The internal request bucket also resets to empty for the pause, so requests resume at the normal pace once it lifts instead of releasing a stampede from a bucket that silently refilled during the pause.</PackageReleaseNotes>
     <!-- SourceLink / reproducible builds -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
