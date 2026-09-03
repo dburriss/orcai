@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `FetchReposState`'s two batches (`isArchived` and `search`, split in 0.10.3) now fetch their chunks concurrently instead of one at a time. Splitting the `search` batch down to 15 repos increased the number of sequential GraphQL round trips (e.g. 13 for 152 repos, up from 4); since this prefetch always runs single-threaded ahead of the per-repo fan-out regardless of `--parallel`/`--no-parallel`, running it sequentially made it the dominant cost of the whole run. Chunks are now dispatched with `Async.Parallel`, bounded/paced by the existing shared `ApiBucket` (which already rate-limits concurrent callers and pauses all of them together on a detected rate limit).
+
 ## [0.10.3] - 2026-09-02
 
 ### Fixed
