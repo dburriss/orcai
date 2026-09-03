@@ -10,7 +10,7 @@
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
     <!-- Binary identity -->
-    <Version>0.10.3</Version>
+    <Version>0.10.4</Version>
     <Authors>Devon Burriss</Authors>
     <Description>A CLI tool for managing GitHub Projects and Copilot-assigned issues in bulk. Define your project in a YAML file and let orcai create issues, assign them to Copilot, and clean up when done.</Description>
     <Title>orcai</Title>
@@ -25,8 +25,7 @@
     <!-- Discoverability -->
     <PackageTags>github copilot cli project-management automation</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Repos were misreported as "not found or inaccessible" in large, chunk-boundary-aligned blocks during bulk repo-state fetch (`FetchReposState`), even though they exist and are accessible. Root cause: GitHub's edge/gateway can return a valid-JSON but non-GraphQL-shaped error envelope (e.g. `{"message": "We couldn't respond to your request in time..."}`, typically a 502/504 gateway timeout) for an expensive query — previously this was treated as a successful response with no data, so every repo in the chunk fell into the "not found" branch. It's now detected and treated as a retryable transient error like any other backoff-eligible failure.
-Reduced how often that gateway timeout is hit in the first place: `FetchReposState` now issues `isArchived` lookups (cheap) in batches of 100 as before, but the two `search` lookups per repo (open/closed issue, one of GitHub's most expensive GraphQL root fields) in much smaller batches of 15 — down from a combined batch of 50 that could put up to 100 `search` invocations in a single GraphQL call.</PackageReleaseNotes>
+    <PackageReleaseNotes>`FetchReposState`'s two batches (`isArchived` and `search`, split in 0.10.3) now fetch their chunks concurrently instead of one at a time. Splitting the `search` batch down to 15 repos increased the number of sequential GraphQL round trips (e.g. 13 for 152 repos, up from 4); since this prefetch always runs single-threaded ahead of the per-repo fan-out regardless of `--parallel`/`--no-parallel`, running it sequentially made it the dominant cost of the whole run. Chunks are now dispatched with `Async.Parallel`, bounded/paced by the existing shared `ApiBucket` (which already rate-limits concurrent callers and pauses all of them together on a detected rate limit).</PackageReleaseNotes>
     <!-- SourceLink / reproducible builds -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
